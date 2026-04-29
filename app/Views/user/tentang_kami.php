@@ -61,10 +61,10 @@
                     <div class="row g-3">
                         <div class="col-12 col-md-4 text-center">
                             <div class="bg-success bg-opacity-25 rounded-circle d-flex align-items-center justify-content-center mx-auto mb-3" style="width: 80px; height: 80px;">
-                                <i class="fas fa-user text-success fs-2"></i>
+                                <i class="fas fa-laptop-code text-success fs-2"></i>
                             </div>
-                            <h4 class="h6 fw-semibold">Tim IT Kabupaten</h4>
-                            <p class="small text-muted">Developer</p>
+                            <h4 class="h6 fw-semibold">DevTech</h4>
+                            <p class="small text-muted">Dinas Komunikasi dan Informatika<br>Kabupaten Pringsewu</p>
                         </div>
                         <div class="col-12 col-md-4 text-center">
                             <div class="bg-primary bg-opacity-25 rounded-circle d-flex align-items-center justify-content-center mx-auto mb-3" style="width: 80px; height: 80px;">
@@ -92,21 +92,21 @@
                         <div class="col-12 col-md-6">
                             <p class="d-flex align-items-center mb-2">
                                 <i class="fas fa-map-marker-alt me-3"></i>
-                                Jl. Contoh No. 123, Kabupaten ABC
+                                Komplek Perkantoran Pemerintah,<br>Daerah Pringsewu, Lampung
                             </p>
                             <p class="d-flex align-items-center mb-2">
                                 <i class="fas fa-phone me-3"></i>
-                                (021) 1234-5678
+                                +62-729-7531-567
                             </p>
                         </div>
                         <div class="col-12 col-md-6">
                             <p class="d-flex align-items-center mb-2">
                                 <i class="fas fa-envelope me-3"></i>
-                                sakip@kabupaten.go.id
+                                diskominfo@pringsewukab.go.id
                             </p>
                             <p class="d-flex align-items-center">
                                 <i class="fas fa-globe me-3"></i>
-                                www.kabupaten.go.id
+                                pringsewukab.go.id
                             </p>
                         </div>
                     </div>

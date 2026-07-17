@@ -483,21 +483,24 @@ class IkuModel extends Model
     /** Matriks RPJMD untuk mode kabupaten */
     public function getRpjmdMatrix(array $yearsFilter = []): array
     {
+        // `rpjmd_indikator_sasaran.satuan` menyimpan nama satuan (form RPJMD kirim
+        // teks), sedangkan tabel lain menyimpan id ke tabel `satuan` — COALESCE
+        // agar keduanya tetap terbaca.
         $builder = $this->db->table('rpjmd_sasaran rs')
-            ->select('
-                rs.id             AS sasaran_id,
-                rs.sasaran_rpjmd  AS sasaran_rpjmd,
-                ris.id            AS indikator_id,
+            ->select("
+                rs.id                                    AS sasaran_id,
+                rs.sasaran_rpjmd                         AS sasaran_rpjmd,
+                ris.id                                   AS indikator_id,
                 ris.indikator_sasaran,
-                s.satuan          AS satuan,
+                COALESCE(s.satuan, NULLIF(ris.satuan, '')) AS satuan,
                 ris.definisi_op,
                 rt.tahun,
-                rt.target_tahunan AS target_tahunan
-            ')
+                rt.target_tahunan                        AS target_tahunan
+            ", false)
             ->join('rpjmd_tujuan rtuj', 'rtuj.id = rs.tujuan_id', 'left')
             ->join('rpjmd_misi rmis', 'rmis.id = rtuj.misi_id', 'left')
             ->join('rpjmd_indikator_sasaran ris', 'ris.sasaran_id = rs.id', 'left')
-            ->join('satuan s', 's.id = ris.satuan', 'left')
+            ->join('satuan s', "ris.satuan REGEXP '^[0-9]+$' AND s.id = ris.satuan", 'left', false)
             ->join('rpjmd_target rt', 'rt.indikator_sasaran_id = ris.id', 'left');
 
         if (!empty($yearsFilter)) {

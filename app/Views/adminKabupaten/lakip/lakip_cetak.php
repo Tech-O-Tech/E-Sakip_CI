@@ -38,6 +38,12 @@ if ($mode === 'opd') {
 }
 $opdSeen = [];
 $sasSeen = [];
+
+// Lebar kolom (%) untuk kertas POTRAIT; total selalu 100% supaya mPDF tidak
+// perlu menormalkan ulang. Mode OPD punya satu kolom ekstra (OPD).
+$w = ($mode === 'opd')
+    ? ['no' => 4, 'opd' => 13, 'sasaran' => 15, 'indikator' => 18, 'satuan' => 6, 'tahun' => 5, 'target' => 7, 'tlalu' => 8, 'clalu' => 8, 'cini' => 8, 'persen' => 8]
+    : ['no' => 4, 'opd' => 0, 'sasaran' => 19, 'indikator' => 22, 'satuan' => 7, 'tahun' => 6, 'target' => 8, 'tlalu' => 9, 'clalu' => 9, 'cini' => 9, 'persen' => 7];
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -52,23 +58,26 @@ $sasSeen = [];
             color: #526158;
             text-align: right;
         }
+        /* Kertas POTRAIT (A4 tegak): lebar cetak jauh lebih sempit dari
+           landscape, jadi font & padding tabel dirapatkan dan teks panjang
+           dibiarkan membungkus ke bawah. */
         table.lakip-print-table {
-            font-size: 8px;
-            line-height: 1.18;
+            font-size: 7px;
+            line-height: 1.15;
         }
         table.lakip-print-table thead { display: table-header-group; }
         table.lakip-print-table tr { page-break-inside: avoid; }
         table.lakip-print-table th,
         table.lakip-print-table td {
-            padding: 3px 4px;
+            padding: 2px 3px;
             word-wrap: break-word;
             overflow-wrap: break-word;
             vertical-align: middle;
         }
         table.lakip-print-table thead th {
-            font-size: 7.4px;
-            line-height: 1.12;
-            padding: 3px 3px;
+            font-size: 6.4px;
+            line-height: 1.1;
+            padding: 2px 2px;
         }
         .text-center { text-align: center; }
         .text-start { text-align: left; }
@@ -135,19 +144,19 @@ $sasSeen = [];
     <table class="pdf-table lakip-print-table">
         <thead>
             <tr>
-                <th style="width: 3%;">NO</th>
+                <th style="width: <?= $w['no'] ?>%;">NO</th>
                 <?php if ($mode === 'opd'): ?>
-                    <th style="width: 14%;">OPD</th>
+                    <th style="width: <?= $w['opd'] ?>%;">OPD</th>
                 <?php endif; ?>
-                <th style="width: 17%;">SASARAN</th>
-                <th style="width: 20%;">INDIKATOR</th>
-                <th style="width: 7%;">SATUAN</th>
-                <th style="width: 6%;">TAHUN</th>
-                <th style="width: 8%;">TARGET</th>
-                <th style="width: 9%;">TARGET TAHUN SEBELUMNYA</th>
-                <th style="width: 9%;">CAPAIAN TAHUN SEBELUMNYA</th>
-                <th style="width: 8%;">CAPAIAN TAHUN INI</th>
-                <th style="width: 7%;">CAPAIAN (%)</th>
+                <th style="width: <?= $w['sasaran'] ?>%;">SASARAN</th>
+                <th style="width: <?= $w['indikator'] ?>%;">INDIKATOR</th>
+                <th style="width: <?= $w['satuan'] ?>%;">SATUAN</th>
+                <th style="width: <?= $w['tahun'] ?>%;">TAHUN</th>
+                <th style="width: <?= $w['target'] ?>%;">TARGET</th>
+                <th style="width: <?= $w['tlalu'] ?>%;">TARGET TAHUN SEBELUMNYA</th>
+                <th style="width: <?= $w['clalu'] ?>%;">CAPAIAN TAHUN SEBELUMNYA</th>
+                <th style="width: <?= $w['cini'] ?>%;">CAPAIAN TAHUN INI</th>
+                <th style="width: <?= $w['persen'] ?>%;">CAPAIAN (%)</th>
             </tr>
         </thead>
         <tbody>

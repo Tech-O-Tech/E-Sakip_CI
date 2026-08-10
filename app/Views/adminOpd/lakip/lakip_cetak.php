@@ -33,23 +33,26 @@ $statusLabel = static function ($status) {
             color: #526158;
             text-align: right;
         }
+        /* Kertas POTRAIT (A4 tegak): lebar cetak jauh lebih sempit dari
+           landscape, jadi font & padding tabel dirapatkan dan teks panjang
+           dibiarkan membungkus ke bawah. */
         table.lakip-print-table {
-            font-size: 8px;
-            line-height: 1.18;
+            font-size: 7px;
+            line-height: 1.15;
         }
         table.lakip-print-table thead { display: table-header-group; }
         table.lakip-print-table tr { page-break-inside: avoid; }
         table.lakip-print-table th,
         table.lakip-print-table td {
-            padding: 3px 4px;
+            padding: 2px 3px;
             word-wrap: break-word;
             overflow-wrap: break-word;
             vertical-align: middle;
         }
         table.lakip-print-table thead th {
-            font-size: 7.4px;
-            line-height: 1.12;
-            padding: 3px 3px;
+            font-size: 6.4px;
+            line-height: 1.1;
+            padding: 2px 2px;
         }
         .text-center { text-align: center; }
         .text-start { text-align: left; }
@@ -116,15 +119,16 @@ $statusLabel = static function ($status) {
     <table class="pdf-table lakip-print-table">
         <thead>
             <tr>
-                <th style="width: 3%;">NO</th>
-                <th style="width: 18%;">SASARAN</th>
+                <?php // Lebar kolom (%) untuk kertas POTRAIT; total tepat 100%. ?>
+                <th style="width: 4%;">NO</th>
+                <th style="width: 19%;">SASARAN</th>
                 <th style="width: 22%;">INDIKATOR</th>
                 <th style="width: 7%;">SATUAN</th>
                 <th style="width: 6%;">TAHUN</th>
                 <th style="width: 9%;">TARGET TAHUN SEBELUMNYA</th>
                 <th style="width: 9%;">CAPAIAN TAHUN SEBELUMNYA</th>
                 <th style="width: 8%;">TARGET</th>
-                <th style="width: 8%;">CAPAIAN TAHUN INI</th>
+                <th style="width: 9%;">CAPAIAN TAHUN INI</th>
                 <th style="width: 7%;">CAPAIAN (%)</th>
             </tr>
         </thead>

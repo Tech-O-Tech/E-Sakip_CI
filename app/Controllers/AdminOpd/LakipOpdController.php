@@ -304,11 +304,13 @@ class LakipOpdController extends BaseController
         // Modul PDF lain (Cascading, Renstra, RKT, MONEV, dst.) TIDAK diubah dan
         // tetap memakai kop/footer/watermark standar.
         // ============================================================
+        // Orientasi POTRAIT (A4 tegak). Margin kiri/kanan dipersempit agar
+        // tabel LAKIP yang lebar tetap lega di kertas potrait.
         $mpdf = new \Mpdf\Mpdf([
             'mode' => 'utf-8',
-            'format' => 'A4-L',
-            'margin_left' => 12,
-            'margin_right' => 12,
+            'format' => 'A4',
+            'margin_left' => 8,
+            'margin_right' => 8,
             'margin_top' => 14,
             'margin_bottom' => 14,
             'margin_header' => 0,

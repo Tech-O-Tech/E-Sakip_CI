@@ -352,9 +352,6 @@ foreach ($indikatorRows as $r) {
                             <label class="form-label" for="upaya_peningkatan">Upaya untuk Meningkatkan Pencapaian Kinerja</label>
                             <textarea class="form-control" name="upaya_peningkatan" id="upaya_peningkatan" rows="3" maxlength="5000"></textarea>
                         </div>
-                        <div class="text-muted small" id="analisis-pesan">
-                            Minimal salah satu dari ketiga isian di atas harus diisi.
-                        </div>
                     </div>
                     <div class="modal-footer">
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>

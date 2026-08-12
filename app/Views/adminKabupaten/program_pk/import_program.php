@@ -178,10 +178,14 @@
                                 <div class="p-3 border rounded">
                                     <div class="fw-semibold mb-2">Aturan Mapping Kolom</div>
                                     <ul class="small text-muted mb-0">
+                                        <li><strong>A</strong> Kode Perangkat Daerah/Unit, <strong>B</strong> Urusan,
+                                            <strong>C</strong> Bidang Urusan</li>
                                         <li><strong>D ≠ 0, E & F kosong</strong> → Program</li>
                                         <li><strong>D ≠ 0, E ada, F kosong</strong> → Kegiatan</li>
                                         <li><strong>D ≠ 0, E & F ada</strong> → Sub Kegiatan</li>
-                                        <li>Kolom <strong>K</strong> → Anggaran (Rp)</li>
+                                        <li>Kolom <strong>G</strong> → Uraian, kolom <strong>K</strong> → Anggaran (Rp)</li>
+                                        <li>Kode unik memakai jalur penuh <strong>A+B+C+D</strong> (+E, +F), jadi
+                                            kolom <strong>B</strong> dan <strong>C</strong> wajib ikut terisi.</li>
                                     </ul>
                                 </div>
                             </div>

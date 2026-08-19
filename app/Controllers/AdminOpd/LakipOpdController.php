@@ -4,6 +4,7 @@ namespace App\Controllers\AdminOpd;
 
 use App\Controllers\BaseController;
 use App\Controllers\Concerns\LakipAddendumTrait;
+use App\Controllers\Concerns\LakipSnapshotTrait;
 use App\Models\LakipModel;
 use App\Models\Opd\RenstraModel;
 use App\Models\OpdModel;
@@ -13,6 +14,9 @@ class LakipOpdController extends BaseController
 {
     /** Analisis Faktor + Efisiensi Program (dua tabel di bawah tabel utama). */
     use LakipAddendumTrait;
+
+    /** Snapshot tahunan + kunci tahun + penyesuaian kebijakan. */
+    use LakipSnapshotTrait;
 
     protected $lakipModel;
     protected $renstraModel;
@@ -39,6 +43,46 @@ class LakipOpdController extends BaseController
     protected function lakipBaseUrl(): string
     {
         return 'adminopd/lakip';
+    }
+
+    /** Prefix permission untuk aksi snapshot/finalisasi/penyesuaian. */
+    protected function lakipPermPrefix(): string
+    {
+        return 'lakip_opd';
+    }
+
+    /**
+     * Tukar sumber tabel utama ke arsip beku bila halaman ini sedang membaca
+     * snapshot.
+     *
+     * Pengelompokan & pemetaan ulang dikerjakan ULANG dengan fungsi yang sama
+     * persis dengan jalur data hidup (groupIndexRowsBySasaran + rekey ke
+     * indikator_id), supaya tampilan arsip dan tampilan hidup tidak pernah
+     * berbeda bentuk. Jalur OPD memang memakai bentuk yang berbeda dari jalur
+     * Kabupaten — itu perilaku lama yang sengaja dipertahankan.
+     *
+     * @return array{0:array, 1:array, 2:array, 3:array} [rows, dataSource, lakipMap, sumber]
+     */
+    private function sumberLakipOpd(array $scope, string $status, array $rows, array $lakipMapTarget, array $dataSource, array $lakipMap): array
+    {
+        $sumber = $this->sumberLakip($scope, $status, ['rows' => $rows, 'lakipMap' => $lakipMapTarget]);
+
+        if (empty($sumber['dariSnapshot'])) {
+            return [$rows, $dataSource, $lakipMap, $sumber];
+        }
+
+        $rows     = $sumber['rows'];
+        $lakipMap = [];
+
+        foreach ($sumber['lakipMap'] as $l) {
+            if (! empty($l['indikator_id'])) {
+                $lakipMap[(int) $l['indikator_id']] = $l;
+            }
+        }
+
+        $dataSource = $this->lakipModel->groupIndexRowsBySasaran($rows, (string) $scope['mode']);
+
+        return [$rows, $dataSource, $lakipMap, $sumber];
     }
 
     private function buildQs(?string $tahun, ?string $status, ?string $mode = null, ?int $opdId = null): string
@@ -186,9 +230,24 @@ class LakipOpdController extends BaseController
         // kalau admin_kab memilih mode OPD tanpa memilih OPD-nya.
         $rows  = $rows ?? [];
         $scope = $this->lakipScope((string) $tahun, $mode);
-        $data  = array_merge($data, $this->lakipAddendumData($scope), [
+
+        [$rows, $dataSource, $lakipMap, $sumber] = $this->sumberLakipOpd(
+            $scope,
+            (string) ($status ?? ''),
+            $rows,
+            $lakipMapTarget ?? [],
+            $dataSource ?? [],
+            $lakipMap ?? []
+        );
+
+        $data['dataSource'] = $dataSource;
+        $data['lakipMap']   = $lakipMap;
+
+        $data = array_merge($data, $this->addendumLakip($scope, $sumber), $this->dataSnapshot($scope, $sumber), [
             'indikatorRows' => $rows,
             'addendumBase'  => $this->lakipBaseUrl(),
+            // Tahun terkunci: tombol pengubah pada tabel utama ikut padam.
+            'lakipTerkunci' => ! empty($sumber['terkunci']),
         ]);
 
         return view('adminOpd/lakip/lakip', $data);
@@ -275,7 +334,16 @@ class LakipOpdController extends BaseController
         $rows  = $rows ?? [];
         $scope = $this->lakipScope((string) $tahun, $mode);
 
-        $html = view('adminOpd/lakip/lakip_cetak', array_merge($this->lakipAddendumData($scope), [
+        [$rows, $dataSource, $lakipMap, $sumber] = $this->sumberLakipOpd(
+            $scope,
+            (string) ($status ?? ''),
+            $rows,
+            $lakipMapTarget ?? [],
+            $dataSource ?? [],
+            $lakipMap ?? []
+        );
+
+        $html = view('adminOpd/lakip/lakip_cetak', array_merge($this->addendumLakip($scope, $sumber), [
             'title' => 'Cetak LAKIP',
             'role' => $role,
             'mode' => $mode,
@@ -401,9 +469,19 @@ class LakipOpdController extends BaseController
         $unitName = $opdInfo['nama_opd'] ?? (($mode === 'kabupaten') ? 'Kabupaten Pringsewu' : 'Seluruh OPD');
 
         // Sheet tambahan: Analisis Faktor & Efisiensi Program.
-        $rows     = $rows ?? [];
-        $scope    = $this->lakipScope((string) $tahun, $mode);
-        $addendum = $this->lakipAddendumData($scope);
+        $rows  = $rows ?? [];
+        $scope = $this->lakipScope((string) $tahun, $mode);
+
+        [$rows, $dataSource, $lakipMap, $sumber] = $this->sumberLakipOpd(
+            $scope,
+            (string) ($status ?? ''),
+            $rows,
+            $lakipMapTarget ?? [],
+            $dataSource ?? [],
+            $lakipMap ?? []
+        );
+
+        $addendum = $this->addendumLakip($scope, $sumber);
 
         lakip_opd_excel($dataSource, $lakipMap, [
             'unit' => $unitName,

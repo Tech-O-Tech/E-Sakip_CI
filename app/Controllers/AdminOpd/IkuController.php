@@ -4,6 +4,7 @@ namespace App\Controllers\AdminOpd;
 
 use App\Controllers\BaseController;
 use App\Controllers\Concerns\IkuFormTrait;
+use App\Controllers\Concerns\IkuRevisiTrait;
 use App\Models\Opd\IkuModel;
 use App\Models\OpdModel;
 
@@ -21,6 +22,35 @@ use App\Models\OpdModel;
 class IkuController extends BaseController
 {
     use IkuFormTrait;
+
+    /** Revisi IKU: versi dokumen yang bernomor & bertanggal berlaku. */
+    use IkuRevisiTrait;
+
+    /* =========================================================
+     * LINGKUP REVISI (dipakai IkuRevisiTrait)
+     * =======================================================*/
+
+    protected function revisiPermPrefix(): string
+    {
+        return 'iku_opd';
+    }
+
+    /**
+     * OPD diambil dari SESSION, tidak pernah dari request — pola yang sama
+     * dengan LakipAddendumTrait::lakipScope(). Ini yang mencegah satu OPD
+     * merevisi IKU OPD lain lewat parameter yang ditebak.
+     */
+    protected function revisiOpdId(): ?int
+    {
+        $opdId = (int) session()->get('opd_id');
+
+        return $opdId > 0 ? $opdId : null;
+    }
+
+    protected function revisiBaseUrl(): string
+    {
+        return 'adminopd/iku';
+    }
 
     protected IkuModel $ikuModel;
     protected OpdModel $opdModel;

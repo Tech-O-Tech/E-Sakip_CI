@@ -1,0 +1,1443 @@
+<?php
+
+namespace App\Models\Opd;
+
+use App\Models\Concerns\TransaksiAman;
+use CodeIgniter\Model;
+use RuntimeException;
+use Throwable;
+
+/**
+ * REVISI IKU — versi dokumen IKU yang bernomor, bertanggal berlaku, dan beku.
+ *
+ * ---------------------------------------------------------------------
+ * MASALAH YANG DISELESAIKAN
+ *
+ * IKU berumur ~5 tahun tapi bisa direvisi di tengah periode: target berubah,
+ * rumusan sasaran diperbaiki, indikator ditambah, diganti, atau tidak dipakai
+ * lagi. Sebelum modul ini, semua perubahan itu menimpa satu-satunya salinan
+ * data yang hidup — dan IkuModel::updateComplete() bahkan MENGHAPUS indikator
+ * yang hilang dari form. Akibatnya LAKIP tahun-tahun lampau ikut berubah
+ * bunyinya setiap kali IKU disunting.
+ *
+ * ---------------------------------------------------------------------
+ * BAGAIMANA VERSINYA DISIMPAN
+ *
+ * Tabel live (`iku_sasaran`/`iku_indikator`/`iku_target`/`iku_program`) TETAP
+ * berisi versi yang SEDANG BERLAKU. Itu keputusan sadar: tabel-tabel itu
+ * dibaca API publik, halaman publik, dan tiga model dashboard — membiarkannya
+ * apa adanya membuat seluruh pembaca lama tidak perlu diubah sebaris pun.
+ *
+ * Tabel `iku_revisi_*` menyimpan dua hal sekaligus:
+ *   * ARSIP BEKU tiap versi yang pernah berlaku (inilah sumber LAKIP), dan
+ *   * ISI DRAFT yang sedang diusulkan tapi belum disahkan.
+ *
+ * Alurnya:
+ *
+ *   buatDraft()  salin kondisi live saat ini jadi titik awal usulan
+ *                -> status 'draft'. TIDAK menyentuh tabel live sama sekali.
+ *   sahkan()     terapkan isi draft ke tabel live, geser revisi sebelumnya
+ *                jadi 'superseded', arsipnya tetap utuh selamanya.
+ *   batalkan()   draft dibuang -> status 'batal' (tidak dihapus, jejaknya ada).
+ *
+ * ---------------------------------------------------------------------
+ * INVARIANT YANG DIJAGA DI SINI
+ *
+ *  1. Lifecycle draft -> berlaku -> superseded/batal. Draft tidak pernah jadi
+ *     sumber LAKIP: resolveEfektif() hanya melihat status 'berlaku'.
+ *  2. Satu revisi efektif. UNIQUE index di basis data yang menjaminnya;
+ *     resolveEfektif() memeriksa ULANG dan MENOLAK bila ada lebih dari satu,
+ *     bukan memilih salah satu diam-diam.
+ *  4. Perubahan indikator dibedakan: revisi / pengganti / tambahan baru, dan
+ *     penggantian menyimpan lineage lewat `indikator_sebelumnya_id`.
+ *  7. Semua operasi majemuk dibungkus transaksi; gagal di tengah = rollback
+ *     penuh, tidak ada revisi setengah jadi.
+ *  8. Indikator yang sudah direferensikan sejarah TIDAK PERNAH dihapus,
+ *     hanya dipensiunkan (`dihentikan_pada`).
+ * ---------------------------------------------------------------------
+ */
+class IkuRevisiModel extends Model
+{
+    /** transBegin/transCommit yang benar-benar bisa di-rollback (invariant 7). */
+    use TransaksiAman;
+
+    protected $table         = 'iku_revisi';
+    protected $primaryKey    = 'id';
+    protected $returnType    = 'array';
+    protected $allowedFields = [
+        'opd_id', 'tahun_mulai', 'tahun_akhir', 'nomor', 'nama',
+        'dasar_hukum', 'nomor_dasar', 'tanggal_dasar',
+        'berlaku_mulai_tahun', 'berlaku_sampai_tahun', 'status', 'catatan',
+        'dibuat_oleh', 'disahkan_oleh', 'disahkan_pada', 'dibekukan_pada',
+        'created_at', 'updated_at',
+    ];
+
+    protected $useTimestamps = false;
+
+    /** Status yang dikenal lifecycle. */
+    public const STATUS_DRAFT      = 'draft';
+    public const STATUS_BERLAKU    = 'berlaku';
+    public const STATUS_SUPERSEDED = 'superseded';
+    public const STATUS_BATAL      = 'batal';
+
+    /** Jenis perubahan indikator — dipakai untuk memutus/menyambung tren. */
+    public const UBAH_TETAP      = 'tetap';
+    public const UBAH_REVISI     = 'revisi';
+    public const UBAH_PENGGANTI  = 'pengganti';
+    public const UBAH_BARU       = 'baru';
+    public const UBAH_DIHENTIKAN = 'dihentikan';
+
+    /**
+     * Sama dengan IkuModel: `satuan` boleh berisi id numerik ke tabel master
+     * `satuan`, boleh juga teks bebas. Arsip membekukan HASIL terjemahannya
+     * supaya penggantian nama di tabel master tidak mengubah bunyi arsip.
+     */
+    private const SATUAN_JOIN   = "ind.satuan REGEXP '^[0-9]+$' AND sat.id = ind.satuan";
+    private const SATUAN_SELECT = "COALESCE(sat.satuan, NULLIF(ind.satuan, ''))";
+
+    /* =========================================================
+     * KESIAPAN
+     * =======================================================*/
+
+    /**
+     * Tabel revisi sudah ada atau belum.
+     *
+     * Meniru LakipAnalisisModel::siap(): seluruh modul harus tetap jalan
+     * (tanpa fitur revisi) bila SQL 2026-08-18 belum dijalankan di server itu.
+     */
+    public function siap(): bool
+    {
+        static $siap = null;
+
+        if ($siap !== null) {
+            return $siap;
+        }
+
+        try {
+            foreach (['iku_revisi', 'iku_revisi_sasaran', 'iku_revisi_indikator', 'iku_revisi_target'] as $t) {
+                if (! $this->db->tableExists($t)) {
+                    return $siap = false;
+                }
+            }
+
+            return $siap = true;
+        } catch (Throwable $e) {
+            return $siap = false;
+        }
+    }
+
+    /* =========================================================
+     * PEMBACAAN
+     * =======================================================*/
+
+    /**
+     * Daftar revisi satu lingkup (scope + periode), terbaru dulu.
+     *
+     * @param int|null $opdId NULL = tingkat kabupaten
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function daftar(?int $opdId, ?int $tahunMulai = null, ?int $tahunAkhir = null): array
+    {
+        if (! $this->siap()) {
+            return [];
+        }
+
+        $b = $this->db->table('iku_revisi')
+            ->select('*')
+            ->where('opd_key', $opdId === null ? 0 : $opdId);
+
+        if ($tahunMulai !== null) {
+            $b->where('tahun_mulai', $tahunMulai);
+        }
+        if ($tahunAkhir !== null) {
+            $b->where('tahun_akhir', $tahunAkhir);
+        }
+
+        return $b->orderBy('tahun_mulai', 'DESC')
+            ->orderBy('nomor', 'DESC')
+            ->get()
+            ->getResultArray();
+    }
+
+    /** Satu revisi berikut lingkupnya. */
+    public function ambil(int $revisiId): ?array
+    {
+        if (! $this->siap() || $revisiId <= 0) {
+            return null;
+        }
+
+        return $this->db->table('iku_revisi')->where('id', $revisiId)->get()->getRowArray() ?: null;
+    }
+
+    /**
+     * REVISI YANG EFEKTIF PADA SATU TAHUN — inti invariant 2 / Case 11.
+     *
+     * Tidak pernah mengembalikan draft maupun revisi yang dibatalkan
+     * (invariant 1).
+     *
+     * ---------------------------------------------------------------------
+     * MENGAPA 'superseded' IKUT DIPERTIMBANGKAN
+     *
+     * 'superseded' berarti "bukan versi terkini", BUKAN "tidak pernah berlaku".
+     * Revisi ke-0 yang berlaku 2090-2091 lalu digeser revisi ke-1 mulai 2092
+     * tetap merupakan dokumen yang sah untuk tahun 2090 dan 2091 — dan LAKIP
+     * kedua tahun itu wajib membacanya.
+     *
+     * Kalau hanya status 'berlaku' yang dilihat, tahun-tahun lampau justru
+     * kehilangan sumbernya begitu sebuah revisi disahkan; persis kebalikan
+     * dari tujuan modul ini.
+     *
+     * Yang memisahkan versi karena itu adalah JENDELA MASA BERLAKU
+     * [berlaku_mulai_tahun .. berlaku_sampai_tahun], yang dibuat saling lepas
+     * oleh sahkan(). UNIQUE index basis data menjaga sisi 'berlaku'-nya;
+     * pemeriksaan jumlah di bawah menjaga sisa kemungkinan lainnya.
+     * ---------------------------------------------------------------------
+     *
+     * Kalau ada lebih dari satu revisi 'berlaku' yang memayungi tahun yang
+     * sama, method ini TIDAK memilih salah satu. Ia mengembalikan daftar
+     * konflik supaya pemanggil menampilkan galat administratif — diam-diam
+     * memilih versi berarti angka LAKIP jadi bergantung pada urutan baris,
+     * dan itu persis yang dilarang.
+     *
+     * Basis data sebenarnya sudah mencegah keadaan ini lewat UNIQUE index
+     * `uq_iku_revisi_efektif`. Pemeriksaan di sini adalah lapis kedua untuk
+     * basis data lama yang indexnya belum terpasang.
+     *
+     * @return array{revisi: array<string,mixed>|null, konflik: array<int, array<string,mixed>>, pesan: string|null}
+     */
+    public function resolveEfektif(?int $opdId, int $tahun): array
+    {
+        $kosong = ['revisi' => null, 'konflik' => [], 'pesan' => null];
+
+        if (! $this->siap() || $tahun <= 0) {
+            return $kosong;
+        }
+
+        $kandidat = $this->db->table('iku_revisi')
+            ->select('*')
+            ->where('opd_key', $opdId === null ? 0 : $opdId)
+            ->whereIn('status', [self::STATUS_BERLAKU, self::STATUS_SUPERSEDED])
+            ->where('berlaku_mulai_tahun <=', $tahun)
+            ->groupStart()
+                ->where('berlaku_sampai_tahun IS NULL', null, false)
+                ->orWhere('berlaku_sampai_tahun >=', $tahun)
+            ->groupEnd()
+            ->where('tahun_mulai <=', $tahun)
+            ->where('tahun_akhir >=', $tahun)
+            ->orderBy('berlaku_mulai_tahun', 'DESC')
+            ->orderBy('nomor', 'DESC')
+            ->get()
+            ->getResultArray();
+
+        if (empty($kandidat)) {
+            // Belum ada revisi apa pun untuk lingkup ini. Bukan galat: modul
+            // berjalan seperti sebelum fitur ini ada, membaca tabel live.
+            return $kosong;
+        }
+
+        if (count($kandidat) > 1) {
+            $nama = implode(', ', array_map(
+                static fn ($r) => '"' . $r['nama'] . '" (revisi ke-' . $r['nomor'] . ')',
+                $kandidat
+            ));
+
+            return [
+                'revisi'  => null,
+                'konflik' => $kandidat,
+                'pesan'   => 'Konflik revisi IKU pada tahun ' . $tahun . ': terdapat '
+                    . count($kandidat) . ' revisi yang sama-sama berlaku — ' . $nama
+                    . '. Perbaiki dulu masa berlakunya (hanya satu revisi boleh berlaku'
+                    . ' untuk satu tahun) sebelum data tahun ini dipakai.',
+            ];
+        }
+
+        return ['revisi' => $kandidat[0], 'konflik' => [], 'pesan' => null];
+    }
+
+    /**
+     * Isi satu revisi dalam bentuk yang SAMA dengan IkuModel::getMatrix(),
+     * supaya view & pencetak IKU yang sudah ada bisa disuapi arsip tanpa diubah.
+     *
+     * Baris ber-jenis_perubahan 'dihentikan' adalah NISAN, bukan isi: ia
+     * mencatat bahwa sebuah indikator berhenti dipakai pada revisi ini. Kalau
+     * ikut dikembalikan, LAKIP tahun tersebut akan mencetak indikator yang
+     * justru sudah dihentikan. Karena itu ia disaring di sini, tapi TETAP
+     * tersimpan di tabel arsip — jejak "apa yang berubah" ada di sana, dan
+     * halaman perbandingan revisi memanggilnya dengan $sertakanDihentikan.
+     *
+     * @param bool $sertakanDihentikan sertakan nisan (untuk tampilan perbandingan)
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function isiRevisi(int $revisiId, bool $sertakanDihentikan = false): array
+    {
+        if (! $this->siap() || $revisiId <= 0) {
+            return [];
+        }
+
+        $sasaranRows = $this->db->table('iku_revisi_sasaran')
+            ->where('revisi_id', $revisiId)
+            ->orderBy('urutan', 'ASC')
+            ->orderBy('id', 'ASC')
+            ->get()
+            ->getResultArray();
+
+        if (empty($sasaranRows)) {
+            return [];
+        }
+
+        $bi = $this->db->table('iku_revisi_indikator')
+            ->where('revisi_id', $revisiId);
+
+        if (! $sertakanDihentikan) {
+            $bi->where('jenis_perubahan !=', self::UBAH_DIHENTIKAN);
+        }
+
+        $indikatorRows = $bi->orderBy('urutan', 'ASC')->orderBy('id', 'ASC')->get()->getResultArray();
+
+        $indikatorIds = array_map('intval', array_column($indikatorRows, 'id'));
+        $targetMap    = $this->petaTargetRevisi($indikatorIds);
+        $programMap   = $this->petaProgramRevisi($indikatorIds);
+
+        $perSasaran = [];
+        foreach ($indikatorRows as $ind) {
+            // `satuan_nama` sudah dibekukan; nama kuncinya disamakan dengan
+            // getMatrix() supaya view tidak perlu tahu ini arsip atau bukan.
+            $ind['satuan_nama'] = $ind['satuan_nama'] ?? null;
+            $ind['target']      = $targetMap[(int) $ind['id']] ?? [];
+            $ind['program']     = $programMap[(int) $ind['id']] ?? [];
+
+            $perSasaran[(int) $ind['revisi_sasaran_id']][] = $ind;
+        }
+
+        $hasil = [];
+        foreach ($sasaranRows as $sas) {
+            $sas['indikator'] = $perSasaran[(int) $sas['id']] ?? [];
+
+            // Sasaran yang seluruh indikatornya dihentikan ikut hilang dari isi
+            // revisi — sama seperti perilaku getMatrix() pada data berjalan.
+            if (! $sertakanDihentikan
+                && empty($sas['indikator'])
+                && $sas['jenis_perubahan'] === self::UBAH_DIHENTIKAN) {
+                continue;
+            }
+
+            $hasil[] = $sas;
+        }
+
+        return $hasil;
+    }
+
+    /* =========================================================
+     * PEMBUATAN DRAFT
+     * =======================================================*/
+
+    /**
+     * Buat draft revisi baru, berisi salinan kondisi IKU saat ini sebagai titik
+     * awal usulan.
+     *
+     * Seluruhnya satu transaksi (invariant 7): kalau penyalinan indikator gagal
+     * di tengah, kepala revisinya ikut dibatalkan — tidak ada revisi setengah
+     * jadi yang menyesatkan.
+     *
+     * TIDAK menyentuh tabel live sama sekali (invariant 1 & 5 / Case 15).
+     *
+     * @param array{
+     *     opd_id: int|null, tahun_mulai: int, tahun_akhir: int,
+     *     nama?: string, dasar_hukum?: string|null, nomor_dasar?: string|null,
+     *     tanggal_dasar?: string|null, berlaku_mulai_tahun: int,
+     *     catatan?: string|null, dibuat_oleh?: int|null
+     * } $data
+     *
+     * @return int id revisi draft yang dibuat
+     */
+    public function buatDraft(array $data): int
+    {
+        if (! $this->siap()) {
+            throw new RuntimeException('Tabel revisi IKU belum tersedia. Jalankan db/update_2026-08-18_iku_revisi_lakip_snapshot.sql terlebih dahulu.');
+        }
+
+        $opdId      = isset($data['opd_id']) && $data['opd_id'] !== null ? (int) $data['opd_id'] : null;
+        $tahunMulai = (int) $data['tahun_mulai'];
+        $tahunAkhir = (int) $data['tahun_akhir'];
+        $berlaku    = (int) $data['berlaku_mulai_tahun'];
+
+        $this->validasiLingkupDraft($tahunMulai, $tahunAkhir, $berlaku);
+
+        return $this->dalamTransaksi(
+            fn () => $this->buatDraftInti($data, $opdId, $tahunMulai, $tahunAkhir, $berlaku),
+            'pembuatan draft revisi IKU'
+        );
+    }
+
+    /**
+     * Isi buatDraft() tanpa membuka transaksi sendiri.
+     *
+     * WAJIB dipanggil dari dalam transaksi (lihat TransaksiAman). Dipisahkan
+     * supaya LakipPenyesuaianModel::usulkanRevisiIku() bisa membuat draft
+     * revisi DAN menautkannya ke baris penyesuaian dalam SATU transaksi —
+     * kalau penautannya gagal, draft yatim tidak ikut tertinggal (invariant 7).
+     *
+     * Membuka transaksi kedua di sini justru berbahaya: transaksi bersarang
+     * CodeIgniter tidak melakukan rollback sungguhan.
+     *
+     * @internal dipakai lintas model, bukan bagian dari API publik modul IKU
+     */
+    public function buatDraftInti(array $data, ?int $opdId, int $tahunMulai, int $tahunAkhir, int $berlaku): int
+    {
+        // Divalidasi ulang di sini, bukan hanya di buatDraft(), karena method
+        // ini juga dipanggil langsung dari modul penyesuaian LAKIP.
+        $this->validasiLingkupDraft($tahunMulai, $tahunAkhir, $berlaku);
+
+        {
+            // Versi awal (revisi ke-0) dimaterialisasi lebih dulu supaya
+            // kondisi IKU SEBELUM revisi pertama pun punya arsip beku. Tanpa
+            // ini, LAKIP tahun-tahun sebelum revisi pertama tidak punya versi
+            // yang bisa dirujuk.
+            $this->pastikanBaseline($opdId, $tahunMulai, $tahunAkhir, $data['dibuat_oleh'] ?? null);
+
+            $nomorBaru = $this->nomorBerikutnya($opdId, $tahunMulai, $tahunAkhir);
+
+            $revisiId = $this->sisipkanKepala([
+                'opd_id'              => $opdId,
+                'tahun_mulai'         => $tahunMulai,
+                'tahun_akhir'         => $tahunAkhir,
+                'nomor'               => $nomorBaru,
+                'nama'                => trim((string) ($data['nama'] ?? '')) !== ''
+                    ? (string) $data['nama']
+                    : ('Revisi ke-' . $nomorBaru . ' IKU ' . $tahunMulai . '-' . $tahunAkhir),
+                'dasar_hukum'         => $this->kosongJadiNull($data['dasar_hukum'] ?? null),
+                'nomor_dasar'         => $this->kosongJadiNull($data['nomor_dasar'] ?? null),
+                'tanggal_dasar'       => $this->kosongJadiNull($data['tanggal_dasar'] ?? null),
+                'berlaku_mulai_tahun' => $berlaku,
+                'status'              => self::STATUS_DRAFT,
+                'catatan'             => $this->kosongJadiNull($data['catatan'] ?? null),
+                'dibuat_oleh'         => isset($data['dibuat_oleh']) ? (int) $data['dibuat_oleh'] : null,
+            ]);
+
+            // Titik awal usulan = kondisi live sekarang (versi yang berlaku).
+            $this->bekukanLiveKeRevisi($revisiId, $opdId, $tahunMulai, $tahunAkhir, false);
+
+            return $revisiId;
+        }
+    }
+
+    /** Periode & tahun berlaku masuk akal. */
+    private function validasiLingkupDraft(int $tahunMulai, int $tahunAkhir, int $berlaku): void
+    {
+        if ($tahunMulai <= 0 || $tahunAkhir < $tahunMulai) {
+            throw new RuntimeException('Periode IKU tidak valid.');
+        }
+
+        if ($berlaku < $tahunMulai || $berlaku > $tahunAkhir) {
+            throw new RuntimeException(
+                'Tahun mulai berlaku harus berada di dalam periode ' . $tahunMulai . '-' . $tahunAkhir . '.'
+            );
+        }
+    }
+
+    /**
+     * Pastikan lingkup ini punya revisi ke-0 (kondisi awal) yang sudah berlaku.
+     *
+     * Dipanggil dari dalam transaksi pemanggil — sengaja tidak membuka
+     * transaksi sendiri supaya rollback-nya menyeluruh.
+     *
+     * @return int|null id baseline, atau null bila sudah ada revisi lain
+     */
+    public function pastikanBaseline(?int $opdId, int $tahunMulai, int $tahunAkhir, ?int $userId = null): ?int
+    {
+        $sudahAda = $this->db->table('iku_revisi')
+            ->where('opd_key', $opdId === null ? 0 : $opdId)
+            ->where('tahun_mulai', $tahunMulai)
+            ->where('tahun_akhir', $tahunAkhir)
+            ->countAllResults();
+
+        if ($sudahAda > 0) {
+            return null;
+        }
+
+        $baselineId = $this->sisipkanKepala([
+            'opd_id'              => $opdId,
+            'tahun_mulai'         => $tahunMulai,
+            'tahun_akhir'         => $tahunAkhir,
+            'nomor'               => 0,
+            'nama'                => 'Kondisi Awal IKU ' . $tahunMulai . '-' . $tahunAkhir,
+            'berlaku_mulai_tahun' => $tahunMulai,
+            'status'              => self::STATUS_BERLAKU,
+            'catatan'             => 'Dibekukan otomatis dari kondisi IKU yang berlaku saat revisi pertama dibuat.',
+            'dibuat_oleh'         => $userId,
+            'disahkan_oleh'       => $userId,
+            'disahkan_pada'       => date('Y-m-d H:i:s'),
+        ]);
+
+        $this->bekukanLiveKeRevisi($baselineId, $opdId, $tahunMulai, $tahunAkhir, false);
+
+        return $baselineId;
+    }
+
+    /* =========================================================
+     * SUNTINGAN DRAFT
+     * =======================================================*/
+
+    /**
+     * Simpan suntingan isi draft.
+     *
+     * Hanya menyentuh tabel arsip revisi — tabel live tidak disentuh sama
+     * sekali sampai sahkan() dipanggil (invariant 1 & 5).
+     *
+     * @param array $baris [id arsip indikator => field yang disunting]
+     * @param array $baru  indikator tambahan
+     */
+    public function simpanSuntinganDraft(int $revisiId, array $baris, array $baru = []): void
+    {
+        $revisi = $this->ambil($revisiId);
+
+        if (! $revisi) {
+            throw new RuntimeException('Revisi tidak ditemukan.');
+        }
+
+        if ($revisi['status'] !== self::STATUS_DRAFT) {
+            throw new RuntimeException('Hanya draft yang bisa disunting; revisi yang sudah berlaku adalah arsip.');
+        }
+
+        $tahunMulai = (int) $revisi['tahun_mulai'];
+        $tahunAkhir = (int) $revisi['tahun_akhir'];
+
+        $this->dalamTransaksi(function () use ($revisiId, $baris, $baru, $tahunMulai, $tahunAkhir) {
+            $db  = $this->db;
+            $now = date('Y-m-d H:i:s');
+
+            foreach ($baris as $arsipId => $isi) {
+                $arsipId = (int) $arsipId;
+
+                if ($arsipId <= 0 || ! is_array($isi)) {
+                    continue;
+                }
+
+                // Pencegah IDOR: baris arsip milik revisi LAIN tidak boleh ikut
+                // tersunting lewat id yang ditebak.
+                $adaBaris = $db->table('iku_revisi_indikator')
+                    ->where('id', $arsipId)->where('revisi_id', $revisiId)->get()->getRowArray();
+
+                if (! $adaBaris) {
+                    continue;
+                }
+
+                $jenis     = $this->jenisPerubahanSah($isi['jenis_perubahan'] ?? self::UBAH_TETAP);
+                $pengganti = isset($isi['indikator_sebelumnya_id']) && (int) $isi['indikator_sebelumnya_id'] > 0
+                    ? (int) $isi['indikator_sebelumnya_id']
+                    : null;
+
+                // Invariant 4: penggantian TANPA lineage tidak berarti apa-apa —
+                // tren antar tahun jadi tidak bisa ditelusuri asal-usulnya.
+                if ($jenis === self::UBAH_PENGGANTI && $pengganti === null) {
+                    throw new RuntimeException(
+                        'Indikator "' . mb_substr((string) ($isi['indikator'] ?? $adaBaris['indikator']), 0, 60)
+                        . '" ditandai sebagai PENGGANTI, tetapi indikator yang digantikan belum dipilih.'
+                    );
+                }
+
+                $satuan = isset($isi['satuan']) ? trim((string) $isi['satuan']) : $adaBaris['satuan'];
+
+                $db->table('iku_revisi_indikator')->where('id', $arsipId)->update([
+                    'indikator'               => trim((string) ($isi['indikator'] ?? $adaBaris['indikator'])),
+                    'definisi'                => $this->kosongJadiNull($isi['definisi'] ?? $adaBaris['definisi']),
+                    'rumusan_perhitungan'     => $this->kosongJadiNull($isi['rumusan_perhitungan'] ?? $adaBaris['rumusan_perhitungan']),
+                    'satuan'                  => $this->kosongJadiNull($satuan),
+                    'satuan_nama'             => $this->namaSatuan($satuan),
+                    'sumber_data'             => $this->kosongJadiNull($isi['sumber_data'] ?? $adaBaris['sumber_data']),
+                    'penanggung_jawab'        => $this->kosongJadiNull($isi['penanggung_jawab'] ?? $adaBaris['penanggung_jawab']),
+                    'jenis_indikator'         => $this->kosongJadiNull($isi['jenis_indikator'] ?? $adaBaris['jenis_indikator']),
+                    'baseline'                => $this->kosongJadiNull($isi['baseline'] ?? $adaBaris['baseline']),
+                    'jenis_perubahan'         => $jenis,
+                    'indikator_sebelumnya_id' => $pengganti,
+                    'perubahan_substansial'   => ! empty($isi['perubahan_substansial']) ? 1 : 0,
+                    'catatan_perubahan'       => $this->kosongJadiNull($isi['catatan_perubahan'] ?? null),
+                    'updated_at'              => $now,
+                ]);
+
+                $this->simpanTargetArsip($arsipId, (array) ($isi['target'] ?? []), $tahunMulai, $tahunAkhir, $now);
+            }
+
+            foreach ((array) $baru as $isi) {
+                if (! is_array($isi)) {
+                    continue;
+                }
+
+                $teks = trim((string) ($isi['indikator'] ?? ''));
+
+                if ($teks === '') {
+                    continue;
+                }
+
+                $sasaranArsipId = (int) ($isi['revisi_sasaran_id'] ?? 0);
+
+                $sasaranSah = $db->table('iku_revisi_sasaran')
+                    ->where('id', $sasaranArsipId)->where('revisi_id', $revisiId)->countAllResults() > 0;
+
+                if (! $sasaranSah) {
+                    continue;
+                }
+
+                $jenis     = $this->jenisPerubahanSah($isi['jenis_perubahan'] ?? self::UBAH_BARU);
+                $pengganti = isset($isi['indikator_sebelumnya_id']) && (int) $isi['indikator_sebelumnya_id'] > 0
+                    ? (int) $isi['indikator_sebelumnya_id']
+                    : null;
+
+                if ($jenis === self::UBAH_PENGGANTI && $pengganti === null) {
+                    throw new RuntimeException(
+                        'Indikator baru "' . mb_substr($teks, 0, 60) . '" ditandai sebagai PENGGANTI, '
+                        . 'tetapi indikator yang digantikan belum dipilih.'
+                    );
+                }
+
+                $satuan = trim((string) ($isi['satuan'] ?? ''));
+
+                $db->table('iku_revisi_indikator')->insert([
+                    'revisi_id'               => $revisiId,
+                    'revisi_sasaran_id'       => $sasaranArsipId,
+                    'sumber_indikator_id'     => null,
+                    'indikator'               => $teks,
+                    'definisi'                => $this->kosongJadiNull($isi['definisi'] ?? null),
+                    'rumusan_perhitungan'     => $this->kosongJadiNull($isi['rumusan_perhitungan'] ?? null),
+                    'satuan'                  => $this->kosongJadiNull($satuan),
+                    'satuan_nama'             => $this->namaSatuan($satuan),
+                    'sumber_data'             => $this->kosongJadiNull($isi['sumber_data'] ?? null),
+                    'penanggung_jawab'        => $this->kosongJadiNull($isi['penanggung_jawab'] ?? null),
+                    'jenis_indikator'         => $this->kosongJadiNull($isi['jenis_indikator'] ?? null),
+                    'baseline'                => $this->kosongJadiNull($isi['baseline'] ?? null),
+                    'urutan'                  => (int) ($isi['urutan'] ?? 999),
+                    'status'                  => 'draft',
+                    'jenis_perubahan'         => $jenis,
+                    'indikator_sebelumnya_id' => $pengganti,
+                    'perubahan_substansial'   => ! empty($isi['perubahan_substansial']) ? 1 : 0,
+                    'catatan_perubahan'       => $this->kosongJadiNull($isi['catatan_perubahan'] ?? null),
+                    'created_at'              => $now,
+                    'updated_at'              => $now,
+                ]);
+
+                $this->simpanTargetArsip(
+                    (int) $db->insertID(),
+                    (array) ($isi['target'] ?? []),
+                    $tahunMulai,
+                    $tahunAkhir,
+                    $now
+                );
+            }
+
+            return true;
+        }, 'penyimpanan suntingan draft revisi');
+    }
+
+    /** Tulis target arsip satu indikator; tahun di luar periode dibuang. */
+    private function simpanTargetArsip(int $arsipIndikatorId, array $target, int $tahunMulai, int $tahunAkhir, string $now): void
+    {
+        foreach ($target as $tahun => $nilai) {
+            $tahun = (int) $tahun;
+
+            if ($tahun < $tahunMulai || $tahun > $tahunAkhir) {
+                continue;
+            }
+
+            $nilai = is_scalar($nilai) ? trim((string) $nilai) : null;
+
+            $ada = $this->db->table('iku_revisi_target')
+                ->where('revisi_indikator_id', $arsipIndikatorId)
+                ->where('tahun', $tahun)
+                ->get()->getRowArray();
+
+            if ($ada) {
+                $this->db->table('iku_revisi_target')->where('id', (int) $ada['id'])->update([
+                    'target'     => $nilai,
+                    'updated_at' => $now,
+                ]);
+
+                continue;
+            }
+
+            $this->db->table('iku_revisi_target')->insert([
+                'revisi_indikator_id' => $arsipIndikatorId,
+                'tahun'               => $tahun,
+                'target'              => $nilai,
+                'created_at'          => $now,
+                'updated_at'          => $now,
+            ]);
+        }
+    }
+
+    private function jenisPerubahanSah($nilai): string
+    {
+        $nilai = strtolower(trim((string) $nilai));
+
+        $sah = [
+            self::UBAH_TETAP, self::UBAH_REVISI, self::UBAH_PENGGANTI,
+            self::UBAH_BARU, self::UBAH_DIHENTIKAN,
+        ];
+
+        return in_array($nilai, $sah, true) ? $nilai : self::UBAH_TETAP;
+    }
+
+    /**
+     * Terjemahkan `satuan` (id numerik atau teks bebas) jadi namanya, untuk
+     * dibekukan di arsip. Pola yang sama dengan SATUAN_SELECT pada getMatrix().
+     */
+    private function namaSatuan(?string $satuan): ?string
+    {
+        $satuan = trim((string) $satuan);
+
+        if ($satuan === '') {
+            return null;
+        }
+
+        if (! preg_match('/^[0-9]+$/', $satuan)) {
+            return $satuan;
+        }
+
+        $row = $this->db->table('satuan')->select('satuan')->where('id', (int) $satuan)->get()->getRowArray();
+
+        return $row['satuan'] ?? $satuan;
+    }
+
+    /* =========================================================
+     * PENGESAHAN
+     * =======================================================*/
+
+    /**
+     * Sahkan draft: terapkan isinya ke tabel live, geser revisi sebelumnya.
+     *
+     * Satu transaksi penuh (invariant 7). Urutannya penting:
+     *   1. kunci & periksa status (hanya draft yang boleh disahkan);
+     *   2. geser revisi lama jadi 'superseded' DULU — kalau tidak, UNIQUE
+     *      index bisa menolak pengesahan ini;
+     *   3. terapkan isi arsip ke tabel live, indikator yang hilang DIPENSIUNKAN
+     *      bukan dihapus (invariant 8);
+     *   4. tandai draft jadi 'berlaku'.
+     *
+     * @return array{revisi_id:int, digeser:int[], indikator_dipensiunkan:int}
+     */
+    public function sahkan(int $revisiId, ?int $userId = null): array
+    {
+        if (! $this->siap()) {
+            throw new RuntimeException('Tabel revisi IKU belum tersedia.');
+        }
+
+        return $this->dalamTransaksi(function () use ($revisiId, $userId) {
+            $db = $this->db;
+
+            $revisi = $db->table('iku_revisi')->where('id', $revisiId)->get()->getRowArray();
+
+            if (! $revisi) {
+                throw new RuntimeException('Revisi tidak ditemukan.');
+            }
+            if ($revisi['status'] !== self::STATUS_DRAFT) {
+                throw new RuntimeException(
+                    'Hanya revisi berstatus draft yang bisa disahkan. Status sekarang: ' . $revisi['status'] . '.'
+                );
+            }
+
+            $opdKey  = (int) $revisi['opd_key'];
+            $opdId   = $revisi['opd_id'] !== null ? (int) $revisi['opd_id'] : null;
+            $berlaku = (int) $revisi['berlaku_mulai_tahun'];
+
+            // --- 2. geser revisi lain dalam lingkup yang sama ---------------
+            $lain = $db->table('iku_revisi')
+                ->where('opd_key', $opdKey)
+                ->where('tahun_mulai', (int) $revisi['tahun_mulai'])
+                ->where('tahun_akhir', (int) $revisi['tahun_akhir'])
+                ->where('status', self::STATUS_BERLAKU)
+                ->where('id !=', $revisiId)
+                ->orderBy('berlaku_mulai_tahun', 'ASC')
+                ->get()
+                ->getResultArray();
+
+            $digeser  = [];
+            $batasAtas = null;
+
+            foreach ($lain as $r) {
+                $mulaiLain = (int) $r['berlaku_mulai_tahun'];
+
+                if ($mulaiLain === $berlaku) {
+                    // Tepat bertabrakan. Basis data akan menolaknya juga, tapi
+                    // pesan di sini jauh lebih berguna bagi operator.
+                    throw new RuntimeException(
+                        'Sudah ada revisi yang berlaku mulai tahun ' . $berlaku . ' pada lingkup ini ("'
+                        . $r['nama'] . '"). Ubah tahun mulai berlaku, atau batalkan revisi tersebut lebih dulu.'
+                    );
+                }
+
+                if ($mulaiLain < $berlaku) {
+                    // Revisi lama: ditutup satu tahun sebelum revisi ini mulai.
+                    if ($r['berlaku_sampai_tahun'] === null || (int) $r['berlaku_sampai_tahun'] >= $berlaku) {
+                        $db->table('iku_revisi')->where('id', (int) $r['id'])->update([
+                            'status'               => self::STATUS_SUPERSEDED,
+                            'berlaku_sampai_tahun' => $berlaku - 1,
+                            'updated_at'           => date('Y-m-d H:i:s'),
+                        ]);
+                        $digeser[] = (int) $r['id'];
+                    }
+                    continue;
+                }
+
+                // Ada revisi yang berlaku LEBIH DULU dari yang sedang disahkan
+                // (pengesahan menyusul / di luar urutan). Revisi inilah yang
+                // harus dibatasi, bukan yang sudah berlaku itu.
+                $batasAtas = $batasAtas === null ? ($mulaiLain - 1) : min($batasAtas, $mulaiLain - 1);
+            }
+
+            // --- 3. terapkan arsip ke tabel live ---------------------------
+            $dipensiunkan = $this->terapkanKeLive(
+                $revisiId,
+                $opdId,
+                $berlaku,
+                (int) $revisi['tahun_mulai'],
+                (int) $revisi['tahun_akhir']
+            );
+
+            // --- 4. tandai berlaku -----------------------------------------
+            $db->table('iku_revisi')->where('id', $revisiId)->update([
+                'status'               => self::STATUS_BERLAKU,
+                'berlaku_sampai_tahun' => $batasAtas,
+                'disahkan_oleh'        => $userId,
+                'disahkan_pada'        => date('Y-m-d H:i:s'),
+                'dibekukan_pada'       => $revisi['dibekukan_pada'] ?? date('Y-m-d H:i:s'),
+                'updated_at'           => date('Y-m-d H:i:s'),
+            ]);
+
+            return [
+                'revisi_id'              => $revisiId,
+                'digeser'                => $digeser,
+                'indikator_dipensiunkan' => $dipensiunkan,
+            ];
+        }, 'pengesahan revisi IKU');
+    }
+
+    /** Buang draft. Barisnya tetap disimpan supaya jejak usulan tidak hilang. */
+    public function batalkan(int $revisiId, ?int $userId = null): bool
+    {
+        if (! $this->siap()) {
+            return false;
+        }
+
+        $revisi = $this->ambil($revisiId);
+
+        if (! $revisi) {
+            throw new RuntimeException('Revisi tidak ditemukan.');
+        }
+        if ($revisi['status'] !== self::STATUS_DRAFT) {
+            throw new RuntimeException('Hanya draft yang bisa dibatalkan. Revisi yang sudah berlaku harus digeser oleh revisi berikutnya.');
+        }
+
+        return (bool) $this->db->table('iku_revisi')->where('id', $revisiId)->update([
+            'status'     => self::STATUS_BATAL,
+            'updated_at' => date('Y-m-d H:i:s'),
+        ]);
+    }
+
+    /* =========================================================
+     * PENERAPAN ARSIP -> TABEL LIVE
+     * =======================================================*/
+
+    /**
+     * Salin isi arsip revisi ke tabel live.
+     *
+     * Dipanggil HANYA dari dalam transaksi sahkan().
+     *
+     * Indikator live yang tidak lagi ada di arsip TIDAK dihapus — hanya
+     * dipensiunkan. Inilah pengganti DELETE yang selama ini merusak sejarah:
+     * target & program lamanya ikut terjaga karena barisnya masih ada.
+     *
+     * @return int jumlah indikator yang dipensiunkan
+     */
+    private function terapkanKeLive(
+        int $revisiId,
+        ?int $opdId,
+        int $berlakuMulai,
+        int $tahunMulai,
+        int $tahunAkhir
+    ): int {
+        $db  = $this->db;
+        $now = date('Y-m-d H:i:s');
+
+        $arsipSasaran = $db->table('iku_revisi_sasaran')
+            ->where('revisi_id', $revisiId)
+            ->orderBy('urutan', 'ASC')->orderBy('id', 'ASC')
+            ->get()->getResultArray();
+
+        $sasaranLiveDipakai   = [];
+        $indikatorLiveDipakai = [];
+
+        foreach ($arsipSasaran as $urutanSasaran => $as) {
+            $sasaranLiveId = $as['sumber_sasaran_id'] !== null ? (int) $as['sumber_sasaran_id'] : 0;
+
+            $isiSasaran = [
+                'sasaran'         => $as['sasaran'],
+                'tahun_mulai'     => (int) $as['tahun_mulai'],
+                'tahun_akhir'     => (int) $as['tahun_akhir'],
+                'urutan'          => $urutanSasaran,
+                'revisi_id'       => $revisiId,
+                'updated_at'      => $now,
+            ];
+
+            if ($sasaranLiveId > 0 && $db->table('iku_sasaran')->where('id', $sasaranLiveId)->countAllResults() > 0) {
+                // Sasaran yang dihidupkan kembali oleh revisi ini tidak boleh
+                // tetap berstatus pensiun.
+                $isiSasaran['dihentikan_pada']   = null;
+                $isiSasaran['berlaku_sampai']    = null;
+                $isiSasaran['alasan_dihentikan'] = null;
+                $db->table('iku_sasaran')->where('id', $sasaranLiveId)->update($isiSasaran);
+            } else {
+                $isiSasaran['opd_id']     = $opdId;
+                $isiSasaran['created_at'] = $now;
+                $db->table('iku_sasaran')->insert($isiSasaran);
+                $sasaranLiveId = (int) $db->insertID();
+
+                $db->table('iku_revisi_sasaran')->where('id', (int) $as['id'])
+                    ->update(['sumber_sasaran_id' => $sasaranLiveId]);
+            }
+
+            $sasaranLiveDipakai[] = $sasaranLiveId;
+
+            $arsipIndikator = $db->table('iku_revisi_indikator')
+                ->where('revisi_sasaran_id', (int) $as['id'])
+                ->orderBy('urutan', 'ASC')->orderBy('id', 'ASC')
+                ->get()->getResultArray();
+
+            foreach ($arsipIndikator as $urutanInd => $ai) {
+                if ($ai['jenis_perubahan'] === self::UBAH_DIHENTIKAN) {
+                    // Baris penanda "tidak dipakai lagi": tidak diterapkan ke
+                    // live sebagai indikator aktif; pemensiunannya ditangani
+                    // pada penyapuan di bawah.
+                    continue;
+                }
+
+                $indLiveId = $ai['sumber_indikator_id'] !== null ? (int) $ai['sumber_indikator_id'] : 0;
+
+                $isiInd = [
+                    'iku_sasaran_id'          => $sasaranLiveId,
+                    'indikator'               => $ai['indikator'],
+                    'definisi'                => $ai['definisi'],
+                    'rumusan_perhitungan'     => $ai['rumusan_perhitungan'],
+                    'satuan'                  => $ai['satuan'],
+                    'sumber_data'             => $ai['sumber_data'],
+                    'penanggung_jawab'        => $ai['penanggung_jawab'],
+                    'jenis_indikator'         => $ai['jenis_indikator'],
+                    'baseline'                => $ai['baseline'],
+                    'urutan'                  => $urutanInd,
+                    'status'                  => $ai['status'],
+                    'revisi_id'               => $revisiId,
+                    'jenis_perubahan'         => $ai['jenis_perubahan'],
+                    'indikator_sebelumnya_id' => $ai['indikator_sebelumnya_id'] !== null
+                        ? (int) $ai['indikator_sebelumnya_id'] : null,
+                    'perubahan_substansial'   => (int) $ai['perubahan_substansial'],
+                    'updated_at'              => $now,
+                ];
+
+                if ($indLiveId > 0 && $db->table('iku_indikator')->where('id', $indLiveId)->countAllResults() > 0) {
+                    $isiInd['dihentikan_pada']   = null;
+                    $isiInd['berlaku_sampai']    = null;
+                    $isiInd['alasan_dihentikan'] = null;
+                    $db->table('iku_indikator')->where('id', $indLiveId)->update($isiInd);
+                } else {
+                    $isiInd['created_at'] = $now;
+                    $db->table('iku_indikator')->insert($isiInd);
+                    $indLiveId = (int) $db->insertID();
+
+                    $db->table('iku_revisi_indikator')->where('id', (int) $ai['id'])
+                        ->update(['sumber_indikator_id' => $indLiveId]);
+                }
+
+                $indikatorLiveDipakai[] = $indLiveId;
+
+                $this->terapkanTargetProgram((int) $ai['id'], $indLiveId, $now);
+            }
+        }
+
+        // --- penyapuan: yang tidak lagi disebut arsip -> PENSIUN, bukan hapus
+        $dipensiunkan = $this->pensiunkanYangHilang(
+            $opdId,
+            $tahunMulai,
+            $tahunAkhir,
+            $sasaranLiveDipakai,
+            $indikatorLiveDipakai,
+            $revisiId,
+            $berlakuMulai,
+            $now
+        );
+
+        return $dipensiunkan;
+    }
+
+    /** Salin target & program satu indikator dari arsip ke tabel live. */
+    private function terapkanTargetProgram(int $arsipIndikatorId, int $indLiveId, string $now): void
+    {
+        $db = $this->db;
+
+        $targets = $db->table('iku_revisi_target')
+            ->where('revisi_indikator_id', $arsipIndikatorId)
+            ->orderBy('tahun', 'ASC')
+            ->get()->getResultArray();
+
+        foreach ($targets as $t) {
+            $tahun = (int) $t['tahun'];
+
+            $ada = $db->table('iku_target')
+                ->where('iku_indikator_id', $indLiveId)
+                ->where('tahun', $tahun)
+                ->get()->getRowArray();
+
+            if ($ada) {
+                $db->table('iku_target')->where('id', (int) $ada['id'])
+                    ->update(['target' => $t['target'], 'updated_at' => $now]);
+            } else {
+                $db->table('iku_target')->insert([
+                    'iku_indikator_id' => $indLiveId,
+                    'tahun'            => $tahun,
+                    'target'           => $t['target'],
+                    'created_at'       => $now,
+                    'updated_at'       => $now,
+                ]);
+            }
+        }
+
+        // Program pendukung tidak punya sejarah yang perlu dijaga (tidak pernah
+        // dirujuk LAKIP), jadi boleh disusun ulang apa adanya.
+        $db->table('iku_program')->where('iku_indikator_id', $indLiveId)->delete();
+
+        $programs = $db->table('iku_revisi_program')
+            ->where('revisi_indikator_id', $arsipIndikatorId)
+            ->orderBy('urutan', 'ASC')
+            ->get()->getResultArray();
+
+        foreach ($programs as $urutan => $p) {
+            $db->table('iku_program')->insert([
+                'iku_indikator_id' => $indLiveId,
+                'program'          => $p['program'],
+                'urutan'           => $urutan,
+                'created_at'       => $now,
+            ]);
+        }
+    }
+
+    /**
+     * Pensiunkan sasaran/indikator live yang tidak lagi disebut revisi ini.
+     *
+     * INVARIANT 8 — tidak ada hard-delete. `berlaku_sampai` diisi satu tahun
+     * sebelum revisi ini mulai berlaku, sehingga LAKIP tahun-tahun sebelumnya
+     * tetap melihatnya sebagai indikator yang sah pada masanya.
+     */
+    private function pensiunkanYangHilang(
+        ?int $opdId,
+        int $tahunMulai,
+        int $tahunAkhir,
+        array $sasaranDipakai,
+        array $indikatorDipakai,
+        int $revisiId,
+        int $berlakuMulai,
+        string $now
+    ): int {
+        $db = $this->db;
+
+        // PENTING: penyapuan WAJIB dibatasi periode revisi, bukan hanya pemilik.
+        //
+        // Satu OPD (dan tingkat kabupaten) lazim punya beberapa periode IKU
+        // sekaligus — 2020-2024 di samping 2025-2029. Tanpa batas periode,
+        // mengesahkan revisi satu periode akan memensiunkan seluruh IKU periode
+        // lain milik pemilik yang sama, karena tidak satu pun dari mereka
+        // tercantum di arsip revisi ini.
+        //
+        // Pola pembatasan periode ini konsisten dengan getMatrix() dan
+        // petaIkuTerpasang() yang juga mencocokkan tahun_mulai DAN tahun_akhir
+        // secara persis.
+        $bSasaran = $db->table('iku_sasaran')
+            ->select('id')
+            ->where('tahun_mulai', $tahunMulai)
+            ->where('tahun_akhir', $tahunAkhir);
+
+        $opdId === null
+            ? $bSasaran->where('opd_id IS NULL', null, false)
+            : $bSasaran->where('opd_id', $opdId);
+
+        $semuaSasaran = array_map('intval', array_column(
+            $bSasaran->where('dihentikan_pada IS NULL', null, false)->get()->getResultArray(),
+            'id'
+        ));
+
+        $sasaranHilang = array_values(array_diff($semuaSasaran, array_map('intval', $sasaranDipakai)));
+
+        // Indikator hilang dicari dari sasaran yang MASIH dipakai; indikator di
+        // bawah sasaran yang dipensiunkan ikut terbawa oleh blok berikutnya.
+        $indikatorHilang = [];
+
+        if (! empty($sasaranDipakai)) {
+            $semuaIndikator = array_map('intval', array_column(
+                $db->table('iku_indikator')->select('id')
+                    ->whereIn('iku_sasaran_id', array_map('intval', $sasaranDipakai))
+                    ->where('dihentikan_pada IS NULL', null, false)
+                    ->get()->getResultArray(),
+                'id'
+            ));
+
+            $indikatorHilang = array_values(array_diff($semuaIndikator, array_map('intval', $indikatorDipakai)));
+        }
+
+        if (! empty($sasaranHilang)) {
+            $indikatorIkut = array_map('intval', array_column(
+                $db->table('iku_indikator')->select('id')
+                    ->whereIn('iku_sasaran_id', $sasaranHilang)
+                    ->where('dihentikan_pada IS NULL', null, false)
+                    ->get()->getResultArray(),
+                'id'
+            ));
+
+            $indikatorHilang = array_values(array_unique(array_merge($indikatorHilang, $indikatorIkut)));
+
+            $db->table('iku_sasaran')->whereIn('id', $sasaranHilang)->update([
+                'dihentikan_pada'   => $now,
+                'berlaku_sampai'    => $berlakuMulai - 1,
+                'alasan_dihentikan' => 'Tidak lagi tercantum pada revisi yang disahkan (revisi id ' . $revisiId . ').',
+                'updated_at'        => $now,
+            ]);
+        }
+
+        if (! empty($indikatorHilang)) {
+            $db->table('iku_indikator')->whereIn('id', $indikatorHilang)->update([
+                'dihentikan_pada'   => $now,
+                'berlaku_sampai'    => $berlakuMulai - 1,
+                'jenis_perubahan'   => self::UBAH_DIHENTIKAN,
+                'alasan_dihentikan' => 'Tidak lagi tercantum pada revisi yang disahkan (revisi id ' . $revisiId . ').',
+                'updated_at'        => $now,
+            ]);
+        }
+
+        return count($indikatorHilang);
+    }
+
+    /* =========================================================
+     * PEMBEKUAN LIVE -> ARSIP
+     * =======================================================*/
+
+    /**
+     * Salin kondisi tabel live satu lingkup ke dalam arsip sebuah revisi.
+     *
+     * @param bool $sertakanPensiun ikut menyalin baris yang sudah dipensiunkan
+     */
+    private function bekukanLiveKeRevisi(
+        int $revisiId,
+        ?int $opdId,
+        int $tahunMulai,
+        int $tahunAkhir,
+        bool $sertakanPensiun = false
+    ): void {
+        $db  = $this->db;
+        $now = date('Y-m-d H:i:s');
+
+        $b = $db->table('iku_sasaran')
+            ->select('*')
+            ->where('tahun_mulai', $tahunMulai)
+            ->where('tahun_akhir', $tahunAkhir);
+
+        $opdId === null ? $b->where('opd_id IS NULL', null, false) : $b->where('opd_id', $opdId);
+
+        if (! $sertakanPensiun) {
+            $b->where('dihentikan_pada IS NULL', null, false);
+        }
+
+        $sasaranRows = $b->orderBy('urutan', 'ASC')->orderBy('id', 'ASC')->get()->getResultArray();
+
+        foreach ($sasaranRows as $sas) {
+            $db->table('iku_revisi_sasaran')->insert([
+                'revisi_id'         => $revisiId,
+                'sumber_sasaran_id' => (int) $sas['id'],
+                'sasaran'           => $sas['sasaran'],
+                'tahun_mulai'       => (int) $sas['tahun_mulai'],
+                'tahun_akhir'       => (int) $sas['tahun_akhir'],
+                'urutan'            => (int) $sas['urutan'],
+                'jenis_perubahan'   => self::UBAH_TETAP,
+                'created_at'        => $now,
+                'updated_at'        => $now,
+            ]);
+
+            $arsipSasaranId = (int) $db->insertID();
+
+            $bi = $db->table('iku_indikator ind')
+                ->select('ind.*, ' . self::SATUAN_SELECT . ' AS satuan_nama', false)
+                ->join('satuan sat', self::SATUAN_JOIN, 'left', false)
+                ->where('ind.iku_sasaran_id', (int) $sas['id']);
+
+            if (! $sertakanPensiun) {
+                $bi->where('ind.dihentikan_pada IS NULL', null, false);
+            }
+
+            $indikatorRows = $bi->orderBy('ind.urutan', 'ASC')->orderBy('ind.id', 'ASC')->get()->getResultArray();
+
+            foreach ($indikatorRows as $ind) {
+                $db->table('iku_revisi_indikator')->insert([
+                    'revisi_id'               => $revisiId,
+                    'revisi_sasaran_id'       => $arsipSasaranId,
+                    'sumber_indikator_id'     => (int) $ind['id'],
+                    'indikator'               => $ind['indikator'],
+                    'definisi'                => $ind['definisi'],
+                    'rumusan_perhitungan'     => $ind['rumusan_perhitungan'],
+                    'satuan'                  => $ind['satuan'],
+                    // Nama satuan dibekukan di sini — kalau master `satuan`
+                    // kelak diganti namanya, arsip tetap berbunyi seperti saat
+                    // dokumen ini berlaku.
+                    'satuan_nama'             => $ind['satuan_nama'],
+                    'sumber_data'             => $ind['sumber_data'],
+                    'penanggung_jawab'        => $ind['penanggung_jawab'],
+                    'jenis_indikator'         => $ind['jenis_indikator'],
+                    'baseline'                => $ind['baseline'],
+                    'urutan'                  => (int) $ind['urutan'],
+                    'status'                  => $ind['status'],
+                    'jenis_perubahan'         => self::UBAH_TETAP,
+                    'indikator_sebelumnya_id' => $ind['indikator_sebelumnya_id'] ?? null,
+                    'perubahan_substansial'   => (int) ($ind['perubahan_substansial'] ?? 0),
+                    'created_at'              => $now,
+                    'updated_at'              => $now,
+                ]);
+
+                $arsipIndikatorId = (int) $db->insertID();
+
+                $targets = $db->table('iku_target')
+                    ->where('iku_indikator_id', (int) $ind['id'])
+                    ->orderBy('tahun', 'ASC')
+                    ->get()->getResultArray();
+
+                foreach ($targets as $t) {
+                    $db->table('iku_revisi_target')->insert([
+                        'revisi_indikator_id' => $arsipIndikatorId,
+                        'tahun'               => (int) $t['tahun'],
+                        'target'              => $t['target'],
+                        'created_at'          => $now,
+                        'updated_at'          => $now,
+                    ]);
+                }
+
+                $programs = $db->table('iku_program')
+                    ->where('iku_indikator_id', (int) $ind['id'])
+                    ->orderBy('urutan', 'ASC')
+                    ->get()->getResultArray();
+
+                foreach ($programs as $p) {
+                    $db->table('iku_revisi_program')->insert([
+                        'revisi_indikator_id' => $arsipIndikatorId,
+                        'program'             => $p['program'],
+                        'urutan'              => (int) $p['urutan'],
+                        'created_at'          => $now,
+                    ]);
+                }
+            }
+        }
+
+        $db->table('iku_revisi')->where('id', $revisiId)->update([
+            'dibekukan_pada' => $now,
+            'updated_at'     => $now,
+        ]);
+    }
+
+    /* =========================================================
+     * PEMERIKSAAN REFERENSI SEJARAH  (invariant 8)
+     * =======================================================*/
+
+    /**
+     * Dari sekumpulan id indikator live, mana yang sudah dirujuk data historis?
+     *
+     * Indikator yang masuk daftar ini TIDAK BOLEH di-hard-delete. Pemanggilnya
+     * (IkuModel::updateComplete) memensiunkannya sebagai gantinya.
+     *
+     * Empat sumber rujukan diperiksa:
+     *   1. arsip revisi mana pun yang menyalin indikator ini;
+     *   2. arsip revisi yang mencatatnya sebagai indikator yang DIGANTIKAN;
+     *   3. indikator live lain yang mencatatnya sebagai pendahulunya (lineage);
+     *   4. baris snapshot LAKIP yang menambatkan diri padanya.
+     *
+     * Nomor 3 penting untuk Case 14: menghapus indikator A setelah B
+     * menggantikannya akan memutus jejak A -> B, dan tren tahun-tahun
+     * sebelumnya kehilangan asal-usulnya.
+     *
+     * @param int[] $indikatorIds
+     *
+     * @return int[] id yang terbukti dirujuk sejarah
+     */
+    public function indikatorDirujukSejarah(array $indikatorIds): array
+    {
+        $indikatorIds = array_values(array_unique(array_filter(array_map('intval', $indikatorIds))));
+
+        if (empty($indikatorIds)) {
+            return [];
+        }
+
+        $dirujuk = [];
+
+        $sumber = [
+            ['iku_revisi_indikator', 'sumber_indikator_id'],
+            ['iku_revisi_indikator', 'indikator_sebelumnya_id'],
+            ['iku_indikator',        'indikator_sebelumnya_id'],
+            ['lakip_snapshot_baris', 'iku_indikator_id'],
+        ];
+
+        foreach ($sumber as [$tabel, $kolom]) {
+            // Tabel opsional: server yang belum menjalankan SQL 2026-08-18
+            // hanya kehilangan lapisan pemeriksaan ini, bukan seluruh modul.
+            if (! $this->db->tableExists($tabel)) {
+                continue;
+            }
+
+            $b = $this->db->table($tabel)->select($kolom . ' AS ref')->whereIn($kolom, $indikatorIds);
+
+            if ($tabel === 'iku_indikator') {
+                // Baris yang menunjuk dirinya sendiri bukan rujukan sejarah.
+                $b->where($kolom . ' != id', null, false);
+            }
+
+            foreach ($b->get()->getResultArray() as $r) {
+                $dirujuk[(int) $r['ref']] = true;
+            }
+        }
+
+        return array_keys($dirujuk);
+    }
+
+    /**
+     * Padanan indikatorDirujukSejarah() untuk sasaran.
+     *
+     * @param int[] $sasaranIds
+     *
+     * @return int[]
+     */
+    public function sasaranDirujukSejarah(array $sasaranIds): array
+    {
+        $sasaranIds = array_values(array_unique(array_filter(array_map('intval', $sasaranIds))));
+
+        if (empty($sasaranIds) || ! $this->db->tableExists('iku_revisi_sasaran')) {
+            return [];
+        }
+
+        $rows = $this->db->table('iku_revisi_sasaran')
+            ->select('sumber_sasaran_id AS ref')
+            ->whereIn('sumber_sasaran_id', $sasaranIds)
+            ->get()
+            ->getResultArray();
+
+        return array_values(array_unique(array_map(static fn ($r) => (int) $r['ref'], $rows)));
+    }
+
+    /**
+     * Pensiunkan indikator tanpa menghapusnya.
+     *
+     * Dipakai IkuModel saat form IKU biasa menghilangkan sebuah indikator yang
+     * ternyata sudah dirujuk sejarah.
+     *
+     * @param int[] $indikatorIds
+     */
+    public function pensiunkanIndikator(array $indikatorIds, string $alasan, ?int $berlakuSampai = null): int
+    {
+        $indikatorIds = array_values(array_unique(array_filter(array_map('intval', $indikatorIds))));
+
+        if (empty($indikatorIds)) {
+            return 0;
+        }
+
+        $isi = [
+            'dihentikan_pada'   => date('Y-m-d H:i:s'),
+            'jenis_perubahan'   => self::UBAH_DIHENTIKAN,
+            'alasan_dihentikan' => $alasan,
+            'updated_at'        => date('Y-m-d H:i:s'),
+        ];
+
+        if ($berlakuSampai !== null) {
+            $isi['berlaku_sampai'] = $berlakuSampai;
+        }
+
+        $this->db->table('iku_indikator')
+            ->whereIn('id', $indikatorIds)
+            ->where('dihentikan_pada IS NULL', null, false)
+            ->update($isi);
+
+        return count($indikatorIds);
+    }
+
+    /* =========================================================
+     * HELPER
+     * =======================================================*/
+
+    private function sisipkanKepala(array $isi): int
+    {
+        $isi['created_at'] = $isi['created_at'] ?? date('Y-m-d H:i:s');
+        $isi['updated_at'] = $isi['updated_at'] ?? date('Y-m-d H:i:s');
+
+        // opd_key & berlaku_key adalah generated column — jangan pernah dikirim.
+        unset($isi['opd_key'], $isi['berlaku_key']);
+
+        $this->db->table('iku_revisi')->insert($isi);
+
+        return (int) $this->db->insertID();
+    }
+
+    private function nomorBerikutnya(?int $opdId, int $tahunMulai, int $tahunAkhir): int
+    {
+        $row = $this->db->table('iku_revisi')
+            ->selectMax('nomor', 'maks')
+            ->where('opd_key', $opdId === null ? 0 : $opdId)
+            ->where('tahun_mulai', $tahunMulai)
+            ->where('tahun_akhir', $tahunAkhir)
+            ->get()
+            ->getRowArray();
+
+        return ((int) ($row['maks'] ?? 0)) + 1;
+    }
+
+    /** @return array<int, array<int, array<string, mixed>>> [id arsip indikator => [tahun => baris]] */
+    private function petaTargetRevisi(array $indikatorIds): array
+    {
+        if (empty($indikatorIds)) {
+            return [];
+        }
+
+        $rows = $this->db->table('iku_revisi_target')
+            ->whereIn('revisi_indikator_id', $indikatorIds)
+            ->orderBy('tahun', 'ASC')
+            ->get()
+            ->getResultArray();
+
+        $peta = [];
+        foreach ($rows as $r) {
+            $peta[(int) $r['revisi_indikator_id']][(int) $r['tahun']] = $r;
+        }
+
+        return $peta;
+    }
+
+    /** @return array<int, array<int, array<string, mixed>>> */
+    private function petaProgramRevisi(array $indikatorIds): array
+    {
+        if (empty($indikatorIds)) {
+            return [];
+        }
+
+        $rows = $this->db->table('iku_revisi_program')
+            ->whereIn('revisi_indikator_id', $indikatorIds)
+            ->orderBy('urutan', 'ASC')
+            ->get()
+            ->getResultArray();
+
+        $peta = [];
+        foreach ($rows as $r) {
+            $peta[(int) $r['revisi_indikator_id']][] = $r;
+        }
+
+        return $peta;
+    }
+
+    private function kosongJadiNull($nilai): ?string
+    {
+        if ($nilai === null) {
+            return null;
+        }
+
+        $nilai = trim((string) $nilai);
+
+        return $nilai === '' ? null : $nilai;
+    }
+}

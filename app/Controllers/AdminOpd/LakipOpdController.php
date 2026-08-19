@@ -4,7 +4,11 @@ namespace App\Controllers\AdminOpd;
 
 use App\Controllers\BaseController;
 use App\Controllers\Concerns\LakipAddendumTrait;
+<<<<<<< HEAD
 use App\Controllers\Concerns\LakipSnapshotTrait;
+=======
+use App\Controllers\Concerns\LakipBenchmarkTrait;
+>>>>>>> a5e7a22d2d6e4f84aba10b8ce008e80fac05e4d0
 use App\Models\LakipModel;
 use App\Models\Opd\RenstraModel;
 use App\Models\OpdModel;
@@ -15,8 +19,13 @@ class LakipOpdController extends BaseController
     /** Analisis Faktor + Efisiensi Program (dua tabel di bawah tabel utama). */
     use LakipAddendumTrait;
 
+<<<<<<< HEAD
     /** Snapshot tahunan + kunci tahun + penyesuaian kebijakan. */
     use LakipSnapshotTrait;
+=======
+    /** Chart perbandingan Provinsi Lampung & Nasional (di atas Analisis Faktor). */
+    use LakipBenchmarkTrait;
+>>>>>>> a5e7a22d2d6e4f84aba10b8ce008e80fac05e4d0
 
     protected $lakipModel;
     protected $renstraModel;
@@ -230,6 +239,7 @@ class LakipOpdController extends BaseController
         // kalau admin_kab memilih mode OPD tanpa memilih OPD-nya.
         $rows  = $rows ?? [];
         $scope = $this->lakipScope((string) $tahun, $mode);
+<<<<<<< HEAD
 
         [$rows, $dataSource, $lakipMap, $sumber] = $this->sumberLakipOpd(
             $scope,
@@ -244,6 +254,9 @@ class LakipOpdController extends BaseController
         $data['lakipMap']   = $lakipMap;
 
         $data = array_merge($data, $this->addendumLakip($scope, $sumber), $this->dataSnapshot($scope, $sumber), [
+=======
+        $data  = array_merge($data, $this->lakipAddendumData($scope), $this->lakipBenchmarkData($scope, $rows, $lakipMap), [
+>>>>>>> a5e7a22d2d6e4f84aba10b8ce008e80fac05e4d0
             'indikatorRows' => $rows,
             'addendumBase'  => $this->lakipBaseUrl(),
             // Tahun terkunci: tombol pengubah pada tabel utama ikut padam.

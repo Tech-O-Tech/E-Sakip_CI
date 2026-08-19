@@ -4,11 +4,8 @@ namespace App\Controllers\AdminKab;
 
 use App\Controllers\BaseController;
 use App\Controllers\Concerns\LakipAddendumTrait;
-<<<<<<< HEAD
-use App\Controllers\Concerns\LakipSnapshotTrait;
-=======
 use App\Controllers\Concerns\LakipBenchmarkTrait;
->>>>>>> a5e7a22d2d6e4f84aba10b8ce008e80fac05e4d0
+use App\Controllers\Concerns\LakipSnapshotTrait;
 use App\Models\LakipModel;
 use App\Models\OpdModel;
 
@@ -17,13 +14,11 @@ class LakipController extends BaseController
     /** Analisis Faktor + Efisiensi Program (dua tabel di bawah tabel utama). */
     use LakipAddendumTrait;
 
-<<<<<<< HEAD
-    /** Snapshot tahunan + kunci tahun + penyesuaian kebijakan. */
-    use LakipSnapshotTrait;
-=======
     /** Chart perbandingan Provinsi Lampung & Nasional (di atas Analisis Faktor). */
     use LakipBenchmarkTrait;
->>>>>>> a5e7a22d2d6e4f84aba10b8ce008e80fac05e4d0
+
+    /** Snapshot tahunan + kunci tahun + penyesuaian kebijakan. */
+    use LakipSnapshotTrait;
 
     protected $lakipModel;
     protected $opdModel;
@@ -101,20 +96,19 @@ class LakipController extends BaseController
         // tahun + lingkup yang sama dengan tabel utama.
         $scope = $this->lakipScope((string) $tahun, $mode);
 
-<<<<<<< HEAD
         // Tahun yang sudah difinalkan dibaca dari arsip beku, bukan dari query
         // hidup. Bentuk $rows/$lakipMap-nya identik sehingga view tidak berubah.
         $sumber   = $this->sumberLakip($scope, (string) $status, ['rows' => $rows, 'lakipMap' => $lakipMap]);
         $rows     = $sumber['rows'];
         $lakipMap = $sumber['lakipMap'];
 
+        // Chart benchmark memakai $rows/$lakipMap SESUDAH snapshot dipakai,
+        // supaya angka pada chart selalu sama dengan tabel di atasnya.
         return view('adminKabupaten/lakip/lakip', array_merge(
             $this->addendumLakip($scope, $sumber),
+            $this->lakipBenchmarkData($scope, $rows, $lakipMap),
             $this->dataSnapshot($scope, $sumber),
             [
-=======
-        return view('adminKabupaten/lakip/lakip', array_merge($this->lakipAddendumData($scope), $this->lakipBenchmarkData($scope, $rows, $lakipMap), [
->>>>>>> a5e7a22d2d6e4f84aba10b8ce008e80fac05e4d0
             'title' => 'LAKIP - Admin Kabupaten',
             'role' => $role,
             'mode' => $mode,

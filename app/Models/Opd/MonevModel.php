@@ -615,13 +615,31 @@ class MonevModel extends Model
      * REALISASI ANGGARAN (tabel monev_anggaran)
      *
      * Pagu anggarannya ikut Perjanjian Kinerja (pk_program -> program_pk);
-     * yang disimpan di sini hanya realisasinya, 1 baris per target_rencana.
+     * yang disimpan di sini hanya realisasinya.
+     *
+     * Sejak db/update_2026-08-19_monev_anggaran_per_unit.sql realisasi dirinci
+     * PER UNIT anggaran, jadi satu target_rencana boleh punya BEBERAPA baris —
+     * satu untuk tiap unit, dibedakan oleh:
+     *
+     *   ref_level : 'program' | 'kegiatan' | 'subkegiatan' | NULL
+     *   ref_id    : id tabel MASTER (program_pk / kegiatan_pk / sub_kegiatan_pk)
+     *   ref_key   : generated column "{ref_level}:{ref_id}" -> kunci unit
+     *
+     * Baris produksi lama belum dirinci: ref_level & ref_id NULL sehingga
+     * ref_key-nya ':0'. Di sepanjang kode baris itu disebut baris "WARISAN".
      * ========================================================*/
 
+    /** Kunci ref_key untuk baris warisan (ref_level & ref_id masih NULL). */
+    public const REF_KEY_WARISAN = ':0';
+
     /**
+     * Realisasi anggaran seluruh rencana aksi, dikelompokkan per unit.
+     *
      * @param int[] $targetIds
      *
-     * @return array<int, array<string, mixed>> [target_rencana_id => baris realisasi]
+     * @return array<int, array<string, array<string, mixed>>>
+     *         [target_rencana_id => [ref_key => baris realisasi]];
+     *         baris warisan menempati ref_key ':0'
      */
     public function getAnggaranForTargets(array $targetIds): array
     {
@@ -631,7 +649,7 @@ class MonevModel extends Model
         }
 
         $rows = $this->db->table('monev_anggaran')
-            ->select('id, target_rencana_id, opd_id,
+            ->select('id, target_rencana_id, opd_id, ref_level, ref_id, ref_key, updated_at,
                       realisasi_triwulan_1, realisasi_triwulan_2, realisasi_triwulan_3, realisasi_triwulan_4')
             ->whereIn('target_rencana_id', $targetIds)
             ->get()
@@ -639,27 +657,61 @@ class MonevModel extends Model
 
         $map = [];
         foreach ($rows as $row) {
-            $map[(int) $row['target_rencana_id']] = $row;
+            // ref_key dihitung basis data; disusun ulang hanya bila kosong.
+            $key = (string) ($row['ref_key'] ?? '');
+            if ($key === '') {
+                $key = ((string) ($row['ref_level'] ?? '')) . ':' . ((int) ($row['ref_id'] ?? 0));
+            }
+
+            $map[(int) $row['target_rencana_id']][$key] = $row;
         }
 
         return $map;
     }
 
-    public function findAnggaran(int $targetRencanaId): ?array
+    /**
+     * Satu baris realisasi milik satu unit.
+     *
+     * Tanpa $refLevel/$refId (atau bila salah satunya null) yang dicari adalah
+     * baris WARISAN — persis perilaku lama, supaya pemanggil yang belum dirinci
+     * per unit tetap menemukan barisnya.
+     */
+    public function findAnggaran(int $targetRencanaId, ?string $refLevel = null, ?int $refId = null): ?array
     {
-        return $this->db->table('monev_anggaran')
-            ->where('target_rencana_id', $targetRencanaId)
-            ->get()
-            ->getRowArray() ?: null;
+        $builder = $this->db->table('monev_anggaran')
+            ->where('target_rencana_id', $targetRencanaId);
+
+        if ($refLevel !== null && $refId !== null) {
+            $builder->where('ref_level', $refLevel)->where('ref_id', $refId);
+        } else {
+            $builder->where('ref_level IS NULL', null, false)
+                    ->where('ref_id IS NULL', null, false);
+        }
+
+        return $builder->get()->getRowArray() ?: null;
     }
 
     /**
-     * Upsert realisasi anggaran satu rencana aksi.
+     * Upsert realisasi anggaran satu unit pada satu rencana aksi.
+     *
+     * $refLevel & $refId sengaja diletakkan DI BELAKANG supaya pemanggil lama
+     * (yang belum merinci per unit) tetap sah dan tetap mengenai baris warisan.
+     *
+     * `ref_key` tidak pernah ditulis: ia generated column, MySQL yang mengisi.
      *
      * @param array<int, float|null> $realisasi [1..4 => nilai rupiah, null = belum diisi]
+     * @param string|null            $refLevel  'program'|'kegiatan'|'subkegiatan'; null = baris warisan
+     * @param int|null               $refId     id tabel MASTER unit terkait
      */
-    public function upsertAnggaran(int $targetRencanaId, ?int $opdId, array $realisasi): void
-    {
+    public function upsertAnggaran(
+        int $targetRencanaId,
+        ?int $opdId,
+        array $realisasi,
+        ?string $refLevel = null,
+        ?int $refId = null
+    ): void {
+        $perUnit = ($refLevel !== null && $refId !== null);
+
         $data = [
             'opd_id'               => $opdId,
             'realisasi_triwulan_1' => $realisasi[1] ?? null,
@@ -669,7 +721,7 @@ class MonevModel extends Model
             'updated_at'           => date('Y-m-d H:i:s'),
         ];
 
-        $row = $this->findAnggaran($targetRencanaId);
+        $row = $this->findAnggaran($targetRencanaId, $refLevel, $refId);
 
         if ($row) {
             $this->db->table('monev_anggaran')->where('id', $row['id'])->update($data);
@@ -678,6 +730,8 @@ class MonevModel extends Model
 
         $this->db->table('monev_anggaran')->insert($data + [
             'target_rencana_id' => $targetRencanaId,
+            'ref_level'         => $perUnit ? $refLevel : null,
+            'ref_id'            => $perUnit ? $refId : null,
             'created_at'        => date('Y-m-d H:i:s'),
         ]);
     }

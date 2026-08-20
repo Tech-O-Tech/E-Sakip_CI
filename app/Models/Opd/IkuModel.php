@@ -126,6 +126,13 @@ class IkuModel extends Model
         $akhir  = $opt['tahun_akhir'] ?? null;
         $status = $opt['status'] ?? null;
 
+        // Baris yang dipensiunkan revisi IKU disembunyikan dari "versi yang
+        // sedang berlaku". Ini TIDAK mengubah perilaku lama: `dihentikan_pada`
+        // selalu NULL selama fitur revisi belum dipakai, jadi kondisi ini
+        // tidak menyaring apa pun pada data yang sudah ada.
+        // Kirim 'sertakan_dihentikan' => true untuk melihat riwayat lengkap.
+        $sertakanPensiun = ! empty($opt['sertakan_dihentikan']);
+
         $builder = $this->db->table('iku_sasaran sas')
             ->select('sas.id, sas.opd_id, sas.sasaran, sas.tahun_mulai, sas.tahun_akhir, sas.urutan, o.nama_opd')
             ->join('opd o', 'o.id = sas.opd_id', 'left')
@@ -133,6 +140,10 @@ class IkuModel extends Model
             ->orderBy('o.nama_opd', 'ASC')
             ->orderBy('sas.urutan', 'ASC')
             ->orderBy('sas.id', 'ASC');
+
+        if (! $sertakanPensiun && $this->punyaKolomPensiun('iku_sasaran')) {
+            $builder->where('sas.dihentikan_pada IS NULL', null, false);
+        }
 
         $this->applyScope($builder, $level, $opdId, 'sas.');
 
@@ -160,6 +171,10 @@ class IkuModel extends Model
 
         if ($status !== null && $status !== '') {
             $indikatorBuilder->where('ind.status', $status);
+        }
+
+        if (! $sertakanPensiun && $this->punyaKolomPensiun('iku_indikator')) {
+            $indikatorBuilder->where('ind.dihentikan_pada IS NULL', null, false);
         }
 
         $indikatorRows = $indikatorBuilder->get()->getResultArray();
@@ -640,11 +655,19 @@ class IkuModel extends Model
             return [];
         }
 
-        $indikatorRows = $this->db->table('iku_indikator')
+        // Indikator yang sudah dipensiunkan SENGAJA tidak dihitung "sudah
+        // terpasang". Kalau ikut dihitung, indikator yang pernah dihentikan
+        // akan memblokir impor ulang indikator bernama sama dari RPJMD/Renstra
+        // selamanya — padahal menghidupkannya kembali justru hal yang wajar.
+        $indikatorBuilder = $this->db->table('iku_indikator')
             ->select('id, iku_sasaran_id, indikator')
-            ->whereIn('iku_sasaran_id', array_column($sasaranRows, 'id'))
-            ->get()
-            ->getResultArray();
+            ->whereIn('iku_sasaran_id', array_column($sasaranRows, 'id'));
+
+        if ($this->punyaKolomPensiun('iku_indikator')) {
+            $indikatorBuilder->where('dihentikan_pada IS NULL', null, false);
+        }
+
+        $indikatorRows = $indikatorBuilder->get()->getResultArray();
 
         $indikatorPerSasaran = [];
         foreach ($indikatorRows as $ind) {
@@ -795,7 +818,17 @@ class IkuModel extends Model
 
             $idDihapus = array_diff($idLama, $idDipakai);
             if (!empty($idDihapus)) {
-                $db->table('iku_indikator')->whereIn('id', $idDihapus)->delete();
+                // Dulu baris ini langsung DELETE, dan target + program ikut
+                // musnah lewat FK ON DELETE CASCADE. Itulah tempat sejarah IKU
+                // selama ini rusak: mengosongkan satu textarea di form sudah
+                // cukup untuk menghapus permanen indikator beserta seluruh
+                // target tahunannya.
+                //
+                // Sekarang indikator yang sudah dirujuk sejarah (arsip revisi,
+                // lineage penggantian, atau baris snapshot LAKIP) hanya
+                // DIPENSIUNKAN. Yang belum pernah dirujuk tetap boleh dihapus
+                // supaya salah ketik biasa masih bisa dibereskan (invariant 8).
+                $this->hapusAtauPensiunkanIndikator(array_values($idDihapus));
             }
 
             if ($db->transStatus() === false) {
@@ -811,16 +844,98 @@ class IkuModel extends Model
         }
     }
 
-    /** Hapus satu sasaran IKU (indikator/target/program ikut lewat FK CASCADE). */
+    /**
+     * Hapus satu sasaran IKU — ATAU pensiunkan, bila sudah dirujuk sejarah.
+     *
+     * Sasaran yang pernah masuk arsip revisi, atau yang salah satu indikatornya
+     * pernah dirujuk revisi/snapshot LAKIP, TIDAK boleh hilang: menghapusnya
+     * akan menyeret indikator, target, dan program di bawahnya lewat FK
+     * ON DELETE CASCADE, dan dokumen tahun-tahun lampau kehilangan asal-usulnya
+     * (invariant 8).
+     *
+     * Sasaran yang belum pernah dirujuk tetap dihapus seperti biasa, supaya
+     * kesalahan input yang baru dibuat masih bisa dibereskan.
+     */
     public function deleteComplete(int $sasaranId): bool
     {
-        return (bool) $this->db->table('iku_sasaran')->where('id', $sasaranId)->delete();
+        $sasaranId = (int) $sasaranId;
+        if ($sasaranId <= 0) {
+            return false;
+        }
+
+        $revisi = $this->revisi();
+
+        $indikatorIds = array_map('intval', array_column(
+            $this->db->table('iku_indikator')->select('id')
+                ->where('iku_sasaran_id', $sasaranId)->get()->getResultArray(),
+            'id'
+        ));
+
+        $sasaranDirujuk   = ! empty($revisi->sasaranDirujukSejarah([$sasaranId]));
+        $indikatorDirujuk = $revisi->indikatorDirujukSejarah($indikatorIds);
+
+        if (! $sasaranDirujuk && empty($indikatorDirujuk)) {
+            return (bool) $this->db->table('iku_sasaran')->where('id', $sasaranId)->delete();
+        }
+
+        $now    = date('Y-m-d H:i:s');
+        $alasan = 'Dihapus dari daftar IKU berjalan, tetapi tetap disimpan karena sudah dirujuk dokumen/laporan terdahulu.';
+
+        $this->db->table('iku_sasaran')->where('id', $sasaranId)->update([
+            'dihentikan_pada'   => $now,
+            'alasan_dihentikan' => $alasan,
+            'updated_at'        => $now,
+        ]);
+
+        if (! empty($indikatorIds)) {
+            $revisi->pensiunkanIndikator($indikatorIds, $alasan);
+        }
+
+        return true;
     }
 
-    /** Hapus satu indikator IKU saja. */
+    /** Hapus satu indikator IKU saja — atau pensiunkan bila sudah dirujuk sejarah. */
     public function deleteIndikator(int $indikatorId): bool
     {
-        return (bool) $this->db->table('iku_indikator')->where('id', $indikatorId)->delete();
+        $indikatorId = (int) $indikatorId;
+        if ($indikatorId <= 0) {
+            return false;
+        }
+
+        return $this->hapusAtauPensiunkanIndikator([$indikatorId]) >= 0;
+    }
+
+    /**
+     * Bagi sekumpulan indikator menjadi "boleh dihapus" dan "harus dipensiunkan".
+     *
+     * @param int[] $indikatorIds
+     *
+     * @return int jumlah yang dipensiunkan (sisanya dihapus)
+     */
+    private function hapusAtauPensiunkanIndikator(array $indikatorIds): int
+    {
+        $indikatorIds = array_values(array_unique(array_filter(array_map('intval', $indikatorIds))));
+
+        if (empty($indikatorIds)) {
+            return 0;
+        }
+
+        $revisi  = $this->revisi();
+        $dirujuk = $revisi->indikatorDirujukSejarah($indikatorIds);
+        $bebas   = array_values(array_diff($indikatorIds, $dirujuk));
+
+        if (! empty($dirujuk)) {
+            $revisi->pensiunkanIndikator(
+                $dirujuk,
+                'Dihapus dari daftar IKU berjalan, tetapi tetap disimpan karena sudah dirujuk dokumen/laporan terdahulu.'
+            );
+        }
+
+        if (! empty($bebas)) {
+            $this->db->table('iku_indikator')->whereIn('id', $bebas)->delete();
+        }
+
+        return count($dirujuk);
     }
 
     /**
@@ -862,6 +977,38 @@ class IkuModel extends Model
     /* =========================================================
      * HELPER PRIVAT
      * =======================================================*/
+
+    /** @var IkuRevisiModel|null dibuat seperlunya, bukan di konstruktor */
+    private ?IkuRevisiModel $revisiModel = null;
+
+    private function revisi(): IkuRevisiModel
+    {
+        return $this->revisiModel ??= new IkuRevisiModel();
+    }
+
+    /**
+     * Kolom `dihentikan_pada` sudah terpasang atau belum.
+     *
+     * Modul IKU harus tetap jalan di server yang belum menjalankan
+     * db/update_2026-08-18_iku_revisi_lakip_snapshot.sql — di sana fitur
+     * pensiun sekadar tidak aktif, bukan membuat halaman IKU mati total.
+     *
+     * Hasilnya di-cache per-request karena dipanggil di jalur baca panas.
+     */
+    private function punyaKolomPensiun(string $tabel): bool
+    {
+        static $cache = [];
+
+        if (isset($cache[$tabel])) {
+            return $cache[$tabel];
+        }
+
+        try {
+            return $cache[$tabel] = in_array('dihentikan_pada', $this->db->getFieldNames($tabel), true);
+        } catch (Throwable $e) {
+            return $cache[$tabel] = false;
+        }
+    }
 
     /**
      * Batasi builder ke lingkup pemilik data.

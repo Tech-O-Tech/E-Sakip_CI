@@ -128,6 +128,18 @@ $routes->group(
         $routes->post('lakip/analisis/delete/(:num)', 'AdminKab\LakipController::analisisDelete/$1');
         $routes->post('lakip/efisiensi/save', 'AdminKab\LakipController::efisiensiSave');
         $routes->post('lakip/efisiensi/delete/(:num)', 'AdminKab\LakipController::efisiensiDelete/$1');
+        // Snapshot tahunan LAKIP + kunci tahun + penyesuaian kebijakan.
+        // Semua pengubah data lewat POST; lingkup (tahun/mode/opd) ikut di body
+        // dan diverifikasi ulang di server (LakipSnapshotTrait).
+        // Tidak ada rute "buka kunci" — LAKIP final hanya boleh dikoreksi lewat
+        // penyesuaian yang tercatat (invariant 6).
+        $routes->get('lakip/snapshot/bandingkan', 'AdminKab\LakipController::snapshotBandingkan');
+        $routes->post('lakip/snapshot/siapkan', 'AdminKab\LakipController::snapshotSiapkan');
+        $routes->post('lakip/snapshot/sinkronkan', 'AdminKab\LakipController::snapshotSinkronkan');
+        $routes->post('lakip/snapshot/finalkan', 'AdminKab\LakipController::snapshotFinalkan');
+        $routes->post('lakip/penyesuaian/save', 'AdminKab\LakipController::penyesuaianSave');
+        $routes->post('lakip/penyesuaian/usul-revisi/(:num)', 'AdminKab\LakipController::penyesuaianUsulRevisi/$1');
+        $routes->post('lakip/penyesuaian/cabut/(:num)', 'AdminKab\LakipController::penyesuaianCabut/$1');
 
         // Benchmark Provinsi Lampung & Nasional (chart perbandingan LAKIP).
         // Izin tulisnya TIDAK memakai lakip_kab.* melainkan
@@ -148,6 +160,16 @@ $routes->group(
         $routes->match(['get', 'post', 'delete'], 'iku/delete/(:num)', 'AdminKab\IkuController::delete/$1');
         // ubah status per INDIKATOR IKU
         $routes->post('iku/change_status/(:num)', 'AdminKab\IkuController::change_status/$1');
+        // REVISI IKU (versi dokumen). Draft tidak pernah menyentuh IKU berjalan;
+        // perubahan baru berlaku setelah disahkan.
+        $routes->get('iku/revisi', 'AdminKab\IkuController::revisiIndex');
+        $routes->get('iku/revisi/buat', 'AdminKab\IkuController::revisiBuat');
+        $routes->post('iku/revisi/simpan', 'AdminKab\IkuController::revisiSimpan');
+        $routes->get('iku/revisi/lihat/(:num)', 'AdminKab\IkuController::revisiLihat/$1');
+        $routes->get('iku/revisi/sunting/(:num)', 'AdminKab\IkuController::revisiSunting/$1');
+        $routes->post('iku/revisi/sunting/(:num)', 'AdminKab\IkuController::revisiSuntingSimpan/$1');
+        $routes->post('iku/revisi/sahkan/(:num)', 'AdminKab\IkuController::revisiSahkan/$1');
+        $routes->post('iku/revisi/batalkan/(:num)', 'AdminKab\IkuController::revisiBatalkan/$1');
 
         // Catatan: seluruh rute Pegawai (kelola + sinkron SIMPEG/SIKASN) dipindah
         // ke grup khusus super admin (auth:admin) di bawah.
@@ -216,10 +238,13 @@ $routes->group(
         $routes->post('renaksi_pk/(:any)/update/(:num)', 'AdminOpd\PkRenaksiController::update/$1/$2');
         $routes->get('renaksi_pk/(:any)', 'AdminOpd\PkRenaksiController::index/$1');
         $routes->get('monev_pk/(:any)/input/(:num)', 'AdminOpd\PkRenaksiController::monevForm/$1/$2');
-        $routes->post('monev_pk/(:any)/save', 'AdminOpd\PkRenaksiController::monevSave/$1');
-        // realisasi anggaran per triwulan (tombol aksi tersendiri di MONEV)
+        // Realisasi anggaran per triwulan (tombol aksi tersendiri di MONEV).
+        // WAJIB didaftarkan SEBELUM 'monev_pk/(:any)/save': (:any) dikompilasi jadi (.*)
+        // yang rakus dan ikut menelan garis miring, sehingga 'es3/anggaran/save' akan
+        // tertelan rute save biasa sebagai jenis 'es3/anggaran' kalau urutannya terbalik.
         $routes->get('monev_pk/(:any)/anggaran/(:num)', 'AdminOpd\PkRenaksiController::monevAnggaranForm/$1/$2');
         $routes->post('monev_pk/(:any)/anggaran/save', 'AdminOpd\PkRenaksiController::monevAnggaranSave/$1');
+        $routes->post('monev_pk/(:any)/save', 'AdminOpd\PkRenaksiController::monevSave/$1');
         $routes->get('monev_pk/(:any)/cetak', 'AdminOpd\PkRenaksiController::cetak/$1');
         $routes->get('monev_pk/(:any)', 'AdminOpd\PkRenaksiController::monev/$1');
 
@@ -379,6 +404,15 @@ $routes->group('adminopd', ['filter' => 'auth:admin_opd,admin,admin_kecamatan'],
     $routes->match(['get', 'post', 'delete'], 'iku/delete/(:num)', 'AdminOpd\IkuController::delete/$1');
     // ubah status per INDIKATOR IKU
     $routes->post('iku/change_status/(:num)', 'AdminOpd\IkuController::change_status/$1');
+    // REVISI IKU (versi dokumen) — lingkup OPD sendiri, diambil dari session.
+    $routes->get('iku/revisi', 'AdminOpd\IkuController::revisiIndex');
+    $routes->get('iku/revisi/buat', 'AdminOpd\IkuController::revisiBuat');
+    $routes->post('iku/revisi/simpan', 'AdminOpd\IkuController::revisiSimpan');
+    $routes->get('iku/revisi/lihat/(:num)', 'AdminOpd\IkuController::revisiLihat/$1');
+    $routes->get('iku/revisi/sunting/(:num)', 'AdminOpd\IkuController::revisiSunting/$1');
+    $routes->post('iku/revisi/sunting/(:num)', 'AdminOpd\IkuController::revisiSuntingSimpan/$1');
+    $routes->post('iku/revisi/sahkan/(:num)', 'AdminOpd\IkuController::revisiSahkan/$1');
+    $routes->post('iku/revisi/batalkan/(:num)', 'AdminOpd\IkuController::revisiBatalkan/$1');
 
 
     // target
@@ -414,6 +448,12 @@ $routes->group('adminopd', ['filter' => 'auth:admin_opd,admin,admin_kecamatan'],
     $routes->post('renaksi_pk/(:any)/update/(:num)', 'AdminOpd\PkRenaksiController::update/$1/$2');
     $routes->get('renaksi_pk/(:any)', 'AdminOpd\PkRenaksiController::index/$1');
     $routes->get('monev_pk/(:any)/input/(:num)', 'AdminOpd\PkRenaksiController::monevForm/$1/$2');
+    // Realisasi anggaran per triwulan (tombol aksi tersendiri di MONEV).
+    // WAJIB didaftarkan SEBELUM 'monev_pk/(:any)/save': (:any) dikompilasi jadi (.*)
+    // yang rakus dan ikut menelan garis miring, sehingga 'es3/anggaran/save' akan
+    // tertelan rute save biasa sebagai jenis 'es3/anggaran' kalau urutannya terbalik.
+    $routes->get('monev_pk/(:any)/anggaran/(:num)', 'AdminOpd\PkRenaksiController::monevAnggaranForm/$1/$2');
+    $routes->post('monev_pk/(:any)/anggaran/save', 'AdminOpd\PkRenaksiController::monevAnggaranSave/$1');
     $routes->post('monev_pk/(:any)/save', 'AdminOpd\PkRenaksiController::monevSave/$1');
     $routes->get('monev_pk/(:any)/cetak', 'AdminOpd\PkRenaksiController::cetak/$1');
     $routes->get('monev_pk/(:any)', 'AdminOpd\PkRenaksiController::monev/$1');
@@ -440,6 +480,14 @@ $routes->group('adminopd', ['filter' => 'auth:admin_opd,admin,admin_kecamatan'],
     $routes->post('lakip/analisis/delete/(:num)', 'AdminOpd\LakipOpdController::analisisDelete/$1');
     $routes->post('lakip/efisiensi/save', 'AdminOpd\LakipOpdController::efisiensiSave');
     $routes->post('lakip/efisiensi/delete/(:num)', 'AdminOpd\LakipOpdController::efisiensiDelete/$1');
+    // Snapshot tahunan LAKIP + kunci tahun + penyesuaian kebijakan.
+    $routes->get('lakip/snapshot/bandingkan', 'AdminOpd\LakipOpdController::snapshotBandingkan');
+    $routes->post('lakip/snapshot/siapkan', 'AdminOpd\LakipOpdController::snapshotSiapkan');
+    $routes->post('lakip/snapshot/sinkronkan', 'AdminOpd\LakipOpdController::snapshotSinkronkan');
+    $routes->post('lakip/snapshot/finalkan', 'AdminOpd\LakipOpdController::snapshotFinalkan');
+    $routes->post('lakip/penyesuaian/save', 'AdminOpd\LakipOpdController::penyesuaianSave');
+    $routes->post('lakip/penyesuaian/usul-revisi/(:num)', 'AdminOpd\LakipOpdController::penyesuaianUsulRevisi/$1');
+    $routes->post('lakip/penyesuaian/cabut/(:num)', 'AdminOpd\LakipOpdController::penyesuaianCabut/$1');
 
     // Benchmark Provinsi/Nasional. Rute disediakan agar admin_kab yang membuka
     // LAKIP lewat area OPD tetap bisa menyimpan; role OPD sendiri ditolak

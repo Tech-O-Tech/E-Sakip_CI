@@ -249,63 +249,267 @@ class TargetModel extends Model
     }
 
     /* ==========================================================
-     * PROGRAM & ANGGARAN DARI PK
+     * UNIT ANGGARAN DARI PK (Program / Kegiatan / Sub Kegiatan)
      *
-     * Rantainya: pk_indikator -> pk_program (pk_indikator_id) -> program_pk.
-     * Satu indikator PK bisa menopang beberapa program, jadi datanya diambil
+     * "Unit" = satuan anggaran yang tampil di kolom yang dulu bernama
+     * "Program". Tingkatnya TIDAK seragam, melainkan mengikuti pk.jenis MENTAH
+     * (lihat app/Helpers/pk_unit_helper.php):
+     *
+     *   bupati | jpt | camat | kecamatan -> 'program'     (program_pk)
+     *   administrator                    -> 'kegiatan'    (kegiatan_pk)
+     *   pengawas                         -> 'subkegiatan' (sub_kegiatan_pk)
+     *
+     * Rantai tautannya:
+     *   pk_indikator -> pk_program     (pk_indikator_id) -> program_pk
+     *                -> pk_kegiatan    (pk_program_id)   -> kegiatan_pk
+     *                -> pk_subkegiatan (pk_kegiatan_id)  -> sub_kegiatan_pk
+     *
+     * Satu indikator PK bisa menopang beberapa unit, jadi datanya diambil
      * TERPISAH (bukan di-join ke query daftar) supaya baris indikator tidak
      * berlipat ganda gara-gara join 1-ke-banyak.
      * ========================================================*/
 
     /**
+     * Daftar unit anggaran per indikator PK, sesuai tingkat jenis PK-nya.
+     *
+     * Kalau tingkat aslinya kosong, turun tingkat (subkegiatan -> kegiatan ->
+     * program) dan baris hasilnya ditandai 'fallback' => true, supaya kolom
+     * unit tidak pernah menganga kosong hanya karena OPD belum merinci
+     * anggarannya sampai tingkat tersebut.
+     *
      * @param int[] $pkIndikatorIds
      *
-     * @return array<int, array<int, array{kode: string|null, program: string, anggaran: float, tahun: string|null}>>
+     * @return array<int, array<int, array{kode: string|null, nama: string, program: string,
+     *                                     anggaran: float, tahun: string|null, level: string,
+     *                                     level_label: string, ref_id: int, ref_key: string,
+     *                                     fallback: bool}>>
      */
-    public function getProgramPkByIndikator(array $pkIndikatorIds): array
+    public function getUnitPkByIndikator(array $pkIndikatorIds): array
     {
-        $pkIndikatorIds = array_values(array_unique(array_filter(array_map('intval', $pkIndikatorIds))));
+        helper('pk_unit');
+
+        $pkIndikatorIds = $this->bersihkanIdIndikator($pkIndikatorIds);
         if (empty($pkIndikatorIds)) {
             return [];
         }
 
-        $rows = $this->db->table('pk_program pp')
-            ->select('
-                pp.pk_indikator_id,
-                pr.id            AS program_pk_id,
-                pr.kode_program,
-                pr.program_kegiatan,
-                pr.anggaran,
-                pr.tahun_anggaran
-            ')
-            ->join('program_pk pr', 'pr.id = pp.program_id')
-            ->whereIn('pp.pk_indikator_id', $pkIndikatorIds)
-            ->orderBy('pp.pk_indikator_id', 'ASC')
-            ->orderBy('pr.kode_program', 'ASC')
-            ->orderBy('pr.id', 'ASC')
+        // --- (a) jenis PK tiap indikator ------------------------------
+        // pk_indikator memang punya kolom `jenis` sendiri, tetapi sumber
+        // kebenarannya tetap `pk.jenis`; kolom di indikator hanya jadi cadangan
+        // kalau rantai ke tabel pk putus.
+        $barisJenis = $this->db->table('pk_indikator pi')
+            ->select('pi.id AS pk_indikator_id, COALESCE(pk.jenis, pi.jenis) AS pk_jenis', false)
+            ->join('pk_sasaran ps', 'ps.id = pi.pk_sasaran_id', 'left')
+            ->join('pk', 'pk.id = ps.pk_id', 'left')
+            ->whereIn('pi.id', $pkIndikatorIds)
             ->get()
             ->getResultArray();
 
+        // --- (b) tingkat unit tiap indikator --------------------------
+        $levelIndikator = [];
+        foreach ($barisJenis as $baris) {
+            $levelIndikator[(int) $baris['pk_indikator_id']] = pk_unit_level($baris['pk_jenis']);
+        }
+        foreach ($pkIndikatorIds as $id) {
+            // Indikator yang tidak ketemu diperlakukan sebagai 'program'.
+            $levelIndikator[$id] ??= pk_unit_level(null);
+        }
+
+        // --- (c) tiga query batch, bukan N+1 --------------------------
+        // Tingkat 'program' diambil untuk SEMUA indikator karena ia juga
+        // menjadi tujuan terakhir fallback; dua tingkat lain hanya untuk
+        // indikator yang memang membutuhkannya.
+        $idPerLevel = ['program' => $pkIndikatorIds, 'kegiatan' => [], 'subkegiatan' => []];
+        foreach ($pkIndikatorIds as $id) {
+            if ($levelIndikator[$id] === 'subkegiatan') {
+                $idPerLevel['subkegiatan'][] = $id;
+                $idPerLevel['kegiatan'][]    = $id; // tujuan fallback pertama
+            } elseif ($levelIndikator[$id] === 'kegiatan') {
+                $idPerLevel['kegiatan'][] = $id;
+            }
+        }
+
+        $unitPerLevel = [
+            'program'     => $this->ambilUnitPerLevel('program', $idPerLevel['program']),
+            'kegiatan'    => $this->ambilUnitPerLevel('kegiatan', $idPerLevel['kegiatan']),
+            'subkegiatan' => $this->ambilUnitPerLevel('subkegiatan', $idPerLevel['subkegiatan']),
+        ];
+
+        // --- (d) pilih tingkat, turun kalau kosong --------------------
         $map = [];
+        foreach ($pkIndikatorIds as $id) {
+            $level  = $levelIndikator[$id];
+            $urutan = match ($level) {
+                'subkegiatan' => ['subkegiatan', 'kegiatan', 'program'],
+                'kegiatan'    => ['kegiatan', 'program'],
+                default       => ['program'],
+            };
+
+            foreach ($urutan as $cari) {
+                $daftar = $unitPerLevel[$cari][$id] ?? [];
+                if (empty($daftar)) {
+                    continue;
+                }
+
+                if ($cari !== $level) {
+                    foreach ($daftar as $i => $unit) {
+                        $daftar[$i]['fallback'] = true;
+                    }
+                }
+
+                $map[$id] = $daftar;
+                break;
+            }
+        }
+
+        return $map;
+    }
+
+    /**
+     * Versi lama: SELALU tingkat 'program', apa pun jenis PK-nya.
+     *
+     * Dipertahankan sebagai pembungkus tipis supaya seluruh pemanggil di luar
+     * modul unit (PkRenaksiController dsb.) berperilaku persis seperti dulu.
+     * Bentuk barisnya kini selengkap unit, tetapi kunci lama ('kode',
+     * 'program', 'anggaran', 'tahun') tetap ada dengan isi yang sama.
+     *
+     * @param int[] $pkIndikatorIds
+     *
+     * @return array<int, array<int, array<string, mixed>>>
+     */
+    public function getProgramPkByIndikator(array $pkIndikatorIds): array
+    {
+        helper('pk_unit');
+
+        return $this->ambilUnitPerLevel('program', $this->bersihkanIdIndikator($pkIndikatorIds));
+    }
+
+    /** Bersihkan daftar id indikator: dijadikan integer, tanpa nol dan duplikat. */
+    private function bersihkanIdIndikator(array $pkIndikatorIds): array
+    {
+        return array_values(array_unique(array_filter(array_map('intval', $pkIndikatorIds))));
+    }
+
+    /**
+     * Ambil unit satu tingkat saja untuk sekumpulan indikator (satu query).
+     *
+     * Tautan ke tabel MASTER (program_pk/kegiatan_pk/sub_kegiatan_pk) memakai
+     * LEFT JOIN, dan jalur ke kegiatan/sub kegiatan sengaja TIDAK menyentuh
+     * program_pk sama sekali. Alasannya nyata di data produksi: 88 baris
+     * pk_program milik PK 'pengawas' menunjuk program_pk yang sudah yatim,
+     * sehingga INNER JOIN lewat program_pk akan menghapus 71 indikator yang
+     * kegiatan/sub kegiatannya sebenarnya utuh.
+     *
+     * @param string $level 'program' | 'kegiatan' | 'subkegiatan'
+     * @param int[]  $ids   id indikator PK (sudah dibersihkan)
+     *
+     * @return array<int, array<int, array<string, mixed>>> [pk_indikator_id => daftar unit]
+     */
+    private function ambilUnitPerLevel(string $level, array $ids): array
+    {
+        if (empty($ids)) {
+            return [];
+        }
+
+        switch ($level) {
+            case 'kegiatan':
+                $builder = $this->db->table('pk_kegiatan kk')
+                    ->select('
+                        pp.pk_indikator_id,
+                        kp.id             AS ref_id,
+                        kp.kode_kegiatan  AS kode,
+                        kp.kegiatan       AS nama,
+                        kp.anggaran       AS anggaran,
+                        kp.tahun_anggaran AS tahun_anggaran
+                    ')
+                    // pk_program di sini murni penghubung ke indikator;
+                    // master program (program_pk) sengaja tidak ikut di-join.
+                    ->join('pk_program pp', 'pp.id = kk.pk_program_id')
+                    ->join('kegiatan_pk kp', 'kp.id = kk.kegiatan_id', 'left')
+                    ->whereIn('pp.pk_indikator_id', $ids)
+                    ->orderBy('pp.pk_indikator_id', 'ASC')
+                    ->orderBy('kp.kode_kegiatan', 'ASC')
+                    ->orderBy('kp.id', 'ASC');
+                break;
+
+            case 'subkegiatan':
+                $builder = $this->db->table('pk_subkegiatan psk')
+                    ->select('
+                        pp.pk_indikator_id,
+                        skp.id                AS ref_id,
+                        skp.kode_sub_kegiatan AS kode,
+                        skp.sub_kegiatan      AS nama,
+                        skp.anggaran          AS anggaran,
+                        skp.tahun_anggaran    AS tahun_anggaran
+                    ')
+                    ->join('pk_kegiatan kk', 'kk.id = psk.pk_kegiatan_id')
+                    ->join('pk_program pp', 'pp.id = kk.pk_program_id')
+                    ->join('sub_kegiatan_pk skp', 'skp.id = psk.subkegiatan_id', 'left')
+                    ->whereIn('pp.pk_indikator_id', $ids)
+                    ->orderBy('pp.pk_indikator_id', 'ASC')
+                    ->orderBy('skp.kode_sub_kegiatan', 'ASC')
+                    ->orderBy('skp.id', 'ASC');
+                break;
+
+            case 'program':
+            default:
+                $level   = 'program';
+                $builder = $this->db->table('pk_program pp')
+                    ->select('
+                        pp.pk_indikator_id,
+                        pr.id               AS ref_id,
+                        pr.kode_program     AS kode,
+                        pr.program_kegiatan AS nama,
+                        pr.anggaran         AS anggaran,
+                        pr.tahun_anggaran   AS tahun_anggaran
+                    ')
+                    ->join('program_pk pr', 'pr.id = pp.program_id', 'left')
+                    ->whereIn('pp.pk_indikator_id', $ids)
+                    ->orderBy('pp.pk_indikator_id', 'ASC')
+                    ->orderBy('pr.kode_program', 'ASC')
+                    ->orderBy('pr.id', 'ASC');
+                break;
+        }
+
+        $rows  = $builder->get()->getResultArray();
+        $label = pk_unit_label_dari_level($level);
+
+        $map   = [];
         $sudah = [];
 
         foreach ($rows as $row) {
             $indikatorId = (int) $row['pk_indikator_id'];
-            $programId   = (int) $row['program_pk_id'];
+            $refId       = (int) $row['ref_id'];
 
-            // Program yang sama bisa tercatat lebih dari sekali untuk satu
-            // indikator — cukup tampilkan sekali supaya anggarannya tidak dobel.
-            $kunci = $indikatorId . ':' . $programId;
+            // ref_id kosong = baris tautan menunjuk master yang sudah yatim;
+            // tidak ada yang bisa ditampilkan, jadi dilewati.
+            if ($indikatorId <= 0 || $refId <= 0) {
+                continue;
+            }
+
+            // Unit yang sama bisa tercatat lebih dari sekali untuk satu
+            // indikator (pk_kegiatan saja punya 2.120 baris untuk 433 kegiatan
+            // unik) — dedup pakai id MASTER supaya anggarannya tidak dobel.
+            $kunci = $indikatorId . ':' . $refId;
             if (isset($sudah[$kunci])) {
                 continue;
             }
             $sudah[$kunci] = true;
 
+            $nama = (string) ($row['nama'] ?? '');
+            $kode = $row['kode'];
+
             $map[$indikatorId][] = [
-                'kode'     => $row['kode_program'] !== '' ? $row['kode_program'] : null,
-                'program'  => (string) $row['program_kegiatan'],
-                'anggaran' => (float) $row['anggaran'],
-                'tahun'    => $row['tahun_anggaran'],
+                'kode'        => ($kode === null || $kode === '') ? null : (string) $kode,
+                'nama'        => $nama,
+                'program'     => $nama, // alias lama, dipakai view yang belum diubah
+                'anggaran'    => (float) $row['anggaran'],
+                'tahun'       => $row['tahun_anggaran'] === null ? null : (string) $row['tahun_anggaran'],
+                'level'       => $level,
+                'level_label' => $label,
+                'ref_id'      => $refId,
+                'ref_key'     => $level . ':' . $refId,
+                'fallback'    => false,
             ];
         }
 

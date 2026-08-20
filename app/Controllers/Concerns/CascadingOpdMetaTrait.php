@@ -190,8 +190,11 @@ trait CascadingOpdMetaTrait
      *
      * @return array<string, mixed>
      */
-    protected function cascOpdTree(array $rows): array
+    protected function cascOpdTree(array $rows, array $programByEs3 = []): array
     {
+        // $programByEs3 sengaja parameter OPSIONAL: pemanggil publik
+        // (UserController) tidak mengopernya, sehingga program PK memang
+        // tidak pernah ADA di jalur publik - bukan sekadar tidak dirender.
         $tree = [];
 
         foreach ($rows as $r) {
@@ -258,6 +261,9 @@ trait CascadingOpdMetaTrait
                     'nama'       => $r['es3_sasaran'],
                     'csf'        => $r['csf_es3'] ?? null,
                     'indikators' => [],
+                    // Program & kegiatan PK milik kabid ini (kosong bila teksnya
+                    // tidak cocok dengan PK mana pun - lihat CascadingModel::programPkByEs3).
+                    'programs'   => $programByEs3[(int) $es3Id] ?? [],
                     'es4s'       => [],
                 ];
             }

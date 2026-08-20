@@ -1,5 +1,12 @@
 <?php
-helper('capaian'); // capaianFormatPersen() untuk kolom Capaian Total
+helper('capaian');  // capaianFormatPersen() untuk kolom Capaian Total
+helper('pk_unit');  // pk_unit_header() & pk_bagi_baris() untuk kolom unit anggaran
+
+// Judul kolom unit anggaran (Program / Kegiatan / Sub Kegiatan) dikirim oleh
+// controller. Cadangan dihitung dari filter eselon supaya cetak tetap benar
+// bila dipanggil dari jalur lama yang belum mengirim variabel ini.
+$labelUnitHeader   = $labelUnitHeader ?? pk_unit_header($eselon ?? null);
+$unitHeaderGenerik = (bool) ($unitHeaderGenerik ?? false);
 
 $isBupati = ($jenis === 'bupati');
 $isOpd    = !$isBupati;
@@ -168,26 +175,56 @@ $normSas = static fn($s) => strtolower(trim(preg_replace('/\s+/', ' ', (string) 
     <div class="filter-note"><?= esc(implode(' | ', $filterLabels)) ?></div>
 <?php endif; ?>
 
+<?php
+/*
+ * LEBAR KOLOM CETAK.
+ *
+ * mpdf di proyek ini dipakai dengan shrink_tables_to_fit = false dan
+ * table-layout: fixed, jadi <colgroup> adalah SATU-SATUNYA kendali lebar:
+ * kolom berlebih tidak akan mengecil sendiri. Karena itu daftar di bawah
+ * WAJIB berisi persis satu entri untuk tiap <th> baris pertama, dan
+ * hasilnya dinormalkan ke 100% supaya kolom opsional (OPD / Pejabat)
+ * tidak membuat tabel meluber.
+ *
+ * Kolom unit sengaja diberi porsi paling lega: nama sub kegiatan jauh
+ * lebih panjang daripada nama program.
+ */
+$kolomLebar = ['no' => 2.5];
+if ($showOpd) {
+    $kolomLebar['opd'] = 7;
+}
+if ($showPejabat) {
+    $kolomLebar['pejabat'] = 9;
+}
+$kolomLebar['sasaran']   = 9;
+$kolomLebar['indikator'] = 9;
+$kolomLebar['satuan']    = 3.5;
+$kolomLebar['unit']      = 13;   // Program / Kegiatan / Sub Kegiatan
+$kolomLebar['anggaran']  = 5;
+foreach ([1, 2, 3, 4] as $q) {
+    $kolomLebar['realisasi_' . $q] = 4;
+}
+$kolomLebar['renaksi'] = 8.5;
+$kolomLebar['sub']     = 8.5;
+foreach ([1, 2, 3, 4] as $q) {
+    $kolomLebar['target_' . $q] = 2;
+}
+foreach ([1, 2, 3, 4] as $q) {
+    $kolomLebar['capaian_' . $q] = 2;
+}
+$kolomLebar['capaian_total'] = 3;
+$kolomLebar['pj']            = 6;
+
+// Dipakai juga oleh empty-state di bawah supaya colspan-nya tidak pernah
+// ketinggalan lagi saat jumlah kolom berubah.
+$kolomTotal  = count($kolomLebar);
+$lebarJumlah = array_sum($kolomLebar) ?: 1;
+?>
 <table class="pdf-table monev-print-table">
     <colgroup>
-        <col style="width:3.5%;">
-        <?php if ($showOpd): ?><col style="width:8.5%;"><?php endif; ?>
-        <?php if ($showPejabat): ?><col style="width:11%;"><?php endif; ?>
-        <col style="width:11%;">
-        <col style="width:11%;">
-        <col style="width:5.5%;">
-        <col style="width:11%;">
-        <col style="width:5.5%;">
-        <col style="width:4.5%;">
-        <col style="width:4.5%;">
-        <col style="width:4.5%;">
-        <col style="width:4.5%;">
-        <col style="width:4.5%;">
-        <col style="width:4.5%;">
-        <col style="width:4.5%;">
-        <col style="width:4.5%;">
-        <col style="width:6%;">
-        <col style="width:9%;">
+        <?php foreach ($kolomLebar as $lebarKolom): ?>
+            <col style="width:<?= rtrim(rtrim(number_format($lebarKolom / $lebarJumlah * 100, 3, '.', ''), '0'), '.') ?>%;">
+        <?php endforeach; ?>
     </colgroup>
     <thead>
     <tr>
@@ -197,8 +234,9 @@ $normSas = static fn($s) => strtolower(trim(preg_replace('/\s+/', ' ', (string) 
         <th rowspan="2">Sasaran</th>
         <th rowspan="2">Indikator</th>
         <th rowspan="2">Satuan</th>
-        <th rowspan="2">Program</th>
+        <th rowspan="2"><?= esc($labelUnitHeader) ?></th>
         <th rowspan="2">Anggaran</th>
+        <?php // Beda dari layar MONEV: cetak tidak punya sub-kolom Aksi, jadi colspan 4 (bukan 5) ?>
         <th colspan="4">Realisasi Anggaran Per Triwulan (Rp)</th>
         <th rowspan="2">Rencana Aksi</th>
         <th rowspan="2">Sub Rencana Aksi</th>
@@ -230,10 +268,11 @@ $normSas = static fn($s) => strtolower(trim(preg_replace('/\s+/', ' ', (string) 
         $barisFor = function ($row) use ($splitAksi, $subMap, $programMap) {
             $items = $splitAksi($row['rencana_aksi'] ?? '');
             $subs  = $subMap[(int) ($row['target_id'] ?? 0)] ?? [];
-            $nProg = count($programMap[(int) ($row['pk_indikator_id'] ?? 0)] ?? []);
+            // Jumlah unit anggaran (Program / Kegiatan / Sub Kegiatan) indikator ini.
+            $nUnit = count($programMap[(int) ($row['pk_indikator_id'] ?? 0)] ?? []);
 
             if (empty($items)) {
-                return [[], [1], max(1, $nProg), 1];
+                return [[], [1], max(1, $nUnit), 1];
             }
 
             $perButir = [];
@@ -242,29 +281,11 @@ $normSas = static fn($s) => strtolower(trim(preg_replace('/\s+/', ' ', (string) 
             }
             $barisRenaksi = array_sum($perButir);
 
-            return [$items, $perButir, max($barisRenaksi, $nProg), $barisRenaksi];
+            return [$items, $perButir, max($barisRenaksi, $nUnit), $barisRenaksi];
         };
 
-        /** Bagi tinggi indikator ke jumlah program lewat rowspan. */
-        $bagiProgram = function (array $programs, int $n): array {
-            if (empty($programs)) {
-                return [[], []];
-            }
-            $span = [];
-            $mulai = [];
-            $sisaBaris   = $n;
-            $sisaProgram = count($programs);
-            $awal = 0;
-            foreach ($programs as $pi => $_) {
-                $s = max(1, (int) ceil($sisaBaris / max(1, $sisaProgram)));
-                $span[$pi]   = $s;
-                $mulai[$awal] = $pi;
-                $awal        += $s;
-                $sisaBaris   -= $s;
-                $sisaProgram--;
-            }
-            return [$span, $mulai];
-        };
+        // Pembagian tinggi indikator ke tiap unit memakai pk_bagi_baris()
+        // dari helper pk_unit (dulu closure $bagiProgram di berkas ini).
         $opdTotals = [];
         if ($showOpd) {
             foreach ($grouped as $gr) {
@@ -307,15 +328,29 @@ $normSas = static fn($s) => strtolower(trim(preg_replace('/\s+/', ' ', (string) 
                 $targetId  = (int) ($row['target_id'] ?? 0);
                 $subsRow   = $subMap[$targetId] ?? [];
                 $capaian   = $monevSub[$targetId] ?? [];
-                $programs  = array_values($programMap[(int) ($row['pk_indikator_id'] ?? 0)] ?? []);
-                $realisasi = ($anggaranMap ?? [])[$targetId] ?? null;
+                $units     = array_values($programMap[(int) ($row['pk_indikator_id'] ?? 0)] ?? []);
+                $realisasi = ($anggaranMap ?? [])[$targetId] ?? [];
+                // ref_key ':0' = baris realisasi WARISAN, yaitu data lama yang
+                // dicatat per indikator dan belum dirinci per unit.
+                $warisan = $realisasi[':0'] ?? null;
+                // Selama belum ada satu pun realisasi per unit, angka warisan
+                // tetap ditampilkan sekali untuk seluruh indikator (seperti
+                // cetak versi lama) supaya data lama tidak hilang dari PDF.
+                $adaRealisasiUnit = false;
+                foreach ($units as $u) {
+                    if (isset($realisasi[$u['ref_key'] ?? ''])) {
+                        $adaRealisasiUnit = true;
+                        break;
+                    }
+                }
+                $modeWarisan = !$adaRealisasiUnit;
                 $barisRender = [];
                 foreach ($barisButir as $bk => $bJumlah) {
                     for ($bj = 0; $bj < $bJumlah; $bj++) {
                         $barisRender[] = [$bk, $bj];
                     }
                 }
-                [$spanProgram, $mulaiProgram] = $bagiProgram($programs, $n);
+                [$spanUnit, $mulaiUnit] = pk_bagi_baris($units, $n);
                 ?>
                 <?php for ($k = 0; $k < $n; $k++): ?>
                     <?php [$butirIdx, $subIdx] = $barisRender[$k] ?? [null, null]; ?>
@@ -346,28 +381,45 @@ $normSas = static fn($s) => strtolower(trim(preg_replace('/\s+/', ' ', (string) 
                             <td rowspan="<?= $n ?>" class="c"><?= esc($row['satuan'] ?? '-') ?></td>
                         <?php endif; ?>
 
-                        <?php // Program & pagu anggaran ikut PK, dibagi lewat rowspan ?>
-                        <?php if (empty($programs)): ?>
+                        <?php // Unit (Program/Kegiatan/Sub Kegiatan), pagu, & realisasinya ikut PK, dibagi lewat rowspan ?>
+                        <?php if (empty($units)): ?>
                             <?php if ($k === 0): ?>
                                 <td rowspan="<?= $n ?>" class="c">-</td>
                                 <td rowspan="<?= $n ?>" class="c">-</td>
                             <?php endif; ?>
-                        <?php elseif (isset($mulaiProgram[$k])): ?>
+                        <?php elseif (isset($mulaiUnit[$k])): ?>
                             <?php
-                            $pi   = $mulaiProgram[$k];
-                            $prog = $programs[$pi];
-                            $span = $spanProgram[$pi] ?? 1;
+                            $ui       = $mulaiUnit[$k];
+                            $unit     = $units[$ui];
+                            $span     = $spanUnit[$ui] ?? 1;
+                            $kodeUnit = $unit['kode'] ?? null;
+                            $unitNama = (string) ($unit['nama'] ?? ($unit['program'] ?? ''));
                             ?>
                             <td rowspan="<?= $span ?>" class="text-start">
-                                <?= esc(!empty($prog['kode']) ? '[' . $prog['kode'] . '] ' : '') ?><?= esc($prog['program']) ?>
+                                <?php // Kode boleh kosong (kegiatan/sub kegiatan tanpa kode): jangan cetak kurung siku kosong ?>
+                                <?= ($kodeUnit !== null && $kodeUnit !== '') ? esc('[' . $kodeUnit . '] ') : '' ?><?= $unitNama !== '' ? esc($unitNama) : '-' ?>
+                                <?php // Tabel campuran eselon: sebutkan tingkat unitnya supaya tidak rancu ?>
+                                <?php if ($unitHeaderGenerik && !empty($unit['level_label'])): ?>
+                                    <span class="badge-lite"><?= esc($unit['level_label']) ?></span>
+                                <?php endif; ?>
                             </td>
-                            <td rowspan="<?= $span ?>" class="text-start nowrap"><?= esc($rupiah($prog['anggaran'])) ?></td>
+                            <td rowspan="<?= $span ?>" class="text-start nowrap"><?= esc($rupiah($unit['anggaran'] ?? 0)) ?></td>
+                            <?php // Realisasi anggaran: PER UNIT, setinggi unitnya ?>
+                            <?php if (!$modeWarisan): ?>
+                                <?php $realUnit = $realisasi[$unit['ref_key'] ?? ''] ?? null; ?>
+                                <?php foreach ([1, 2, 3, 4] as $q): ?>
+                                    <?php $rv = $realUnit['realisasi_triwulan_' . $q] ?? null; ?>
+                                    <td rowspan="<?= $span ?>" class="text-start nowrap">
+                                        <?= ($rv !== null && $rv !== '') ? esc($rupiah($rv)) : '-' ?>
+                                    </td>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
                         <?php endif; ?>
 
-                        <?php // Realisasi anggaran: per indikator ?>
-                        <?php if ($k === 0): ?>
+                        <?php // Belum dirinci per unit: tampilkan baris warisan sekali untuk seluruh indikator ?>
+                        <?php if ($modeWarisan && $k === 0): ?>
                             <?php foreach ([1, 2, 3, 4] as $q): ?>
-                                <?php $rv = $realisasi['realisasi_triwulan_' . $q] ?? null; ?>
+                                <?php $rv = $warisan['realisasi_triwulan_' . $q] ?? null; ?>
                                 <td rowspan="<?= $n ?>" class="text-start nowrap">
                                     <?= ($rv !== null && $rv !== '') ? esc($rupiah($rv)) : '-' ?>
                                 </td>
@@ -434,9 +486,8 @@ $normSas = static fn($s) => strtolower(trim(preg_replace('/\s+/', ' ', (string) 
         <?php endforeach; ?>
     <?php else: ?>
         <tr>
-            <?php // +1 kolom sejak Sub Rencana Aksi ditambahkan ?>
-            <?php // +2 Program & Anggaran, +4 Realisasi Anggaran per triwulan, -1 Baseline dihapus ?>
-            <td colspan="<?= 22 + ($showPejabat ? 1 : 0) + ($showOpd ? 1 : 0) ?>" class="c pdf-muted">
+            <?php // Jumlah kolom diambil dari daftar lebar di atas (sudah termasuk OPD/Pejabat opsional) ?>
+            <td colspan="<?= (int) $kolomTotal ?>" class="c pdf-muted">
                 Belum ada data Rencana Aksi / MONEV PK untuk filter ini.
             </td>
         </tr>

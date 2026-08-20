@@ -86,7 +86,9 @@ class CascadingController extends BaseController
                     $this->preprocessEmptyIds($rows);
                     $rowspan   = $this->opdRowspanMeta($rows);
                     $firstShow = $this->opdFirstShowMeta($rows);
-                    $tree      = $this->buildOpdTree($rows);
+                    // Program & kegiatan PK per kabid; hanya mode OPD yang punya jenjang es3.
+                    $programEs3 = $this->cascadingModel->programPkByEs3($opdId, $start, $end);
+                    $tree      = $this->buildOpdTree($rows, $programEs3);
                     $o         = $this->db->table('opd')->select('nama_opd')->where('id', $opdId)->get()->getRowArray();
                     $opdName   = $o['nama_opd'] ?? null;
                 }
@@ -111,6 +113,10 @@ class CascadingController extends BaseController
             'showOpd'        => ($mode !== 'kabupaten'),
             'showCsf'        => ($mode !== 'opd'),
             'showKode'       => ($mode === 'opd'),
+            // Program PK hanya pada mode OPD: mode kabupaten & keseluruhan memakai
+            // partial lain yang tidak punya jenjang Eselon III.
+            'showProgramPk'  => ($mode === 'opd'),
+            'programEs3'     => $programEs3 ?? [],
             'opd_list'       => $opdList,
             'opd_id'         => $opdId,
             'opd_name'       => $opdName,
@@ -276,9 +282,9 @@ class CascadingController extends BaseController
         return $this->cascOpdFirstShowMeta($rows);
     }
 
-    private function buildOpdTree($rows): array
+    private function buildOpdTree($rows, array $programByEs3 = []): array
     {
-        return $this->cascOpdTree($rows);
+        return $this->cascOpdTree($rows, $programByEs3);
     }
 
 
@@ -668,18 +674,22 @@ class CascadingController extends BaseController
                 return redirect()->back()->with('error', 'Perangkat Daerah wajib dipilih');
             }
             $rows    = $this->cascadingModel->getCascadingMatrixByOpd($opdId, $start, $end);
-            $tree    = $this->buildOpdTree($rows);
+            $tree    = $this->buildOpdTree(
+                $rows,
+                $this->cascadingModel->programPkByEs3($opdId, $start, $end)
+            );
             $o       = $this->db->table('opd')->select('nama_opd')->where('id', $opdId)->get()->getRowArray();
             $namaOpd = $o['nama_opd'] ?? '';
 
             return view('adminOpd/cascading/pohon_kinerja_cetak', [
-                'tree'        => $tree,
-                'nama_opd'    => $namaOpd,
-                'tahun_mulai' => $start,
-                'tahun_akhir' => $end,
-                'periode'     => $periode,
-                'showCsf'     => false,
-                'showKode'    => true,
+                'tree'          => $tree,
+                'nama_opd'      => $namaOpd,
+                'tahun_mulai'   => $start,
+                'tahun_akhir'   => $end,
+                'periode'       => $periode,
+                'showCsf'       => false,
+                'showKode'      => true,
+                'showProgramPk' => true,
             ]);
         }
 

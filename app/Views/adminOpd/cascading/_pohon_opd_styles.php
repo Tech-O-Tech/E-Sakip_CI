@@ -86,7 +86,7 @@
         box-shadow: 0 3px 8px rgba(15, 23, 42, .12);
     }
     /* Node sekunder (chip lembut) */
-    .box-iks, .box-csf {
+    .box-iks, .box-csf, .box-prog, .box-keg {
         border-radius: 7px;
         padding: 5px 8px;
         font-size: 10px;
@@ -137,6 +137,38 @@
         color: #fff;
         vertical-align: middle;
     }
+    /* Program PK (di bawah kabid/Eselon III) — chip biru lembut */
+    .box-prog {
+        background: #eef4ff;
+        color: #1e3a8a;
+        border-color: #c7d7fb;
+        text-align: left;
+        margin-top: 3px;
+        font-weight: 600;
+    }
+    /* Kegiatan PK — chip hijau lembut, sedikit menjorok sbg anak program */
+    .box-keg {
+        background: #f2fbf5;
+        color: #14532d;
+        border-color: #c3e9d0;
+        text-align: left;
+        margin-top: -1px;
+        margin-left: 10px;
+    }
+    /* Label "PRG"/"KEG" di depan nama, meniru .ind-kode */
+    .prog-kode, .keg-kode {
+        display: inline-block;
+        font-weight: 800;
+        font-size: .72em;
+        letter-spacing: .6px;
+        padding: 1px 6px;
+        margin-right: 5px;
+        border-radius: 5px;
+        color: #fff;
+        vertical-align: middle;
+    }
+    .prog-kode { background: #1d4ed8; }
+    .keg-kode  { background: #15803d; }
     /* CSF — catatan krem lembut */
     .box-csf {
         background: #faf3e6;

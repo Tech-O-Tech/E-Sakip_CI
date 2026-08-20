@@ -1,5 +1,6 @@
 <?php
 helper('capaian'); // capaianFormatPersen() & capaianMetodeNama() untuk kolom Capaian Total
+helper('pk_unit'); // pk_bagi_baris() & label tingkat unit anggaran (Program/Kegiatan/Sub Kegiatan)
 
 $isBupati = ($jenis === 'bupati');
 $isOpd    = !$isBupati;
@@ -78,8 +79,9 @@ $toNum = function ($v) {
 $normSas = static fn($s) => strtolower(trim(preg_replace('/\s+/', ' ', (string) $s)));
 $es3Base = base_url($base . '/monev_pk/es3');
 
-// No, Sasaran, Indikator, Satuan, Program, Anggaran, Realisasi Anggaran (I-IV + Aksi),
-// Rencana Aksi, Sub Rencana Aksi, Target TW (4), Capaian TW (4), Total, Penanggung Jawab, Aksi
+// No, Sasaran, Indikator, Satuan, Unit (Program/Kegiatan/Sub Kegiatan), Anggaran,
+// Realisasi Anggaran (I-IV + Aksi), Rencana Aksi, Sub Rencana Aksi, Target TW (4),
+// Capaian TW (4), Total, Penanggung Jawab, Aksi
 $cols = 24 + ($showPejabat ? 1 : 0) + ($showOpd ? 1 : 0);
 
 // format_helper tidak ikut autoload — pakai pembungkus bercadangan.
@@ -226,7 +228,7 @@ $filterQs = http_build_query(array_filter([
                                 <th rowspan="2">Sasaran</th>
                                 <th rowspan="2">Indikator</th>
                                 <th rowspan="2">Satuan</th>
-                                <th rowspan="2">Program</th>
+                                <th rowspan="2"><?= esc($labelUnitHeader ?? 'Program') ?></th>
                                 <th rowspan="2">Anggaran</th>
                                 <th colspan="5">Realisasi Anggaran Per Triwulan (Rp)</th>
                                 <th rowspan="2">Rencana Aksi</th>
@@ -337,8 +339,11 @@ $filterQs = http_build_query(array_filter([
                                         $targetId  = (int) ($row['target_id'] ?? 0);
                                         $subsRow   = $subMap[$targetId] ?? [];
                                         $capaian   = $monevSub[$targetId] ?? [];
-                                        $programs  = array_values(($programMap ?? [])[(int) ($row['pk_indikator_id'] ?? 0)] ?? []);
-                                        $realisasi = ($anggaranMap ?? [])[$targetId] ?? null;
+                                        $units     = array_values(($programMap ?? [])[(int) ($row['pk_indikator_id'] ?? 0)] ?? []);
+                                        // Realisasi anggaran kini BERTINGKAT: [ref_key => baris]. Kunci ':0'
+                                        // adalah baris WARISAN — data lama yang belum dirinci per unit.
+                                        $anggaranRow = ($anggaranMap ?? [])[$targetId] ?? [];
+                                        $warisan     = $anggaranRow[':0'] ?? null;
                                         // Datarkan jadi daftar baris: tiap elemen = [indeks butir, indeks sub]
                                         $barisRender = [];
                                         foreach ($barisButir as $bk => $bJumlah) {
@@ -347,23 +352,9 @@ $filterQs = http_build_query(array_filter([
                                             }
                                         }
 
-                                        // Program & anggaran dibagi rata lewat rowspan (sama seperti
+                                        // Unit anggaran & pagunya dibagi rata lewat rowspan (sama seperti
                                         // Target & Rencana Aksi) supaya tidak ada sel kosong.
-                                        $spanProgram = [];
-                                        $mulaiProgram = [];
-                                        if (!empty($programs)) {
-                                            $sisaBaris   = $n;
-                                            $sisaProgram = count($programs);
-                                            $awal = 0;
-                                            foreach ($programs as $pi => $_) {
-                                                $span = max(1, (int) ceil($sisaBaris / max(1, $sisaProgram)));
-                                                $spanProgram[$pi]   = $span;
-                                                $mulaiProgram[$awal] = $pi;
-                                                $awal      += $span;
-                                                $sisaBaris -= $span;
-                                                $sisaProgram--;
-                                            }
-                                        }
+                                        [$spanUnit, $mulaiUnit] = pk_bagi_baris($units, $n);
                                         ?>
                                         <?php for ($k = 0; $k < $n; $k++): ?>
                                             <?php [$butirIdx, $subIdx] = $barisRender[$k] ?? [null, null]; ?>
@@ -394,44 +385,92 @@ $filterQs = http_build_query(array_filter([
                                                     <td rowspan="<?= $n ?>" class="align-top"><?= esc($row['satuan'] ?? '-') ?></td>
                                                 <?php endif; ?>
 
-                                                <?php // Program & pagu anggaran ikut PK, dibagi lewat rowspan 
+                                                <?php // Unit anggaran (Program/Kegiatan/Sub Kegiatan) + pagu + realisasinya
+                                                // ikut PK dan dibagi lewat rowspan. Realisasi anggaran kini PER UNIT,
+                                                // dikunci ref_key, jadi tiap unit punya baris realisasi & tombolnya sendiri.
                                                 ?>
-                                                <?php if (empty($programs)): ?>
+                                                <?php if (empty($units)): ?>
                                                     <?php if ($k === 0): ?>
                                                         <td rowspan="<?= $n ?>" class="text-muted align-top">-</td>
                                                         <td rowspan="<?= $n ?>" class="text-muted align-top">-</td>
+                                                        <?php // Tanpa unit, satu-satunya angka yang mungkin ada adalah baris warisan
+                                                        ?>
+                                                        <?php foreach ([1, 2, 3, 4] as $q): ?>
+                                                            <?php $rv = $warisan['realisasi_triwulan_' . $q] ?? null; ?>
+                                                            <td rowspan="<?= $n ?>" class="text-end text-nowrap align-top">
+                                                                <?= ($rv !== null && $rv !== '') ? esc($rupiah($rv)) : '<span class="text-muted">-</span>' ?>
+                                                            </td>
+                                                        <?php endforeach; ?>
+                                                        <td rowspan="<?= $n ?>" class="align-top">
+                                                            <?php if (empty($row['target_id'])): ?>
+                                                                <span class="text-muted">&mdash;</span>
+                                                            <?php elseif ($canWrite ?? true): ?>
+                                                                <a href="<?= $baseUrl . '/anggaran/' . (int) $row['target_id'] ?>"
+                                                                    class="btn btn-<?= empty($warisan) ? 'primary' : 'warning' ?> btn-sm"
+                                                                    title="<?= empty($warisan) ? 'Input' : 'Edit' ?> Realisasi Anggaran">
+                                                                    <i class="fas fa-<?= empty($warisan) ? 'plus' : 'edit' ?>"></i>
+                                                                </a>
+                                                            <?php elseif (empty($warisan)): ?>
+                                                                <span class="badge bg-light text-muted border">Belum</span>
+                                                            <?php else: ?>
+                                                                <span class="badge bg-success-subtle text-success border border-success-subtle">Terisi</span>
+                                                            <?php endif; ?>
+                                                        </td>
                                                     <?php endif; ?>
-                                                <?php elseif (isset($mulaiProgram[$k])): ?>
+                                                <?php elseif (isset($mulaiUnit[$k])): ?>
                                                     <?php
-                                                    $pi   = $mulaiProgram[$k];
-                                                    $prog = $programs[$pi];
-                                                    $span = $spanProgram[$pi] ?? 1;
+                                                    $ui       = $mulaiUnit[$k];
+                                                    $unit     = $units[$ui];
+                                                    $span     = $spanUnit[$ui] ?? 1;
+                                                    $refKey   = (string) ($unit['ref_key'] ?? '');
+                                                    $realUnit = $anggaranRow[$refKey] ?? null;
+                                                    // Angka warisan (belum dirinci per unit) hanya dicetak sekali,
+                                                    // menempel pada unit PERTAMA supaya tidak hilang dari layar.
+                                                    $adaWarisan = ($ui === 0 && !empty($warisan));
                                                     ?>
                                                     <td rowspan="<?= $span ?>" class="text-start align-top">
-                                                        <?= esc($prog['program']) ?>
+                                                        <?= esc($unit['nama'] ?? ($unit['program'] ?? '-')) ?>
+                                                        <?php // Badge tingkat dicetak bila tabel memuat campuran eselon
+                                                        // ATAU bila unit ini turun tingkat (tingkat aslinya kosong).
+                                                        ?>
+                                                        <?php if (($unitHeaderGenerik ?? false) || !empty($unit['fallback'])): ?>
+                                                            <div class="mt-1">
+                                                                <span class="badge bg-primary-subtle text-primary border border-primary-subtle fw-normal"
+                                                                    title="<?= !empty($unit['fallback']) ? 'Tingkat asli PK ini tidak punya data, ditampilkan tingkat di atasnya' : 'Tingkat unit anggaran' ?>">
+                                                                    <?= esc($unit['level_label'] ?? pk_unit_label_dari_level($unit['level'] ?? null)) ?>
+                                                                </span>
+                                                            </div>
+                                                        <?php endif; ?>
+                                                        <?php if ($adaWarisan): ?>
+                                                            <div class="mt-1">
+                                                                <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle fw-normal"
+                                                                    title="Realisasi anggaran lama masih tersimpan tanpa rincian unit">warisan (belum dirinci)</span>
+                                                            </div>
+                                                        <?php endif; ?>
                                                     </td>
-                                                    <td rowspan="<?= $span ?>" class="text-end text-nowrap align-top"><?= esc($rupiah($prog['anggaran'])) ?></td>
-                                                <?php endif; ?>
-
-                                                <?php // Realisasi anggaran: PER INDIKATOR, dengan tombol aksinya sendiri 
-                                                ?>
-                                                <?php if ($k === 0): ?>
+                                                    <td rowspan="<?= $span ?>" class="text-end text-nowrap align-top"><?= esc($rupiah($unit['anggaran'] ?? 0)) ?></td>
                                                     <?php foreach ([1, 2, 3, 4] as $q): ?>
-                                                        <?php $rv = $realisasi['realisasi_triwulan_' . $q] ?? null; ?>
-                                                        <td rowspan="<?= $n ?>" class="text-end text-nowrap align-top">
+                                                        <?php
+                                                        $rv = $realUnit['realisasi_triwulan_' . $q] ?? null;
+                                                        $wv = $adaWarisan ? ($warisan['realisasi_triwulan_' . $q] ?? null) : null;
+                                                        ?>
+                                                        <td rowspan="<?= $span ?>" class="text-end text-nowrap align-top">
                                                             <?= ($rv !== null && $rv !== '') ? esc($rupiah($rv)) : '<span class="text-muted">-</span>' ?>
+                                                            <?php if ($wv !== null && $wv !== ''): ?>
+                                                                <div class="text-muted" style="font-size:.7rem;">warisan: <?= esc($rupiah($wv)) ?></div>
+                                                            <?php endif; ?>
                                                         </td>
                                                     <?php endforeach; ?>
-                                                    <td rowspan="<?= $n ?>" class="align-top">
+                                                    <td rowspan="<?= $span ?>" class="align-top">
                                                         <?php if (empty($row['target_id'])): ?>
                                                             <span class="text-muted">&mdash;</span>
                                                         <?php elseif ($canWrite ?? true): ?>
                                                             <a href="<?= $baseUrl . '/anggaran/' . (int) $row['target_id'] ?>"
-                                                                class="btn btn-<?= empty($realisasi) ? 'primary' : 'warning' ?> btn-sm"
-                                                                title="<?= empty($realisasi) ? 'Input' : 'Edit' ?> Realisasi Anggaran">
-                                                                <i class="fas fa-<?= empty($realisasi) ? 'plus' : 'edit' ?>"></i>
+                                                                class="btn btn-<?= empty($realUnit) ? 'primary' : 'warning' ?> btn-sm"
+                                                                title="<?= empty($realUnit) ? 'Input' : 'Edit' ?> Realisasi Anggaran &mdash; <?= esc($unit['nama'] ?? '', 'attr') ?>">
+                                                                <i class="fas fa-<?= empty($realUnit) ? 'plus' : 'edit' ?>"></i>
                                                             </a>
-                                                        <?php elseif (empty($realisasi)): ?>
+                                                        <?php elseif (empty($realUnit)): ?>
                                                             <span class="badge bg-light text-muted border">Belum</span>
                                                         <?php else: ?>
                                                             <span class="badge bg-success-subtle text-success border border-success-subtle">Terisi</span>
@@ -440,7 +479,7 @@ $filterQs = http_build_query(array_filter([
                                                 <?php endif; ?>
 
                                                 <?php if ($butirIdx === null): ?>
-                                                    <?php // Sisa baris ketika program lebih banyak dari baris rencana aksi.
+                                                    <?php // Sisa baris ketika unit anggaran lebih banyak dari baris rencana aksi.
                                                     // Renaksi + Sub + 4 target + 4 capaian + total + Aksi = 12 kolom.
                                                     // (kolom Penanggung Jawab tidak ikut: hanya dicetak di baris k=0) 
                                                     ?>

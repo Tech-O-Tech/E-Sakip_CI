@@ -5,6 +5,7 @@ namespace App\Controllers\AdminKab;
 use App\Controllers\BaseController;
 use App\Controllers\Concerns\LakipAddendumTrait;
 use App\Controllers\Concerns\LakipBenchmarkTrait;
+use App\Controllers\Concerns\LakipSnapshotTrait;
 use App\Models\LakipModel;
 use App\Models\OpdModel;
 
@@ -15,6 +16,9 @@ class LakipController extends BaseController
 
     /** Chart perbandingan Provinsi Lampung & Nasional (di atas Analisis Faktor). */
     use LakipBenchmarkTrait;
+
+    /** Snapshot tahunan + kunci tahun + penyesuaian kebijakan. */
+    use LakipSnapshotTrait;
 
     protected $lakipModel;
     protected $opdModel;
@@ -37,6 +41,12 @@ class LakipController extends BaseController
     protected function lakipBaseUrl(): string
     {
         return session()->get('role') === 'bupati' ? 'bupati/lakip' : 'adminkab/lakip';
+    }
+
+    /** Prefix permission untuk aksi snapshot/finalisasi/penyesuaian. */
+    protected function lakipPermPrefix(): string
+    {
+        return 'lakip_kab';
     }
 
     public function __construct()
@@ -86,7 +96,19 @@ class LakipController extends BaseController
         // tahun + lingkup yang sama dengan tabel utama.
         $scope = $this->lakipScope((string) $tahun, $mode);
 
-        return view('adminKabupaten/lakip/lakip', array_merge($this->lakipAddendumData($scope), $this->lakipBenchmarkData($scope, $rows, $lakipMap), [
+        // Tahun yang sudah difinalkan dibaca dari arsip beku, bukan dari query
+        // hidup. Bentuk $rows/$lakipMap-nya identik sehingga view tidak berubah.
+        $sumber   = $this->sumberLakip($scope, (string) $status, ['rows' => $rows, 'lakipMap' => $lakipMap]);
+        $rows     = $sumber['rows'];
+        $lakipMap = $sumber['lakipMap'];
+
+        // Chart benchmark memakai $rows/$lakipMap SESUDAH snapshot dipakai,
+        // supaya angka pada chart selalu sama dengan tabel di atasnya.
+        return view('adminKabupaten/lakip/lakip', array_merge(
+            $this->addendumLakip($scope, $sumber),
+            $this->lakipBenchmarkData($scope, $rows, $lakipMap),
+            $this->dataSnapshot($scope, $sumber),
+            [
             'title' => 'LAKIP - Admin Kabupaten',
             'role' => $role,
             'mode' => $mode,
@@ -101,7 +123,10 @@ class LakipController extends BaseController
             // Gate tombol tambah/edit/hapus/ubah-status pada tabel utama +
             // prefix rute agar role read-only (inspektorat/bupati) tidak pernah
             // melihat atau menuju aksi pengubah data.
-            'lakipCanWrite' => in_array($role, self::ROLE_TULIS, true),
+            // Tahun terkunci: tombol tambah/ubah/hapus/ubah-status pada tabel
+            // utama ikut padam. LAKIP final tidak boleh disunting destruktif;
+            // koreksinya lewat Penyesuaian Kebijakan yang tercatat.
+            'lakipCanWrite' => in_array($role, self::ROLE_TULIS, true) && empty($sumber['terkunci']),
             'lakipBase' => $this->lakipBaseUrl(),
         ]));
     }
@@ -147,7 +172,13 @@ class LakipController extends BaseController
         // Dua tabel tambahan ikut tercetak, memakai tahun & lingkup yang sama.
         $scope = $this->lakipScope((string) $tahun, $mode);
 
-        $html = view('adminKabupaten/lakip/lakip_cetak', array_merge($this->lakipAddendumData($scope), [
+        $sumber   = $this->sumberLakip($scope, (string) $status, ['rows' => $rows, 'lakipMap' => $lakipMap]);
+        $rows     = $sumber['rows'];
+        $lakipMap = $sumber['lakipMap'];
+
+        $html = view('adminKabupaten/lakip/lakip_cetak', array_merge(
+            $this->addendumLakip($scope, $sumber),
+            [
             'title' => 'Cetak LAKIP - Admin Kabupaten',
             'role' => $role,
             'mode' => $mode,
@@ -238,7 +269,10 @@ class LakipController extends BaseController
 
         // Sheet tambahan: Analisis Faktor & Efisiensi Program.
         $scope    = $this->lakipScope((string) $tahun, $mode);
-        $addendum = $this->lakipAddendumData($scope);
+        $sumber   = $this->sumberLakip($scope, (string) $status, ['rows' => $rows, 'lakipMap' => $lakipMap]);
+        $rows     = $sumber['rows'];
+        $lakipMap = $sumber['lakipMap'];
+        $addendum = $this->addendumLakip($scope, $sumber);
 
         lakip_kab_excel($rows, $lakipMap, $mode, [
             'unit' => $unitName,

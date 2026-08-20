@@ -9,6 +9,10 @@ $tree = $tree ?? [];
 $showCsf = $showCsf ?? false;
 // Indikator diberi kode "IK" secara default (admin_kab & adminOpd).
 $showKode = $showKode ?? true;
+// Program & kegiatan PK di bawah kabid (Eselon III). Default FALSE = aman:
+// partial ini dipakai bersama halaman PUBLIK, jadi hanya controller admin
+// yang boleh menyalakannya lewat array data (bukan argumen include).
+$showProgramPk = $showProgramPk ?? false;
 ?>
 
 <!-- LEGENDA WARNA -->
@@ -26,6 +30,10 @@ $showKode = $showKode ?? true;
     <div class="lg-item"><span class="lg-swatch" style="background:#eef2f5;border:1px solid #dbe4de"></span> Indikator Kinerja</div>
     <?php if ($showCsf): ?>
         <div class="lg-item"><span class="lg-swatch" style="background:#faf3e6;border:1px solid #ecdcb8"></span> CSF</div>
+    <?php endif; ?>
+    <?php if ($showProgramPk): ?>
+        <div class="lg-item"><span class="lg-swatch" style="background:#eef4ff;border:1px solid #c7d7fb"></span> Program PK</div>
+        <div class="lg-item"><span class="lg-swatch" style="background:#f2fbf5;border:1px solid #c3e9d0"></span> Kegiatan PK</div>
     <?php endif; ?>
 </div>
 
@@ -109,6 +117,17 @@ $showKode = $showKode ?? true;
                                                                                         <?php foreach ($es3['indikators'] as $indikatorEs3): ?>
                                                                                             <div class="box-iks"><?php if ($showKode): ?><span class="ind-kode">IK</span><?php endif; ?><?= nl2br(esc($indikatorEs3)) ?></div>
                                                                                         <?php endforeach; ?>
+                                                                                        <?php // Program PK + kegiatan di bawahnya. Program diturunkan DARI kegiatannya,
+                                                                                             // jadi pasangan program-kegiatan selalu konsisten. Node yang teksnya tidak
+                                                                                             // cocok dengan PK mana pun sengaja dibiarkan kosong. ?>
+                                                                                        <?php if ($showProgramPk && !empty($es3['programs'])): ?>
+                                                                                            <?php foreach ($es3['programs'] as $progEs3): ?>
+                                                                                                <div class="box-prog"><?php if ($showKode): ?><span class="prog-kode">PRG</span><?php endif; ?><?= esc($progEs3['nama']) ?></div>
+                                                                                                <?php foreach ($progEs3['kegiatan'] as $kegEs3): ?>
+                                                                                                    <div class="box-keg"><?php if ($showKode): ?><span class="keg-kode">KEG</span><?php endif; ?><?= esc($kegEs3['nama']) ?></div>
+                                                                                                <?php endforeach; ?>
+                                                                                            <?php endforeach; ?>
+                                                                                        <?php endif; ?>
                                                                                     </div>
 
                                                                                     <?php if (!empty($es3['es4s'])): ?>

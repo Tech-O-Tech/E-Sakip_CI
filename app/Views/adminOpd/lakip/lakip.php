@@ -469,6 +469,10 @@
 
             <?php // Analisis Faktor Pencapaian Kinerja + Efisiensi Program dan Anggaran ?>
             <?= $this->include('lakip/addendum_layar') ?>
+
+            <?php // Snapshot tahunan + kunci tahun + penyesuaian kebijakan.
+                 // Partial ini menyembunyikan dirinya sendiri bila tabel snapshot belum ada. ?>
+            <?= $this->include('lakip/snapshot_panel') ?>
         </main>
 
         <?= $this->include('adminOpd/templates/footer.php'); ?>

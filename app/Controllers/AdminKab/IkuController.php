@@ -4,6 +4,7 @@ namespace App\Controllers\AdminKab;
 
 use App\Controllers\BaseController;
 use App\Controllers\Concerns\IkuFormTrait;
+use App\Controllers\Concerns\IkuRevisiTrait;
 use App\Models\Opd\IkuModel;
 use App\Models\OpdModel;
 
@@ -24,6 +25,9 @@ class IkuController extends BaseController
 {
     use IkuFormTrait;
 
+    /** Revisi IKU: versi dokumen yang bernomor & bertanggal berlaku. */
+    use IkuRevisiTrait;
+
     protected IkuModel $ikuModel;
     protected OpdModel $opdModel;
 
@@ -31,6 +35,31 @@ class IkuController extends BaseController
     {
         $this->ikuModel = new IkuModel();
         $this->opdModel = new OpdModel();
+    }
+
+    /* =========================================================
+     * LINGKUP REVISI (dipakai IkuRevisiTrait)
+     * =======================================================*/
+
+    protected function revisiPermPrefix(): string
+    {
+        return 'iku_kab';
+    }
+
+    /**
+     * Revisi yang dikelola di sini SELALU tingkat kabupaten (opd_id NULL).
+     *
+     * Mode 'opd' pada halaman ini hanyalah rekap pemantauan lintas OPD;
+     * revisi IKU milik OPD dikelola di modul IKU OPD oleh OPD-nya sendiri.
+     */
+    protected function revisiOpdId(): ?int
+    {
+        return null;
+    }
+
+    protected function revisiBaseUrl(): string
+    {
+        return 'adminkab/iku';
     }
 
     /* =========================================================

@@ -58,8 +58,12 @@ class CascadingController extends BaseController
             $rowspan = $this->buildRowspanMeta($rows);
             $firstShow = $this->buildFirstShowMeta($rows);
 
+            // Program & kegiatan PK per kabid (Eselon III). Hanya jalur admin;
+            // halaman publik tidak pernah membangun peta ini.
+            $programEs3 = $this->cascadingModel->programPkByEs3($this->opdId, $start, $end);
+
             // Pohon Kinerja OPD tampil inline (tidak harus klik cetak)
-            $tree = $this->buildOpdTree($rows);
+            $tree = $this->buildOpdTree($rows, $programEs3);
         }
         $data = [
             'rows' => $rows,
@@ -70,6 +74,8 @@ class CascadingController extends BaseController
             'tree' => $tree,
             'view' => $view,
             'title' => ($view === 'pohon' ? 'Pohon Kinerja' : 'Cascading'),
+            'programEs3' => $programEs3 ?? [],
+            'showProgramPk' => true,
             'opd_missing' => empty($this->opdId),
             'filters' => [
                 'periode' => $periode
@@ -114,9 +120,11 @@ class CascadingController extends BaseController
         $this->preprocessEmptyIds($rows);
 
         return view('adminOpd/cascading/_table', [
-            'rows'      => $rows,
-            'rowspan'   => $this->buildRowspanMeta($rows),
-            'firstShow' => $this->buildFirstShowMeta($rows),
+            'rows'          => $rows,
+            'rowspan'       => $this->buildRowspanMeta($rows),
+            'firstShow'     => $this->buildFirstShowMeta($rows),
+            'programEs3'    => $this->cascadingModel->programPkByEs3($this->opdId, (int) $start, (int) $end),
+            'showProgramPk' => true,
         ]);
     }
 
@@ -155,6 +163,8 @@ class CascadingController extends BaseController
             'rows' => $rows,
             'rowspan' => $rowspan,
             'firstShow' => $firstShow,
+            'programEs3' => $this->cascadingModel->programPkByEs3($this->opdId, $start, $end),
+            'showProgramPk' => true,
             'tahun_mulai' => $start,
             'tahun_akhir' => $end,
             'periode' => $periode,
@@ -207,7 +217,10 @@ class CascadingController extends BaseController
         $rows = $this->cascadingModel
             ->getCascadingMatrixByOpd($this->opdId, $start, $end);
 
-        $tree = $this->buildOpdTree($rows);
+        $tree = $this->buildOpdTree(
+            $rows,
+            $this->cascadingModel->programPkByEs3($this->opdId, $start, $end)
+        );
 
         // Ambil visi via JOIN rpjmd_visi
         $firstMisi = $this->db->table('rpjmd_misi m')
@@ -223,7 +236,8 @@ class CascadingController extends BaseController
         $namaOpd = $o['nama_opd'] ?? '';
 
         return view('adminOpd/cascading/pohon_kinerja_cetak', [
-            'tree'        => $tree,
+            'tree'          => $tree,
+            'showProgramPk' => true,
             'visi'        => $visi,
             'nama_opd'    => $namaOpd,
             'tahun_mulai' => $start,
@@ -233,9 +247,9 @@ class CascadingController extends BaseController
     }
 
     /** Pohon Kinerja OPD — implementasi bersama di CascadingOpdMetaTrait. */
-    private function buildOpdTree($rows)
+    private function buildOpdTree($rows, array $programByEs3 = [])
     {
-        return $this->cascOpdTree($rows);
+        return $this->cascOpdTree($rows, $programByEs3);
     }
 
     public function tambah($indikatorId = null)

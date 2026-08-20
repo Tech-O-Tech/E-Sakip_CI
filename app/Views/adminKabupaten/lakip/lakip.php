@@ -390,6 +390,10 @@ $lakipBase     = $lakipBase ?? 'adminkab/lakip';
 
         <?php // Analisis Faktor Pencapaian Kinerja + Efisiensi Program dan Anggaran ?>
         <?= $this->include('lakip/addendum_layar') ?>
+
+        <?php // Snapshot tahunan + kunci tahun + penyesuaian kebijakan.
+             // Partial ini menyembunyikan dirinya sendiri bila tabel snapshot belum ada. ?>
+        <?= $this->include('lakip/snapshot_panel') ?>
     </main>
 
     <?= $this->include('adminKabupaten/templates/footer.php'); ?>

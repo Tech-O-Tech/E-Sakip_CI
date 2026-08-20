@@ -81,6 +81,14 @@ $rupiah = function ($nilai) {
     }
     return 'Rp ' . number_format((float) $nilai, 0, ',', '.');
 };
+
+// Label unit anggaran (Program / Kegiatan / Sub Kegiatan) mengikuti jenis PK
+// MENTAH, bukan label eselon. Controller sudah mengirim $labelUnitHeader;
+// sisanya sekadar cadangan supaya view tidak pecah kalau belum dikirim.
+$labelUnit = $labelUnitHeader
+    ?? (function_exists('pk_unit_label')
+        ? pk_unit_label($detail['pk_jenis'] ?? ($ctx['pk_jenis'] ?? null))
+        : 'Program');
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -156,12 +164,12 @@ $rupiah = function ($nilai) {
                     </div>
                 </div>
 
-                <?php // Program & anggaran ikut Perjanjian Kinerja indikator ini — hanya ditampilkan. ?>
+                <?php // Unit anggaran ikut Perjanjian Kinerja indikator ini — hanya ditampilkan. ?>
                 <div class="mb-3">
-                    <label class="form-label">Program &amp; Anggaran <span class="text-muted fw-normal">(dari Perjanjian Kinerja)</span></label>
+                    <label class="form-label"><?= esc($labelUnit) ?> &amp; Anggaran <span class="text-muted fw-normal">(dari Perjanjian Kinerja)</span></label>
                     <?php if (empty($programPk ?? [])): ?>
                         <div class="alert alert-light border mb-0 py-2 px-3 text-muted small">
-                            Indikator PK ini belum ditautkan ke program mana pun. Atur lewat menu Program Perjanjian Kinerja.
+                            Indikator PK ini belum ditautkan ke <?= esc(strtolower($labelUnit)) ?> mana pun. Atur lewat menu Program Perjanjian Kinerja.
                         </div>
                     <?php else: ?>
                         <div class="table-responsive">
@@ -169,7 +177,7 @@ $rupiah = function ($nilai) {
                                 <thead class="table-light">
                                     <tr>
                                         <th style="width:90px;">Kode</th>
-                                        <th>Program</th>
+                                        <th><?= esc($labelUnit) ?></th>
                                         <th class="text-end" style="width:170px;">Anggaran</th>
                                     </tr>
                                 </thead>

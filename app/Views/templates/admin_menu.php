@@ -109,6 +109,7 @@ $canRencanaKab = user_can('rpjmd.view') || user_can('rkpd.view') || user_can('ik
       <?php if (user_can('rpjmd.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminkab/rpjmd') ?>">RPJMD</a></li><?php endif; ?>
       <?php if (user_can('rkpd.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminkab/rkpd') ?>">RKPD</a></li><?php endif; ?>
       <?php if (user_can('iku_kab.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminkab/iku') ?>">IKU</a></li><?php endif; ?>
+      <?php if (user_can('iku_kab.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminkab/iku/revisi') ?>">&nbsp;&nbsp;&#8226; Revisi IKU</a></li><?php endif; ?>
       <?php if (user_can('cascading_kab.view')): ?>
         <li><a class="dropdown-item" href="<?= base_url('adminkab/cascading?view=pohon') ?>">Pohon Kinerja</a></li>
         <li><a class="dropdown-item" href="<?= base_url('adminkab/cascading?view=tabel') ?>">Cascading</a></li>
@@ -165,6 +166,7 @@ $canRencanaOpd = user_can('renstra.view') || user_can('rkt_opd.view') || user_ca
       <?php if (user_can('renstra.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminopd/renstra') ?>">Renstra</a></li><?php endif; ?>
       <?php if (user_can('rkt_opd.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminopd/rkt') ?>">Renja/RKT</a></li><?php endif; ?>
       <?php if (user_can('iku_opd.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminopd/iku') ?>">IKU</a></li><?php endif; ?>
+      <?php if (user_can('iku_opd.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminopd/iku/revisi') ?>">&nbsp;&nbsp;&#8226; Revisi IKU</a></li><?php endif; ?>
       <?php if (user_can('cascading_opd.view')): ?>
         <li><a class="dropdown-item" href="<?= base_url('adminopd/cascading?view=pohon') ?>">Pohon Kinerja</a></li>
         <li><a class="dropdown-item" href="<?= base_url('adminopd/cascading?view=tabel') ?>">Cascading</a></li>

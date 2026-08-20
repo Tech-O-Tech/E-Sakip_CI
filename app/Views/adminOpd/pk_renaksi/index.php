@@ -1,4 +1,6 @@
 <?php
+helper('pk_unit');  // pk_unit_header() & pk_bagi_baris() untuk kolom unit anggaran
+
 $isBupati = ($jenis === 'bupati');
 $isOpd    = !$isBupati;                                   // modul PK OPD/Kecamatan
 $isKab    = (($role ?? '') === 'admin_kab');              // pakai chrome adminKabupaten
@@ -70,8 +72,9 @@ $eselonLabel = function ($pkJenis, $jabatanEselon = null, $jabatanNama = null) {
 };
 
 // Jumlah kolom (untuk baris kosong)
-// non-bupati: No, Sasaran, Indikator, Tahun, Satuan, Target, Program, Anggaran,
-//             Rencana Aksi, Sub Rencana Aksi, 4x Triwulan, Penanggung Jawab, Aksi
+// non-bupati: No, Sasaran, Indikator, Tahun, Satuan, Target, Unit (Program/
+//             Kegiatan/Sub Kegiatan), Anggaran, Rencana Aksi, Sub Rencana Aksi,
+//             4x Triwulan, Penanggung Jawab, Aksi
 $cols = $isBupati ? 8 : (16 + ($showPejabat ? 1 : 0) + ($showOpd ? 1 : 0));
 
 // Query string filter aktif (untuk tautan MONEV)
@@ -103,7 +106,7 @@ $filterQs = http_build_query(array_filter([
             vertical-align: top;
         }
 
-        /* Program & anggaran: 1 program = 1 BARIS tabel sungguhan, jadi
+        /* Unit & anggaran: 1 unit = 1 BARIS tabel sungguhan, jadi
            sejajarnya dijamin struktur tabel dan tingginya ikut isi (tidak ada
            teks yang tumpang tindih walau nama programnya panjang). */
         .renaksi-table td.prog-cell,
@@ -260,7 +263,7 @@ $filterQs = http_build_query(array_filter([
                                     <th rowspan="2">Tahun</th>
                                     <th rowspan="2">Satuan</th>
                                     <th rowspan="2">Target</th>
-                                    <th rowspan="2">Program</th>
+                                    <th rowspan="2"><?= esc($labelUnitHeader ?? 'Program') ?></th>
                                     <th rowspan="2">Anggaran</th>
                                     <th rowspan="2">Rencana Aksi</th>
                                     <th rowspan="2">Sub Rencana Aksi</th>
@@ -291,17 +294,17 @@ $filterQs = http_build_query(array_filter([
                                 // sendiri setinggi jumlah sub rencana aksinya (min 1). Ini yang membuat
                                 // 1 Rencana Aksi bisa membentang atas Sub 1, 2, 3.
                                 // Tinggi 1 indikator ditentukan HANYA oleh rencana aksi:
-                                // tiap butir setinggi jumlah sub-nya (min 1). Program & anggaran
+                                // tiap butir setinggi jumlah sub-nya (min 1). Unit & anggaran
                                 // menempel ke indikator (digabung setinggi $n), bukan menambah baris.
                                 $subMap     = $subMap ?? [];
                                 $programMap = $programMap ?? [];
                                 $barisFor = function ($row) use ($splitAksi, $subMap, $programMap) {
                                     $items = $splitAksi($row['rencana_aksi'] ?? '');
                                     $subs  = $subMap[(int) ($row['target_id'] ?? 0)] ?? [];
-                                    $nProg = count($programMap[(int) ($row['pk_indikator_id'] ?? 0)] ?? []);
+                                    $nUnit = count($programMap[(int) ($row['pk_indikator_id'] ?? 0)] ?? []);
 
                                     if (empty($items)) {
-                                        return [[], [1], max(1, $nProg), 1]; // belum ada renaksi -> 1 baris kosong
+                                        return [[], [1], max(1, $nUnit), 1]; // belum ada renaksi -> 1 baris kosong
                                     }
 
                                     $perButir = [];
@@ -310,7 +313,7 @@ $filterQs = http_build_query(array_filter([
                                     }
                                     $barisRenaksi = array_sum($perButir);
 
-                                    return [$items, $perButir, max($barisRenaksi, $nProg), $barisRenaksi];
+                                    return [$items, $perButir, max($barisRenaksi, $nUnit), $barisRenaksi];
                                 };
                                 // Format anggaran: helper format_helper (autoload) menyediakan formatRupiah().
                                 $rupiah = function ($nilai) {
@@ -450,7 +453,8 @@ $filterQs = http_build_query(array_filter([
                                             <?php
                                             [$items, $barisButir, $n, $barisRenaksi] = $barisFor($row);
                                             $subsRow  = ($subMap[(int) ($row['target_id'] ?? 0)] ?? []);
-                                            $programs = array_values($programMap[(int) ($row['pk_indikator_id'] ?? 0)] ?? []);
+                                            // "Unit" = Program / Kegiatan / Sub Kegiatan, tergantung pk.jenis baris ini.
+                                            $units    = array_values($programMap[(int) ($row['pk_indikator_id'] ?? 0)] ?? []);
                                             // Datarkan jadi daftar baris: tiap elemen = [indeks butir, indeks sub]
                                             $barisRender = [];
                                             foreach ($barisButir as $bk => $bJumlah) {
@@ -459,25 +463,10 @@ $filterQs = http_build_query(array_filter([
                                                 }
                                             }
 
-                                            // Tinggi indikator DIBAGI RATA ke jumlah program lewat rowspan,
-                                            // supaya tidak ada sel Program/Anggaran yang menganga kosong.
-                                            // Contoh: 4 baris & 2 program -> rowspan 2 dan 2.
-                                            $spanProgram = [];
-                                            $mulaiProgram = [];
-                                            if (!empty($programs)) {
-                                                $sisaBaris  = $n;
-                                                $sisaProgram = count($programs);
-                                                $awal = 0;
-                                                foreach ($programs as $pi => $_) {
-                                                    $span = (int) ceil($sisaBaris / max(1, $sisaProgram));
-                                                    $span = max(1, $span);
-                                                    $spanProgram[$pi]  = $span;
-                                                    $mulaiProgram[$awal] = $pi;
-                                                    $awal        += $span;
-                                                    $sisaBaris   -= $span;
-                                                    $sisaProgram--;
-                                                }
-                                            }
+                                            // Tinggi indikator DIBAGI RATA ke jumlah unit lewat rowspan,
+                                            // supaya tidak ada sel Unit/Anggaran yang menganga kosong.
+                                            // Contoh: 4 baris & 2 unit -> rowspan 2 dan 2.
+                                            [$spanUnit, $mulaiUnit] = pk_bagi_baris($units, $n);
                                             ?>
                                             <?php for ($k = 0; $k < $n; $k++): ?>
                                                 <?php [$butirIdx, $subIdx] = $barisRender[$k] ?? [null, null]; ?>
@@ -509,30 +498,39 @@ $filterQs = http_build_query(array_filter([
 
                                                     <?php endif; ?>
 
-                                                    <?php // Program & anggaran memakai rowspan: tinggi indikator dibagi
-                                                    // rata ke jumlah program, jadi sejajar dan tanpa sel kosong. 
+                                                    <?php // Unit & anggaran memakai rowspan: tinggi indikator dibagi
+                                                    // rata ke jumlah unit, jadi sejajar dan tanpa sel kosong.
                                                     ?>
-                                                    <?php if (empty($programs)): ?>
+                                                    <?php if (empty($units)): ?>
                                                         <?php if ($k === 0): ?>
                                                             <td rowspan="<?= $n ?>" class="text-muted va-top">-</td>
                                                             <td rowspan="<?= $n ?>" class="text-muted va-top">-</td>
                                                         <?php endif; ?>
-                                                    <?php elseif (isset($mulaiProgram[$k])): ?>
+                                                    <?php elseif (isset($mulaiUnit[$k])): ?>
                                                         <?php
-                                                        $pi   = $mulaiProgram[$k];
-                                                        $prog = $programs[$pi];
-                                                        $span = $spanProgram[$pi] ?? 1;
+                                                        $ui   = $mulaiUnit[$k];
+                                                        $unit = $units[$ui];
+                                                        $span = $spanUnit[$ui] ?? 1;
+                                                        // Badge tingkat ditampilkan bila tabel memuat campuran eselon
+                                                        // (judul kolom generik) ATAU unit ini turun tingkat (fallback),
+                                                        // supaya pembaca tahu isinya Program / Kegiatan / Sub Kegiatan.
+                                                        $unitFallback = !empty($unit['fallback']);
+                                                        $tampilBadge  = ($unitHeaderGenerik ?? false) || $unitFallback;
                                                         ?>
                                                         <td rowspan="<?= $span ?>" class="text-start prog-cell">
-                                                            <?= esc($prog['program']) ?>
+                                                            <?= esc($unit['nama'] ?? ($unit['program'] ?? '-')) ?>
+                                                            <?php if ($tampilBadge && !empty($unit['level_label'])): ?>
+                                                                <span class="badge <?= $unitFallback ? 'bg-warning-subtle text-warning border border-warning-subtle' : 'bg-success-subtle text-success border border-success-subtle' ?> fw-normal ms-1"
+                                                                    <?= $unitFallback ? 'title="Tingkat aslinya kosong, ditampilkan dari tingkat di atasnya"' : '' ?>><?= esc($unit['level_label']) ?></span>
+                                                            <?php endif; ?>
                                                         </td>
                                                         <td rowspan="<?= $span ?>" class="prog-cell-money">
-                                                            <?= esc($rupiah($prog['anggaran'])) ?>
+                                                            <?= esc($rupiah($unit['anggaran'] ?? 0)) ?>
                                                         </td>
                                                     <?php endif; ?>
 
                                                     <?php if ($butirIdx === null): ?>
-                                                        <?php // Sisa baris ketika program lebih banyak dari baris rencana aksi 
+                                                        <?php // Sisa baris ketika unit lebih banyak dari baris rencana aksi 
                                                         ?>
                                                         <?php if ($k === $barisRenaksi): ?>
                                                             <td colspan="6" rowspan="<?= $n - $barisRenaksi ?>"></td>

@@ -15,7 +15,12 @@ $cleanPdfText = static function ($value): string {
     return trim(preg_replace('/\s+/', ' ', $text));
 };
 
-$estimatePdfRowWeight = static function (array $row) use ($cleanPdfText): int {
+// Peta program per node es3 ikut menentukan tinggi baris: teksnya menumpang
+// di dalam sel Sasaran ESS III, jadi kalau tidak dihitung baris akan meluber.
+$programEs3     = $programEs3 ?? [];
+$showProgramPk  = !empty($showProgramPk);
+
+$estimatePdfRowWeight = static function (array $row) use ($cleanPdfText, $programEs3, $showProgramPk): int {
     $columns = [
         ['tujuan_rpjmd', 28],
         ['sasaran_rpjmd', 28],
@@ -32,6 +37,19 @@ $estimatePdfRowWeight = static function (array $row) use ($cleanPdfText): int {
     ];
 
     $maxLines = 1;
+
+    // Baris program & kegiatan yang menumpang di sel Sasaran ESS III.
+    if ($showProgramPk && !empty($programEs3[$row['es3_id'] ?? null])) {
+        $barisUnit = 0;
+        foreach ($programEs3[$row['es3_id']] as $prog) {
+            $barisUnit += (int) ceil((mb_strlen((string) $prog['nama'], 'UTF-8')) / 34);
+            foreach ($prog['kegiatan'] as $keg) {
+                $barisUnit += (int) ceil((mb_strlen((string) $keg['nama'], 'UTF-8')) / 32);
+            }
+        }
+        $maxLines = max($maxLines, $barisUnit);
+    }
+
     foreach ($columns as [$field, $charsPerLine]) {
         $text = $cleanPdfText($row[$field] ?? '');
         if ($text === '') {
@@ -270,6 +288,16 @@ $pdfPages = empty($rows) ? [[]] : $buildPdfPages($rows);
                             <?php if (($pageFirstShow['es3'][$r['es3_id']] ?? -1) == $index): ?>
                                 <td rowspan="<?= $pageRowspan['es3'][$r['es3_id']] ?? 1 ?>">
                                     <?= !empty($r['es3_sasaran']) ? nl2br(esc($r['es3_sasaran'])) : '-' ?>
+                                    <?php // Program & kegiatan PK menumpang di sel ini (bukan kolom baru),
+                                         // supaya colgroup 12 kolom & seluruh colspan tetap utuh. ?>
+                                    <?php if ($showProgramPk && !empty($programEs3[$r['es3_id']])): ?>
+                                        <?php foreach ($programEs3[$r['es3_id']] as $progEs3): ?>
+                                            <div class="casc-prog"><b>PRG</b> <?= esc($progEs3['nama']) ?></div>
+                                            <?php foreach ($progEs3['kegiatan'] as $kegEs3): ?>
+                                                <div class="casc-keg">KEG <?= esc($kegEs3['nama']) ?></div>
+                                            <?php endforeach; ?>
+                                        <?php endforeach; ?>
+                                    <?php endif; ?>
                                 </td>
                             <?php endif; ?>
 

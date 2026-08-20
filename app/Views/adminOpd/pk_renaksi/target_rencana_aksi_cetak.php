@@ -6,6 +6,48 @@ $judul    = ($isBupati || !$isKab) ? 'Target dan Rencana Aksi' : 'Rencana Aksi';
 $showOpd  = ($isOpd && ($role ?? '') === 'admin_kab');
 $showPejabat = $isOpd;
 
+// Helper unit PK (Program / Kegiatan / Sub Kegiatan). Controller sudah memuatnya,
+// pemanggilan ini hanya pengaman bila view dirender dari tempat lain.
+helper('pk_unit');
+
+// Judul kolom unit dikirim controller; nilai bawaan dipertahankan supaya view
+// tetap aman bila dipanggil dari kode lama.
+$labelUnitHeader   = $labelUnitHeader ?? pk_unit_header($eselon ?? null);
+$unitHeaderGenerik = (bool) ($unitHeaderGenerik ?? false);
+
+// ---------------------------------------------------------------------------
+// Lebar kolom cetak (cabang PK OPD/Kecamatan).
+// GOTCHA PDF: shrink_tables_to_fit=false + table-layout:fixed membuat <colgroup>
+// satu-satunya kendali lebar. Karena itu jumlah <col> WAJIB sama dengan jumlah
+// <th>, dan totalnya dinormalkan ke 100% untuk SETIAP kombinasi $showOpd /
+// $showPejabat. Angka di bawah hanyalah bobot relatif, bukan persen final.
+// ---------------------------------------------------------------------------
+$bobotKolom = [];
+$bobotKolom['no'] = 4;
+if ($showOpd) {
+    $bobotKolom['opd'] = 10;
+}
+if ($showPejabat) {
+    $bobotKolom['pejabat'] = 13;
+}
+$bobotKolom['sasaran']     = 13;
+$bobotKolom['indikator']   = 14;
+$bobotKolom['tahun']       = 5;
+$bobotKolom['satuan']      = 6;
+$bobotKolom['unit']        = 15;
+$bobotKolom['anggaran']    = 9;
+$bobotKolom['renaksi']     = 13;
+$bobotKolom['sub_renaksi'] = 13;
+$bobotKolom['tw1']         = 4;
+$bobotKolom['tw2']         = 4;
+$bobotKolom['tw3']         = 4;
+$bobotKolom['tw4']         = 4;
+$bobotKolom['pj']          = 10;
+
+$totalBobotKolom = array_sum($bobotKolom) ?: 1;
+// Dipakai juga oleh baris "belum ada data" supaya colspan tak pernah meleset.
+$jumlahKolomOpd  = count($bobotKolom);
+
 $eselonLabel = function ($pkJenis, $jabatanEselon = null, $jabatanNama = null) {
     $map = ['bupati' => 'Bupati', 'jpt' => 'Eselon II', 'camat' => 'Eselon III', 'administrator' => 'Eselon III', 'pengawas' => 'Eselon IV'];
     $pkJenis = strtolower(trim((string) $pkJenis));
@@ -246,19 +288,19 @@ $splitAksi = function ($text) {
         </tbody>
     <?php else: ?>
         <colgroup>
-            <col style="width:4%;">
-            <?php if ($showOpd): ?><col style="width:10%;"><?php endif; ?>
-            <?php if ($showPejabat): ?><col style="width:13%;"><?php endif; ?>
-            <col style="width:13%;">
-            <col style="width:14%;">
-            <col style="width:6%;">
-            <col style="width:7%;">
-            <col style="width:15%;">
-            <col style="width:5%;">
-            <col style="width:5%;">
-            <col style="width:5%;">
-            <col style="width:5%;">
-            <col style="width:13%;">
+            <?php // Satu <col> untuk tiap <th>; lebar dinormalkan ke total 100%.
+                  // Kolom terakhir mengambil sisa pembulatan agar totalnya persis 100%. ?>
+            <?php $sisaLebar = 100.0; $kolKe = 0; ?>
+            <?php foreach ($bobotKolom as $bobotKol): ?>
+                <?php
+                $kolKe++;
+                $lebarKol  = ($kolKe === $jumlahKolomOpd)
+                    ? $sisaLebar
+                    : round($bobotKol * 100 / $totalBobotKolom, 3);
+                $sisaLebar = round($sisaLebar - $lebarKol, 3);
+                ?>
+                <col style="width:<?= $lebarKol ?>%;">
+            <?php endforeach; ?>
         </colgroup>
         <thead>
         <tr>
@@ -269,7 +311,7 @@ $splitAksi = function ($text) {
             <th rowspan="2">Indikator</th>
             <th rowspan="2">Tahun</th>
             <th rowspan="2">Satuan</th>
-            <th rowspan="2">Program</th>
+            <th rowspan="2"><?= esc($labelUnitHeader) ?></th>
             <th rowspan="2">Anggaran</th>
             <th rowspan="2">Rencana Aksi</th>
             <th rowspan="2">Sub Rencana Aksi</th>
@@ -284,17 +326,17 @@ $splitAksi = function ($text) {
             $no = 1;
             // Tinggi 1 indikator = jumlah butir rencana aksi, tiap butir setinggi
             // jumlah sub rencana aksinya (min 1) — sama dengan tampilan layar.
-            // Tinggi 1 indikator ditentukan HANYA oleh rencana aksi; program &
+            // Tinggi 1 indikator ditentukan HANYA oleh rencana aksi; unit &
             // anggaran menempel ke indikator (digabung setinggi $n).
             $subMap     = $subMap ?? [];
             $programMap = $programMap ?? [];
             $barisFor = function ($row) use ($splitAksi, $subMap, $programMap) {
                 $items = $splitAksi($row['rencana_aksi'] ?? '');
                 $subs  = $subMap[(int) ($row['target_id'] ?? 0)] ?? [];
-                $nProg = count($programMap[(int) ($row['pk_indikator_id'] ?? 0)] ?? []);
+                $nUnit = count($programMap[(int) ($row['pk_indikator_id'] ?? 0)] ?? []);
 
                 if (empty($items)) {
-                    return [[], [1], max(1, $nProg), 1];
+                    return [[], [1], max(1, $nUnit), 1];
                 }
 
                 $perButir = [];
@@ -303,32 +345,11 @@ $splitAksi = function ($text) {
                 }
                 $barisRenaksi = array_sum($perButir);
 
-                return [$items, $perButir, max($barisRenaksi, $nProg), $barisRenaksi];
+                return [$items, $perButir, max($barisRenaksi, $nUnit), $barisRenaksi];
             };
 
-            /** Bagi tinggi indikator ke jumlah program: [rowspan per program, baris awal => indeks program] */
-            $bagiProgram = function (array $programs, int $n): array {
-                if (empty($programs)) {
-                    return [[], []];
-                }
-
-                $span = [];
-                $mulai = [];
-                $sisaBaris   = $n;
-                $sisaProgram = count($programs);
-                $awal = 0;
-
-                foreach ($programs as $pi => $_) {
-                    $s = max(1, (int) ceil($sisaBaris / max(1, $sisaProgram)));
-                    $span[$pi]   = $s;
-                    $mulai[$awal] = $pi;
-                    $awal        += $s;
-                    $sisaBaris   -= $s;
-                    $sisaProgram--;
-                }
-
-                return [$span, $mulai];
-            };
+            // Pembagian tinggi indikator ke jumlah unit kini memakai pk_bagi_baris()
+            // dari app/Helpers/pk_unit_helper.php (dulu closure bagiProgram lokal).
             $rupiah = function ($nilai) {
                 if (function_exists('formatRupiah')) {
                     return formatRupiah($nilai);
@@ -367,15 +388,15 @@ $splitAksi = function ($text) {
                 <?php foreach ($rows as $ri => $row): ?>
                     <?php
                     [$items, $barisButir, $n, $barisRenaksi] = $barisFor($row);
-                    $subsRow  = $subMap[(int) ($row['target_id'] ?? 0)] ?? [];
-                    $programs = array_values($programMap[(int) ($row['pk_indikator_id'] ?? 0)] ?? []);
+                    $subsRow = $subMap[(int) ($row['target_id'] ?? 0)] ?? [];
+                    $units   = array_values($programMap[(int) ($row['pk_indikator_id'] ?? 0)] ?? []);
                     $barisRender = [];
                     foreach ($barisButir as $bk => $bJumlah) {
                         for ($bj = 0; $bj < $bJumlah; $bj++) {
                             $barisRender[] = [$bk, $bj];
                         }
                     }
-                    [$spanProgram, $mulaiProgram] = $bagiProgram($programs, $n);
+                    [$spanUnit, $mulaiUnit] = pk_bagi_baris($units, $n);
                     ?>
                     <?php for ($k = 0; $k < $n; $k++): ?>
                         <?php [$butirIdx, $subIdx] = $barisRender[$k] ?? [null, null]; ?>
@@ -405,29 +426,39 @@ $splitAksi = function ($text) {
 
                             <?php endif; ?>
 
-                            <?php // Program & anggaran: tinggi indikator dibagi rata lewat rowspan,
-                                  // jadi sejajar dan tanpa sel kosong. ?>
-                            <?php if (empty($programs)): ?>
+                            <?php // Unit (Program/Kegiatan/Sub Kegiatan) & anggaran: tinggi indikator
+                                  // dibagi rata lewat rowspan, jadi sejajar dan tanpa sel kosong. ?>
+                            <?php if (empty($units)): ?>
                                 <?php if ($k === 0): ?>
                                     <td rowspan="<?= $n ?>" class="c">-</td>
                                     <td rowspan="<?= $n ?>" class="c">-</td>
                                 <?php endif; ?>
-                            <?php elseif (isset($mulaiProgram[$k])): ?>
+                            <?php elseif (isset($mulaiUnit[$k])): ?>
                                 <?php
-                                $pi   = $mulaiProgram[$k];
-                                $prog = $programs[$pi];
-                                $span = $spanProgram[$pi] ?? 1;
+                                $ui   = $mulaiUnit[$k];
+                                $unit = $units[$ui];
+                                $span = $spanUnit[$ui] ?? 1;
+                                // 'program' tetap dipakai sebagai alias 'nama' demi data lama.
+                                $namaUnitSel = (string) ($unit['nama'] ?? ($unit['program'] ?? ''));
+                                // Tandai tingkat unit bila tabel memuat campuran eselon, atau bila
+                                // unit ini turun tingkat karena tingkat aslinya kosong.
+                                $tandaiTingkat = ($unitHeaderGenerik || !empty($unit['fallback']))
+                                    && !empty($unit['level_label']);
                                 ?>
                                 <td rowspan="<?= $span ?>" class="text-start">
-                                    <?= esc(!empty($prog['kode']) ? '[' . $prog['kode'] . '] ' : '') ?><?= esc($prog['program']) ?>
+                                    <?php if ($tandaiTingkat): ?>
+                                        <div><span class="badge-lite"><?= esc($unit['level_label']) ?></span></div>
+                                    <?php endif; ?>
+                                    <?= esc(!empty($unit['kode']) ? '[' . $unit['kode'] . '] ' : '') ?><?= esc($namaUnitSel !== '' ? $namaUnitSel : '-') ?>
                                 </td>
                                 <td rowspan="<?= $span ?>" class="text-start nowrap">
-                                    <?= esc($rupiah($prog['anggaran'])) ?>
+                                    <?= esc($rupiah($unit['anggaran'] ?? 0)) ?>
                                 </td>
                             <?php endif; ?>
 
                             <?php if ($butirIdx === null): ?>
-                                <?php // Sisa baris ketika program lebih banyak dari baris rencana aksi ?>
+                                <?php // Sisa baris ketika unit lebih banyak dari baris rencana aksi.
+                                      // colspan 6 = Rencana Aksi + Sub Rencana Aksi + TW I..IV. ?>
                                 <?php if ($k === $barisRenaksi): ?>
                                     <td colspan="6" rowspan="<?= $n - $barisRenaksi ?>"></td>
                                 <?php endif; ?>
@@ -460,7 +491,8 @@ $splitAksi = function ($text) {
             <?php endforeach; ?>
         <?php else: ?>
             <tr>
-                <td colspan="<?= 14 + ($showPejabat ? 1 : 0) + ($showOpd ? 1 : 0) ?>" class="c pdf-muted">
+                <?php // colspan ikut jumlah <col>/<th> yang benar-benar dicetak. ?>
+                <td colspan="<?= $jumlahKolomOpd ?>" class="c pdf-muted">
                     Belum ada indikator PK OPD/Kecamatan untuk filter ini.
                 </td>
             </tr>

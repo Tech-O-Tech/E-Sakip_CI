@@ -238,10 +238,13 @@ $routes->group(
         $routes->post('renaksi_pk/(:any)/update/(:num)', 'AdminOpd\PkRenaksiController::update/$1/$2');
         $routes->get('renaksi_pk/(:any)', 'AdminOpd\PkRenaksiController::index/$1');
         $routes->get('monev_pk/(:any)/input/(:num)', 'AdminOpd\PkRenaksiController::monevForm/$1/$2');
-        $routes->post('monev_pk/(:any)/save', 'AdminOpd\PkRenaksiController::monevSave/$1');
-        // realisasi anggaran per triwulan (tombol aksi tersendiri di MONEV)
+        // Realisasi anggaran per triwulan (tombol aksi tersendiri di MONEV).
+        // WAJIB didaftarkan SEBELUM 'monev_pk/(:any)/save': (:any) dikompilasi jadi (.*)
+        // yang rakus dan ikut menelan garis miring, sehingga 'es3/anggaran/save' akan
+        // tertelan rute save biasa sebagai jenis 'es3/anggaran' kalau urutannya terbalik.
         $routes->get('monev_pk/(:any)/anggaran/(:num)', 'AdminOpd\PkRenaksiController::monevAnggaranForm/$1/$2');
         $routes->post('monev_pk/(:any)/anggaran/save', 'AdminOpd\PkRenaksiController::monevAnggaranSave/$1');
+        $routes->post('monev_pk/(:any)/save', 'AdminOpd\PkRenaksiController::monevSave/$1');
         $routes->get('monev_pk/(:any)/cetak', 'AdminOpd\PkRenaksiController::cetak/$1');
         $routes->get('monev_pk/(:any)', 'AdminOpd\PkRenaksiController::monev/$1');
 
@@ -445,6 +448,12 @@ $routes->group('adminopd', ['filter' => 'auth:admin_opd,admin,admin_kecamatan'],
     $routes->post('renaksi_pk/(:any)/update/(:num)', 'AdminOpd\PkRenaksiController::update/$1/$2');
     $routes->get('renaksi_pk/(:any)', 'AdminOpd\PkRenaksiController::index/$1');
     $routes->get('monev_pk/(:any)/input/(:num)', 'AdminOpd\PkRenaksiController::monevForm/$1/$2');
+    // Realisasi anggaran per triwulan (tombol aksi tersendiri di MONEV).
+    // WAJIB didaftarkan SEBELUM 'monev_pk/(:any)/save': (:any) dikompilasi jadi (.*)
+    // yang rakus dan ikut menelan garis miring, sehingga 'es3/anggaran/save' akan
+    // tertelan rute save biasa sebagai jenis 'es3/anggaran' kalau urutannya terbalik.
+    $routes->get('monev_pk/(:any)/anggaran/(:num)', 'AdminOpd\PkRenaksiController::monevAnggaranForm/$1/$2');
+    $routes->post('monev_pk/(:any)/anggaran/save', 'AdminOpd\PkRenaksiController::monevAnggaranSave/$1');
     $routes->post('monev_pk/(:any)/save', 'AdminOpd\PkRenaksiController::monevSave/$1');
     $routes->get('monev_pk/(:any)/cetak', 'AdminOpd\PkRenaksiController::cetak/$1');
     $routes->get('monev_pk/(:any)', 'AdminOpd\PkRenaksiController::monev/$1');

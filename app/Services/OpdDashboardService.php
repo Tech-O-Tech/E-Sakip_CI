@@ -18,7 +18,10 @@ use Config\Database;
  *     -> target_rencana (pk_indikator_id, opd_id)         = Rencana Aksi
  *        -> target_sub_rencana                            = Sub Rencana Aksi
  *        -> monev (target_rencana_id, target_sub_rencana_id, opd_id)
- *        -> monev_anggaran (target_rencana_id)             = realisasi anggaran
+ *        -> monev_anggaran (target_rencana_id, ref_level, ref_id)
+ *                                                          = realisasi anggaran
+ *                                                            (bisa >1 baris:
+ *                                                             satu per unit)
  *     -> pk_program -> program_pk                          = program & pagu
  *   pk -> pk_misi -> rpjmd_misi                            = dukungan Misi Bupati
  *
@@ -701,7 +704,24 @@ class OpdDashboardService
         return $map;
     }
 
-    /** @return array<int, array<string, mixed>> [target_rencana_id => monev_anggaran] */
+    /**
+     * Realisasi anggaran per rencana aksi — DIJUMLAHKAN dari seluruh baris unit.
+     *
+     * Sejak realisasi dirinci per unit anggaran (monev_anggaran.ref_level /
+     * ref_id), satu target_rencana bisa punya lebih dari satu baris. Kalau
+     * baris-baris itu dipetakan mentah [target_rencana_id => baris], yang
+     * belakangan MENIMPA yang terdahulu tanpa satu pun error dan angka
+     * penyerapan anggaran menyusut diam-diam. Karena itu penjumlahannya
+     * dikerjakan basis data, dan bentuk keluarannya sengaja tetap DATAR
+     * supaya realisasiIndikator() & updatedAtIndikator() tidak perlu dibongkar.
+     *
+     * Pembedaan yang WAJIB bertahan (dikunci app/Commands/DashVerify.php):
+     * SUM() atas baris yang semuanya NULL menghasilkan NULL = "belum
+     * dilaporkan"; begitu ada satu nilai terisi — termasuk 0 — hasilnya angka,
+     * jadi realisasi 0 yang dilaporkan tetap terbaca sebagai 0, bukan kosong.
+     *
+     * @return array<int, array<string, mixed>> [target_rencana_id => realisasi terjumlah]
+     */
     private function loadRealisasiAnggaran(array $targetIds): array
     {
         $targetIds = $this->bersihkanIds($targetIds);
@@ -710,9 +730,15 @@ class OpdDashboardService
         }
 
         $rows = $this->db->table('monev_anggaran')
-            ->select('id, target_rencana_id, updated_at,
-                      realisasi_triwulan_1, realisasi_triwulan_2, realisasi_triwulan_3, realisasi_triwulan_4')
+            ->select('target_rencana_id,
+                      SUM(realisasi_triwulan_1) AS realisasi_triwulan_1,
+                      SUM(realisasi_triwulan_2) AS realisasi_triwulan_2,
+                      SUM(realisasi_triwulan_3) AS realisasi_triwulan_3,
+                      SUM(realisasi_triwulan_4) AS realisasi_triwulan_4,
+                      MAX(updated_at) AS updated_at,
+                      COUNT(*) AS jumlah_baris', false)
             ->whereIn('target_rencana_id', $targetIds)
+            ->groupBy('target_rencana_id')
             ->get()->getResultArray();
 
         $map = [];
@@ -1075,7 +1101,17 @@ class OpdDashboardService
         return implode(', ', $nama);
     }
 
-    /** @param array<int, array<string, mixed>> $renaksi */
+    /**
+     * Waktu pembaruan terakhir satu indikator.
+     *
+     * Realisasi anggaran bisa punya banyak baris unit per rencana aksi, jadi
+     * yang dibaca WAJIB MAX(updated_at) — bukan updated_at satu baris yang
+     * kebetulan terambil. Nilai dari $anggaranMap sudah berupa MAX() hasil
+     * agregasi loadRealisasiAnggaran(); untuk peta yang belum teragregasi
+     * (masih bertingkat per ref_key) seluruh barisnya tetap ikut dinilai.
+     *
+     * @param array<int, array<string, mixed>> $renaksi
+     */
     private function updatedAtIndikator(array $renaksi, array $monevMap, array $anggaranMap): ?string
     {
         $waktu = [];
@@ -1089,12 +1125,42 @@ class OpdDashboardService
                     $waktu[] = (string) $m['updated_at'];
                 }
             }
-            if (!empty($anggaranMap[$targetId]['updated_at'])) {
-                $waktu[] = (string) $anggaranMap[$targetId]['updated_at'];
+            foreach ($this->waktuAnggaran($anggaranMap[$targetId] ?? null) as $w) {
+                $waktu[] = $w;
             }
         }
 
         return $waktu === [] ? null : max($waktu);
+    }
+
+    /**
+     * Seluruh updated_at pada entri realisasi anggaran satu rencana aksi.
+     *
+     * Menerima dua bentuk: baris tunggal hasil agregasi (updated_at = MAX)
+     * maupun peta bertingkat [ref_key => baris] milik MonevModel.
+     *
+     * @param array<string, mixed>|null $entri
+     *
+     * @return string[]
+     */
+    private function waktuAnggaran(?array $entri): array
+    {
+        if ($entri === null || $entri === []) {
+            return [];
+        }
+
+        if (array_key_exists('updated_at', $entri)) {
+            return empty($entri['updated_at']) ? [] : [(string) $entri['updated_at']];
+        }
+
+        $waktu = [];
+        foreach ($entri as $baris) {
+            if (is_array($baris) && !empty($baris['updated_at'])) {
+                $waktu[] = (string) $baris['updated_at'];
+            }
+        }
+
+        return $waktu;
     }
 
     /* =====================================================================

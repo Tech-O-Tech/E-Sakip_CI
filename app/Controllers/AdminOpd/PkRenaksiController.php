@@ -24,8 +24,12 @@ use Config\Database;
  */
 class PkRenaksiController extends BaseController
 {
-    /** `capaian` menyediakan rumus Capaian Total (persentase) untuk MONEV. */
-    protected $helpers = ['cascading_label', 'capaian'];
+    /**
+     * `capaian` menyediakan rumus Capaian Total (persentase) untuk MONEV.
+     * `pk_unit` menentukan tingkat unit anggaran (Program/Kegiatan/Sub Kegiatan)
+     *           beserta judul kolomnya.
+     */
+    protected $helpers = ['cascading_label', 'capaian', 'pk_unit'];
 
     protected TargetModel $targets;
     protected MonevModel $monev;
@@ -161,6 +165,51 @@ class PkRenaksiController extends BaseController
         }
 
         return null;
+    }
+
+    /**
+     * Pastikan tiap baris membawa `pk.jenis` MENTAH pada kunci `pk_jenis`.
+     *
+     * View memakainya untuk menentukan tingkat unit anggaran per baris
+     * (Program / Kegiatan / Sub Kegiatan). Query PK OPD sudah men-SELECT
+     * `pk.jenis AS pk_jenis`; query PK Bupati tidak, sebab seluruh barisnya
+     * memang sudah dipagari `pk.jenis = 'bupati'` — jadi nilainya dilengkapi
+     * di sini supaya bentuk baris kedua modul seragam.
+     *
+     * @param array<int, array<string, mixed>> $rows
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function lengkapiPkJenis(array $rows, string $jenis): array
+    {
+        foreach ($rows as &$row) {
+            if (trim((string) ($row['pk_jenis'] ?? '')) === '') {
+                $row['pk_jenis'] = ($jenis === 'bupati') ? 'bupati' : '';
+            }
+        }
+        unset($row);
+
+        return $rows;
+    }
+
+    /**
+     * Variabel judul kolom unit anggaran untuk view & cetak.
+     *
+     * $eselon = hasil resolvePkFilter() (modul es3). Modul bupati tidak punya
+     * filter eselon, tetapi tingkatnya pasti 'program', jadi diperlakukan
+     * sebagai filter 'bupati' supaya judulnya tetap spesifik ("Program").
+     *
+     * @return array{labelUnitHeader: string, unitHeaderGenerik: bool}
+     */
+    private function unitHeaderVars(string $jenis, ?string $eselon): array
+    {
+        $eselonAktif = ($jenis === 'bupati') ? 'bupati' : $eselon;
+
+        return [
+            'labelUnitHeader'   => pk_unit_header($eselonAktif),
+            // true = tabel bisa memuat campuran tingkat, judulnya digabung
+            'unitHeaderGenerik' => trim((string) $eselonAktif) === '',
+        ];
     }
 
     /**
@@ -428,10 +477,12 @@ class PkRenaksiController extends BaseController
             $tahunList   = $this->targets->getAvailableYearsPkOpd($opdFilter);
         }
 
-        // Program & anggaran diambil dari PK (pk_program -> program_pk), dan sub
-        // rencana aksi dari target_sub_rencana. Keduanya relasi 1-ke-banyak, jadi
-        // diambil terpisah supaya baris indikator tidak berlipat karena join.
-        $programMap = $this->targets->getProgramPkByIndikator(array_column($rows, 'pk_indikator_id'));
+        // Unit anggaran (Program/Kegiatan/Sub Kegiatan mengikuti pk.jenis) diambil
+        // dari PK, dan sub rencana aksi dari target_sub_rencana. Keduanya relasi
+        // 1-ke-banyak, jadi diambil terpisah supaya baris indikator tidak berlipat
+        // karena join.
+        $rows       = $this->lengkapiPkJenis($rows, $jenis);
+        $programMap = $this->targets->getUnitPkByIndikator(array_column($rows, 'pk_indikator_id'));
         $subMap     = $this->targets->getSubRencanaByTargets(array_column($rows, 'target_id'));
 
         // Group per sasaran PK (pakai pk_sasaran_id agar sasaran milik pejabat
@@ -469,6 +520,8 @@ class PkRenaksiController extends BaseController
             'pejabatList' => $pejabatList,
             'grouped'     => $grouped,
             'summary'     => $summary,
+            // judul kolom unit anggaran
+            ...$this->unitHeaderVars($jenis, $eselon),
         ]);
     }
 
@@ -505,6 +558,9 @@ class PkRenaksiController extends BaseController
                 ->with('success', 'Rencana aksi sudah ada. Silakan edit.');
         }
 
+        // Unit anggaran indikator ini (tingkatnya mengikuti pk.jenis)
+        $unitPk = $this->targets->getUnitPkByIndikator([$pi])[$pi] ?? [];
+
         return view('adminOpd/pk_renaksi/form', [
             'jenis'      => $jenis,
             'base'       => $this->base($jenis),
@@ -514,7 +570,10 @@ class PkRenaksiController extends BaseController
             'opdList'    => ($jenis === 'bupati') ? $this->opdOptions() : [],
             'subRencana' => [],
             'skala'      => $this->skalaSatuan($ctx),
-            'programPk'  => $this->targets->getProgramPkByIndikator([$pi])[$pi] ?? [],
+            'programPk'  => $unitPk,
+            'units'      => $unitPk,
+            'labelUnitHeader'   => pk_unit_label($ctx['pk_jenis'] ?? null),
+            'unitHeaderGenerik' => false,
         ]);
     }
 
@@ -595,6 +654,9 @@ class PkRenaksiController extends BaseController
         }
 
         $pkIndikatorId = (int) ($detail['pk_indikator_id'] ?? 0);
+        $unitPk        = $pkIndikatorId > 0
+            ? ($this->targets->getUnitPkByIndikator([$pkIndikatorId])[$pkIndikatorId] ?? [])
+            : [];
 
         return view('adminOpd/pk_renaksi/form', [
             'jenis'      => $jenis,
@@ -605,9 +667,11 @@ class PkRenaksiController extends BaseController
             'opdList'    => ($jenis === 'bupati') ? $this->opdOptions() : [],
             'subRencana' => $this->targets->getSubRencanaByTarget((int) $id),
             'skala'      => $this->skalaSatuan($detail),
-            'programPk'  => $pkIndikatorId > 0
-                ? ($this->targets->getProgramPkByIndikator([$pkIndikatorId])[$pkIndikatorId] ?? [])
-                : [],
+            // unit anggaran indikator ini (tingkatnya mengikuti pk.jenis)
+            'programPk'  => $unitPk,
+            'units'      => $unitPk,
+            'labelUnitHeader'   => pk_unit_label($detail['pk_jenis'] ?? null),
+            'unitHeaderGenerik' => false,
         ]);
     }
 
@@ -879,6 +943,8 @@ class PkRenaksiController extends BaseController
             $tahunList   = $this->monev->getAvailableYearsPkOpd($opdFilter);
         }
 
+        $rows = $this->lengkapiPkJenis($rows, $jenis);
+
         $grouped = [];
         foreach ($rows as $row) {
             $grouped[$row['pk_sasaran_id'] ?? '-'][] = $row;
@@ -894,9 +960,10 @@ class PkRenaksiController extends BaseController
             // disimpan per sub — keduanya diambil terpisah lalu dipetakan.
             'subMap'      => $this->targets->getSubRencanaByTargets(array_column($rows, 'target_id')),
             'monevSub'    => $monevSub,
-            // Program & pagu anggaran ikut PK (sama dengan Target & Rencana Aksi),
-            // realisasi anggarannya diinput sendiri di MONEV.
-            'programMap'  => $this->targets->getProgramPkByIndikator(array_column($rows, 'pk_indikator_id')),
+            // Unit anggaran (Program/Kegiatan/Sub Kegiatan sesuai pk.jenis) & pagunya
+            // ikut PK (sama dengan Target & Rencana Aksi), realisasi anggarannya
+            // diinput sendiri di MONEV — kini per unit, dikunci ref_key.
+            'programMap'  => $this->targets->getUnitPkByIndikator(array_column($rows, 'pk_indikator_id')),
             'anggaranMap' => $this->monev->getAnggaranForTargets(array_column($rows, 'target_id')),
             'jenis'       => $jenis,
             'autoPd'      => $autoPd,
@@ -912,6 +979,8 @@ class PkRenaksiController extends BaseController
             'pejabatList' => $pejabatList,
             'grouped'     => $grouped,
             'summary'     => $summary,
+            // judul kolom unit anggaran
+            ...$this->unitHeaderVars($jenis, $eselon),
         ]);
     }
 
@@ -974,6 +1043,8 @@ class PkRenaksiController extends BaseController
             }
         }
 
+        $rows = $this->lengkapiPkJenis($rows, $jenis);
+
         $grouped = [];
         foreach ($rows as $row) {
             $grouped[$row['pk_sasaran_id'] ?? '-'][] = $row;
@@ -986,7 +1057,7 @@ class PkRenaksiController extends BaseController
             // Target triwulan per SUB rencana aksi + capaiannya per sub
             'subMap'      => $this->targets->getSubRencanaByTargets(array_column($rows, 'target_id')),
             'monevSub'    => $monevSub,
-            'programMap'  => $this->targets->getProgramPkByIndikator(array_column($rows, 'pk_indikator_id')),
+            'programMap'  => $this->targets->getUnitPkByIndikator(array_column($rows, 'pk_indikator_id')),
             'anggaranMap' => $this->monev->getAnggaranForTargets(array_column($rows, 'target_id')),
             'jenis'       => $jenis,
             'grouped'     => $grouped,
@@ -1002,6 +1073,8 @@ class PkRenaksiController extends BaseController
             'autoPd'      => $autoPd,
             'summary'     => $summary,
             'nama_opd'    => $namaUnit,
+            // judul kolom unit anggaran
+            ...$this->unitHeaderVars($jenis, $eselon),
         ]);
 
         $mpdf = new \Mpdf\Mpdf([
@@ -1091,6 +1164,8 @@ class PkRenaksiController extends BaseController
             }
         }
 
+        $rows = $this->lengkapiPkJenis($rows, $jenis);
+
         $grouped = [];
         $withRenaksi = 0;
         foreach ($rows as $row) {
@@ -1106,7 +1181,7 @@ class PkRenaksiController extends BaseController
         ];
 
         $html = view('adminOpd/pk_renaksi/target_rencana_aksi_cetak', [
-            'programMap'   => $this->targets->getProgramPkByIndikator(array_column($rows, 'pk_indikator_id')),
+            'programMap'   => $this->targets->getUnitPkByIndikator(array_column($rows, 'pk_indikator_id')),
             'subMap'       => $this->targets->getSubRencanaByTargets(array_column($rows, 'target_id')),
             'opdMap'       => $opdMap,
             'autoPd'       => $autoPd,
@@ -1124,6 +1199,8 @@ class PkRenaksiController extends BaseController
             'grouped'      => $grouped,
             'summary'      => $summary,
             'nama_opd'     => $namaUnit,
+            // judul kolom unit anggaran
+            ...$this->unitHeaderVars($jenis, $eselon),
         ]);
 
         $mpdf = new \Mpdf\Mpdf([
@@ -1431,7 +1508,10 @@ class PkRenaksiController extends BaseController
 
     /**
      * Form realisasi anggaran per triwulan untuk satu rencana aksi.
-     * Pagu anggarannya read-only, ikut Perjanjian Kinerja.
+     *
+     * Realisasi diinput PER UNIT anggaran (Program/Kegiatan/Sub Kegiatan sesuai
+     * pk.jenis), bukan lagi satu baris per rencana aksi. Pagu tiap unit
+     * read-only, ikut Perjanjian Kinerja.
      */
     public function monevAnggaranForm($jenis, $targetId)
     {
@@ -1452,18 +1532,44 @@ class PkRenaksiController extends BaseController
 
         $pkIndikatorId = (int) ($detail['pk_indikator_id'] ?? 0);
 
+        // Unit anggaran sah milik indikator ini — satu baris input per unit.
+        $units = $pkIndikatorId > 0
+            ? ($this->targets->getUnitPkByIndikator([$pkIndikatorId])[$pkIndikatorId] ?? [])
+            : [];
+
+        // Seluruh realisasi yang sudah tersimpan, dikunci ref_key.
+        $anggaranUnit = $this->monev->getAnggaranForTargets([(int) $targetId])[(int) $targetId] ?? [];
+
+        // Baris WARISAN (ref_level NULL, ref_key ':0'): realisasi lama yang
+        // belum dirinci per unit. Sengaja hanya ditampilkan read-only — form
+        // tidak boleh menyuntingnya supaya angka historis tidak tertimpa.
+        $anggaranWarisan = $anggaranUnit[':0'] ?? null;
+
         return view('adminOpd/pk_renaksi/monev_anggaran_form', [
-            'jenis'     => $jenis,
-            'base'      => $this->base($jenis),
-            'detail'    => $detail,
-            'anggaran'  => $this->monev->findAnggaran((int) $targetId),
-            'programPk' => $pkIndikatorId > 0
-                ? ($this->targets->getProgramPkByIndikator([$pkIndikatorId])[$pkIndikatorId] ?? [])
-                : [],
+            'jenis'           => $jenis,
+            'base'            => $this->base($jenis),
+            'detail'          => $detail,
+            'units'           => $units,
+            'anggaranUnit'    => $anggaranUnit,
+            'anggaranWarisan' => $anggaranWarisan,
+            'labelUnitHeader' => pk_unit_label($detail['pk_jenis'] ?? null),
+            // kompatibilitas view lama
+            'programPk'       => $units,
+            'anggaran'        => $anggaranWarisan,
         ]);
     }
 
-    /** Simpan realisasi anggaran per triwulan. */
+    /**
+     * Simpan realisasi anggaran per triwulan, PER UNIT anggaran.
+     *
+     * Bentuk POST yang dibaca:
+     *   realisasi[<ref_key>][1..4]
+     *   unit[<ref_key>][level], unit[<ref_key>][ref_id]   (dicocokkan, bukan dipercaya)
+     *
+     * ref_key yang tidak ada dalam daftar unit sah milik indikator ini ditolak
+     * — sama semangatnya dengan cek kepemilikan OPD di atas: id apa pun yang
+     * datang dari browser tidak boleh langsung dipakai menulis ke DB.
+     */
     public function monevAnggaranSave($jenis)
     {
         $jenis = $this->normJenis((string) $jenis);
@@ -1482,18 +1588,99 @@ class PkRenaksiController extends BaseController
                 ->with('error', 'Data bukan milik OPD Anda.');
         }
 
-        $realisasi = [];
-        foreach ([1, 2, 3, 4] as $q) {
-            $nilai = $this->rupiahKeAngka($this->request->getPost('realisasi_triwulan_' . $q));
-            if ($nilai === false) {
+        $pkIndikatorId = (int) ($detail['pk_indikator_id'] ?? 0);
+        $units         = $pkIndikatorId > 0
+            ? ($this->targets->getUnitPkByIndikator([$pkIndikatorId])[$pkIndikatorId] ?? [])
+            : [];
+
+        // Daftar unit SAH, dikunci ref_key. Inilah satu-satunya sumber level &
+        // ref_id yang dipakai menulis; nilai dari POST hanya dicocokkan.
+        $unitSah = [];
+        foreach ($units as $unit) {
+            $unitSah[(string) $unit['ref_key']] = $unit;
+        }
+
+        $postRealisasi = $this->request->getPost('realisasi');
+        $postUnit      = $this->request->getPost('unit');
+        if (!is_array($postRealisasi) || $postRealisasi === []) {
+            return redirect()->back()->withInput()
+                ->with('error', 'Tidak ada realisasi anggaran yang dikirim.');
+        }
+
+        // Baris yang sudah ada dipakai untuk membedakan "dikosongkan" (baris
+        // ada, nilainya dihapus -> tetap di-update) dari "memang tidak diisi"
+        // (belum pernah ada -> tidak usah membuat baris kosong).
+        $sudahAda = $this->monev->getAnggaranForTargets([$targetId])[$targetId] ?? [];
+
+        // Divalidasi dulu semuanya, baru disimpan: satu nilai salah tidak boleh
+        // meninggalkan sebagian unit terlanjur tersimpan.
+        $akanSimpan = [];
+        foreach ($postRealisasi as $refKey => $nilaiTriwulan) {
+            $refKey = (string) $refKey;
+
+            if (!isset($unitSah[$refKey])) {
+                // Termasuk baris warisan (':0') yang memang tidak boleh disunting.
                 return redirect()->back()->withInput()
-                    ->with('error', 'Realisasi Triwulan ' . $q . ' harus berupa angka rupiah.');
+                    ->with('error', 'Unit anggaran tidak dikenali untuk indikator ini.');
             }
-            $realisasi[$q] = $nilai;
+            if (!is_array($nilaiTriwulan)) {
+                continue;
+            }
+
+            $unit  = $unitSah[$refKey];
+            $level = (string) $unit['level'];
+            $refId = (int) $unit['ref_id'];
+
+            // Metadata unit dari POST hanya boleh mengonfirmasi, tidak menentukan.
+            $metaPost = (is_array($postUnit) && isset($postUnit[$refKey]) && is_array($postUnit[$refKey]))
+                ? $postUnit[$refKey]
+                : null;
+            if ($metaPost !== null) {
+                $levelPost = trim((string) ($metaPost['level'] ?? ''));
+                $refIdPost = (int) ($metaPost['ref_id'] ?? 0);
+                if (($levelPost !== '' && $levelPost !== $level) || ($refIdPost !== 0 && $refIdPost !== $refId)) {
+                    return redirect()->back()->withInput()
+                        ->with('error', 'Data unit anggaran tidak cocok dengan Perjanjian Kinerja.');
+                }
+            }
+
+            $realisasi = [];
+            $adaIsi    = false;
+            foreach ([1, 2, 3, 4] as $q) {
+                $nilai = $this->rupiahKeAngka($nilaiTriwulan[$q] ?? null);
+                if ($nilai === false) {
+                    return redirect()->back()->withInput()->with(
+                        'error',
+                        'Realisasi Triwulan ' . $q . ' pada "' . ($unit['nama'] ?? 'unit') . '" harus berupa angka rupiah.'
+                    );
+                }
+                $realisasi[$q] = $nilai;
+                if ($nilai !== null) {
+                    $adaIsi = true;
+                }
+            }
+
+            if (!$adaIsi && !isset($sudahAda[$refKey])) {
+                continue; // tidak diisi & belum pernah ada: jangan bikin baris kosong
+            }
+
+            $akanSimpan[] = [
+                'realisasi' => $realisasi,
+                'level'     => $level,
+                'ref_id'    => $refId,
+            ];
         }
 
         $monevOpdId = ($jenis === 'bupati') ? null : (int) $detail['opd_id'];
-        $this->monev->upsertAnggaran($targetId, $monevOpdId, $realisasi);
+        foreach ($akanSimpan as $baris) {
+            $this->monev->upsertAnggaran(
+                $targetId,
+                $monevOpdId,
+                $baris['realisasi'],
+                $baris['level'],
+                $baris['ref_id']
+            );
+        }
 
         return redirect()->to(base_url($this->monevUrl($jenis)))
             ->with('success', 'Realisasi anggaran berhasil disimpan.');

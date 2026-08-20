@@ -165,10 +165,17 @@ text/x-generic cetak-L.php ( HTML document, ASCII text, with CRLF line terminato
       <?php endif; ?>
     </h4>
 
-    <?php $head_table = ($jenis === 'pengawas') ? 'KEGIATAN' : 'PROGRAM';
+    <?php
+    // Judul kolom unit anggaran SELALU ditentukan oleh pk.jenis MENTAH, bukan label
+    // eselon: bupati/jpt/camat -> Program, administrator -> Kegiatan,
+    // pengawas -> Sub Kegiatan (lihat app/Helpers/pk_unit_helper.php).
+    helper('pk_unit');
+    $head_table = strtoupper(pk_unit_label($jenis));
     ?>
 
     <?php
+    // Nama sasaran berada satu tingkat DI ATAS unit anggaran: bupati/jpt/camat ->
+    // Sasaran Strategis, administrator -> Sasaran Program, pengawas -> Sasaran Kegiatan.
     $head_table_sasaran = ($jenis === 'pengawas')
       ? 'KEGIATAN'
       : (in_array($jenis, ['jpt', 'camat', 'bupati']) ? 'STRATEGIS' : 'PROGRAM');

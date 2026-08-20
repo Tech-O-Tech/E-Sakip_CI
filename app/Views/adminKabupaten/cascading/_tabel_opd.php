@@ -102,6 +102,19 @@ $cascWrite = user_can('cascading_opd.update') && empty(session()->get('opd_id'))
                             <?php if (($firstShow['es3'][$r['es3_id']] ?? null) == $index): ?>
                                 <td rowspan="<?= $rowspan['es3'][$r['es3_id']] ?? 1 ?>" class="text-start">
                                     <?= !empty($r['es3_sasaran']) ? esc($r['es3_sasaran']) : '<span class="text-muted">-</span>' ?>
+                                    <?php // Program & kegiatan PK milik kabid ini. Sengaja disisipkan DI DALAM sel
+                                         // yang sudah ber-rowspan, bukan sebagai kolom baru: menambah kolom berarti
+                                         // mengubah CASC_META_KEYS beserta seluruh angka colspan penutup tabel. ?>
+                                    <?php if (!empty($showProgramPk) && !empty($programEs3[$r['es3_id']])): ?>
+                                        <div class="casc-prog-list mt-2">
+                                            <?php foreach ($programEs3[$r['es3_id']] as $progEs3): ?>
+                                                <div class="casc-prog"><span class="prog-kode">PRG</span><?= esc($progEs3['nama']) ?></div>
+                                                <?php foreach ($progEs3['kegiatan'] as $kegEs3): ?>
+                                                    <div class="casc-keg"><span class="keg-kode">KEG</span><?= esc($kegEs3['nama']) ?></div>
+                                                <?php endforeach; ?>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    <?php endif; ?>
                                 </td>
                             <?php endif; ?>
                             <?php $key = $r['es3_id'] . '_' . ($r['es3_indikator_id'] ?? null); ?>

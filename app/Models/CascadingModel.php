@@ -1425,4 +1425,192 @@ class CascadingModel extends Model
         return $tree;
     }
 
+    /**
+     * Program & kegiatan PK yang menempel pada tiap node Eselon III (kabid)
+     * pada Pohon Kinerja / Cascading OPD.
+     *
+     * Tidak ada kunci struktural apa pun dari cascading_sasaran_opd ke
+     * pk_indikator, jadi jembatannya PENCOCOKAN TEKS ternormalisasi - pola yang
+     * sudah dipakai PkRenaksiController::autoOpdsForSasaran. Urutan prioritas:
+     * teks INDIKATOR dulu (lebih presisi), baru teks SASARAN sebagai cadangan,
+     * dan hanya untuk node yang belum dapat lewat indikator. Tanpa pemilihan
+     * prioritas itu, node yang sudah presisi ikut menyerap kegiatan milik
+     * saudara sekandung yang kebetulan seteks sasarannya.
+     *
+     * Program DITURUNKAN DARI kegiatan (kegiatan_pk.program_id), BUKAN dari
+     * pk_program.program_id. Sebabnya nyata: 452 dari 2051 tautan (22%) punya
+     * program induk berbeda antara kedua jalur itu, sehingga menyandingkan
+     * keduanya akan memperlihatkan kegiatan yang menempel pada program salah.
+     *
+     * Jenis PK jenjang es3 tidak selalu 'administrator': pada OPD kecamatan,
+     * teks es3 cascading justru sepadan dengan pk.jenis 'pengawas' (konsisten
+     * dengan relabel eselon kecamatan). Dideteksi dari DATA - ada tidaknya PK
+     * berjenis 'camat' di OPD itu - bukan dari nama OPD. Tanpa aturan ini
+     * seluruh kecamatan tampil kosong (cakupan 50% vs 59%).
+     *
+     * Node yang teksnya tidak cocok sengaja dibiarkan KOSONG, bukan diisi
+     * seluruh program OPD, supaya program tidak menempel pada kabid yang salah.
+     *
+     * @return array<int, array<int, array<string, mixed>>> [es3_id => daftar program]
+     */
+    public function programPkByEs3(int $opdId, $periodeStart = null, $periodeEnd = null): array
+    {
+        if ($opdId <= 0) {
+            return [];
+        }
+
+        $db = $this->db;
+
+        // Jenjang es3 kecamatan memakai PK 'pengawas'; OPD biasa 'administrator'.
+        $adaCamat = (int) $db->table('pk')
+            ->where('opd_id', $opdId)->where('jenis', 'camat')
+            ->countAllResults();
+        $jenisEs3 = $adaCamat > 0 ? 'pengawas' : 'administrator';
+
+        // Tahun PK: terbaru di dalam periode; kalau kosong, terbaru apa pun.
+        $bt = $db->table('pk')->selectMax('tahun', 'tahun')
+            ->where('opd_id', $opdId)->where('jenis', $jenisEs3);
+        if ($periodeStart !== null && $periodeEnd !== null) {
+            $bt->where('tahun >=', (int) $periodeStart)->where('tahun <=', (int) $periodeEnd);
+        }
+        $tahun = $bt->get()->getRowArray()['tahun'] ?? null;
+
+        if ($tahun === null && $periodeStart !== null) {
+            $tahun = $db->table('pk')->selectMax('tahun', 'tahun')
+                ->where('opd_id', $opdId)->where('jenis', $jenisEs3)
+                ->get()->getRowArray()['tahun'] ?? null;
+        }
+        if ($tahun === null) {
+            return [];
+        }
+
+        $norm = static function (string $kol): string {
+            return "LOWER(TRIM(REGEXP_REPLACE({$kol}, '[[:space:]]+', ' ')))";
+        };
+
+        // Sisi PK: indikator + teks sasaran & indikator yang sudah dinormalkan.
+        $pkRows = $db->table('pk')
+            ->select('pi.id AS pk_indikator_id')
+            ->select($norm('ps.sasaran') . ' AS k_sas', false)
+            ->select($norm('pi.indikator') . ' AS k_ind', false)
+            ->join('pk_sasaran ps', 'ps.pk_id = pk.id AND ps.jenis = pk.jenis', 'inner')
+            ->join('pk_indikator pi', 'pi.pk_sasaran_id = ps.id', 'inner')
+            ->where('pk.opd_id', $opdId)
+            ->where('pk.jenis', $jenisEs3)
+            ->where('pk.tahun', $tahun)
+            ->get()->getResultArray();
+
+        if (empty($pkRows)) {
+            return [];
+        }
+
+        // Sisi cascading: node es3 + teks sasaran & indikatornya.
+        $nodeRows = $db->table('cascading_sasaran_opd cs')
+            ->select('cs.id AS node_id')
+            ->select($norm('cs.nama_sasaran') . ' AS k_sas', false)
+            ->select($norm('ci.indikator') . ' AS k_ind', false)
+            ->join('cascading_indikator_opd ci', 'ci.cascading_sasaran_id = cs.id', 'left')
+            ->where('cs.opd_id', $opdId)
+            ->where('cs.level', 'es3')
+            ->get()->getResultArray();
+
+        if (empty($nodeRows)) {
+            return [];
+        }
+
+        $pkByInd = [];
+        $pkBySas = [];
+        foreach ($pkRows as $r) {
+            $id = (int) $r['pk_indikator_id'];
+            if (($r['k_ind'] ?? '') !== '') {
+                $pkByInd[$r['k_ind']][$id] = $id;
+            }
+            if (($r['k_sas'] ?? '') !== '') {
+                $pkBySas[$r['k_sas']][$id] = $id;
+            }
+        }
+
+        $cocokInd = [];
+        $cocokSas = [];
+        foreach ($nodeRows as $r) {
+            $node = (int) $r['node_id'];
+            if (($r['k_ind'] ?? '') !== '' && isset($pkByInd[$r['k_ind']])) {
+                foreach ($pkByInd[$r['k_ind']] as $id) {
+                    $cocokInd[$node][$id] = $id;
+                }
+            }
+            if (($r['k_sas'] ?? '') !== '' && isset($pkBySas[$r['k_sas']])) {
+                foreach ($pkBySas[$r['k_sas']] as $id) {
+                    $cocokSas[$node][$id] = $id;
+                }
+            }
+        }
+
+        $indikatorPerNode = [];
+        $semuaNode = array_unique(array_merge(array_keys($cocokInd), array_keys($cocokSas)));
+        foreach ($semuaNode as $node) {
+            // Cocok indikator menang; sasaran hanya cadangan bila indikator nihil.
+            $indikatorPerNode[$node] = !empty($cocokInd[$node])
+                ? array_values($cocokInd[$node])
+                : array_values($cocokSas[$node] ?? []);
+        }
+        if (empty($indikatorPerNode)) {
+            return [];
+        }
+
+        $semuaIndikator = array_values(array_unique(array_merge(...array_values($indikatorPerNode))));
+
+        // Satu query batch: indikator -> kegiatan -> program INDUK kegiatan itu.
+        $unitRows = $db->table('pk_program pp')
+            ->select('pp.pk_indikator_id,
+                      pr.id AS program_id, pr.kode_program, pr.program_kegiatan,
+                      kg.id AS kegiatan_id, kg.kode_kegiatan, kg.kegiatan')
+            ->join('pk_kegiatan pkg', 'pkg.pk_program_id = pp.id', 'inner')
+            ->join('kegiatan_pk kg', 'kg.id = pkg.kegiatan_id', 'inner')
+            ->join('program_pk pr', 'pr.id = kg.program_id', 'inner')
+            ->whereIn('pp.pk_indikator_id', $semuaIndikator)
+            ->orderBy('pr.kode_program', 'ASC')
+            ->orderBy('pr.id', 'ASC')
+            ->orderBy('kg.kode_kegiatan', 'ASC')
+            ->get()->getResultArray();
+
+        $unitByIndikator = [];
+        foreach ($unitRows as $r) {
+            $unitByIndikator[(int) $r['pk_indikator_id']][] = $r;
+        }
+
+        $hasil = [];
+        foreach ($indikatorPerNode as $node => $ids) {
+            $programs = [];
+            foreach ($ids as $id) {
+                foreach ($unitByIndikator[$id] ?? [] as $r) {
+                    $pid = (int) $r['program_id'];
+                    if (!isset($programs[$pid])) {
+                        $programs[$pid] = [
+                            'program_id' => $pid,
+                            'kode'       => ($r['kode_program'] ?? '') !== '' ? $r['kode_program'] : null,
+                            'nama'       => (string) $r['program_kegiatan'],
+                            'kegiatan'   => [],
+                        ];
+                    }
+                    $kid = (int) $r['kegiatan_id'];
+                    $programs[$pid]['kegiatan'][$kid] = [
+                        'kegiatan_id' => $kid,
+                        'kode'        => ($r['kode_kegiatan'] ?? '') !== '' ? $r['kode_kegiatan'] : null,
+                        'nama'        => (string) $r['kegiatan'],
+                    ];
+                }
+            }
+            if (empty($programs)) {
+                continue; // cocok teks tapi rantainya putus -> tetap kosong, jujur
+            }
+            foreach ($programs as &$p) {
+                $p['kegiatan'] = array_values($p['kegiatan']);
+            }
+            unset($p);
+            $hasil[(int) $node] = array_values($programs);
+        }
+
+        return $hasil;
+    }
 }

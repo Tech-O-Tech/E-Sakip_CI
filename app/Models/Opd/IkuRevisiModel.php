@@ -510,6 +510,90 @@ class IkuRevisiModel extends Model
         return $baselineId;
     }
 
+    /**
+     * Pulihkan Kondisi Awal (revisi ke-0) yang HILANG pada lingkup yang sudah
+     * punya revisi bernomor.
+     *
+     * pastikanBaseline() sengaja menolak bekerja begitu ada baris lain di
+     * lingkup itu — asumsi wajarnya: kalau revisi ke-1 ada, baseline pasti
+     * sudah dibuat lebih dulu. Asumsi itu bisa meleset (baris terhapus di luar
+     * alur aplikasi), dan akibatnya nyata: tahun-tahun SEBELUM revisi pertama
+     * tidak dipayungi siapa pun, sehingga LAKIP bersumber IKU menolak melayani
+     * tahun-tahun itu ("belum ada versi").
+     *
+     * Baseline pulihan langsung DIJAHIT ke timeline yang ada: bila sudah ada
+     * revisi berlaku/superseded, ia lahir berstatus superseded dan ditutup
+     * tepat sebelum revisi paling awal — meniru persis apa yang akan
+     * dilakukan sahkan() seandainya urutannya normal.
+     *
+     * CATATAN JUJUR: isinya dibekukan dari IKU BERJALAN SEKARANG. Bila revisi
+     * sesudahnya sempat mengubah isi indikator, arsip pulihan ini memotret
+     * keadaan sesudah perubahan itu — koreksinya lewat izin sunting Kondisi
+     * Awal, bukan dengan menebak-nebak keadaan lampau secara otomatis.
+     *
+     * @return int|null id baseline pulihan, atau null bila tidak ada yang
+     *                  perlu dipulihkan (baseline masih ada / lingkup kosong)
+     */
+    public function pulihkanBaseline(?int $opdId, int $tahunMulai, int $tahunAkhir, ?int $userId = null): ?int
+    {
+        if (! $this->siap()) {
+            return null;
+        }
+
+        return $this->dalamTransaksi(function () use ($opdId, $tahunMulai, $tahunAkhir, $userId) {
+            $adaNol = $this->lingkup($opdId, $tahunMulai, $tahunAkhir)
+                ->where('nomor', 0)
+                ->countAllResults();
+
+            $bernomor = $this->lingkup($opdId, $tahunMulai, $tahunAkhir)
+                ->where('nomor >', 0)
+                ->countAllResults();
+
+            if ($adaNol > 0 || $bernomor === 0) {
+                return null; // sehat, atau memang belum pernah berrevisi
+            }
+
+            // Revisi efektif paling awal menentukan sampai kapan baseline
+            // memayungi. Draft/menunggu tidak dihitung: mereka belum pernah
+            // menggeser siapa pun.
+            $paling = $this->lingkup($opdId, $tahunMulai, $tahunAkhir)
+                ->whereIn('status', [self::STATUS_BERLAKU, self::STATUS_SUPERSEDED])
+                ->selectMin('berlaku_mulai_tahun')
+                ->get()->getRowArray();
+
+            $batas = $paling !== null && $paling['berlaku_mulai_tahun'] !== null
+                ? (int) $paling['berlaku_mulai_tahun']
+                : null;
+
+            $baselineId = $this->sisipkanKepala([
+                'opd_id'              => $opdId,
+                'tahun_mulai'         => $tahunMulai,
+                'tahun_akhir'         => $tahunAkhir,
+                'nomor'               => 0,
+                'nama'                => 'Kondisi Awal IKU ' . $tahunMulai . '-' . $tahunAkhir,
+                'berlaku_mulai_tahun' => $tahunMulai,
+                // Ada revisi efektif di atasnya -> baseline bukan versi
+                // terkini, persis seperti bila digeser sahkan().
+                'status'              => $batas !== null ? self::STATUS_SUPERSEDED : self::STATUS_BERLAKU,
+                'catatan'             => 'Dipulihkan otomatis: revisi bernomor ditemukan tanpa Kondisi Awal. '
+                    . 'Isi dibekukan dari IKU berjalan saat pemulihan.',
+                'dibuat_oleh'         => $userId,
+                'disahkan_oleh'       => $userId,
+                'disahkan_pada'       => date('Y-m-d H:i:s'),
+            ]);
+
+            if ($batas !== null) {
+                $this->db->table('iku_revisi')->where('id', $baselineId)->update([
+                    'berlaku_sampai_tahun' => $batas - 1,
+                ]);
+            }
+
+            $this->bekukanLiveKeRevisi($baselineId, $opdId, $tahunMulai, $tahunAkhir, false);
+
+            return $baselineId;
+        }, 'pemulihan Kondisi Awal IKU');
+    }
+
     /* =========================================================
      * SUNTINGAN DRAFT
      * =======================================================*/
@@ -934,6 +1018,156 @@ class IkuRevisiModel extends Model
                 'indikator_dipensiunkan' => $dipensiunkan,
             ];
         }, 'pengesahan revisi IKU');
+    }
+
+    /**
+     * Ubah tahun mulai berlaku sebuah revisi.
+     *
+     * Untuk draft ini sekadar mengganti angka usulan. Untuk revisi yang SUDAH
+     * BERLAKU, timeline-nya ikut dijahit ulang: revisi sebelumnya ditutup
+     * tepat setahun sebelum tahun baru — tanpa itu akan ada tahun yang
+     * dipayungi dua revisi sekaligus dan resolveEfektif() menolak melayani.
+     *
+     * Realisasi LAKIP TIDAK tersentuh: capaian menempel pada indikator
+     * berjalan (sumber_indikator_id), bukan pada revisinya, jadi tahun yang
+     * berpindah payung tetap membaca realisasi yang sama.
+     *
+     * Revisi ke-0 (Kondisi Awal) ditolak: ia jangkar awal periode. Menggesernya
+     * membuat tahun-tahun pertama tidak dipayungi siapa pun.
+     *
+     * @return array{dari:int, ke:int, digeser:array<int,int>}
+     */
+    public function ubahTahunBerlaku(int $revisiId, int $tahunBaru): array
+    {
+        if (! $this->siap()) {
+            throw new RuntimeException('Tabel revisi IKU belum tersedia.');
+        }
+
+        return $this->dalamTransaksi(function () use ($revisiId, $tahunBaru) {
+            $db     = $this->db;
+            $revisi = $db->table('iku_revisi')->where('id', $revisiId)->get()->getRowArray();
+
+            if (! $revisi) {
+                throw new RuntimeException('Revisi tidak ditemukan.');
+            }
+
+            if ((int) $revisi['nomor'] === 0) {
+                throw new RuntimeException(
+                    'Kondisi Awal selalu berlaku sejak awal periode — tahun berlakunya tidak bisa diubah. '
+                    . 'Ubah tahun berlaku revisi di atasnya.'
+                );
+            }
+
+            $status = (string) $revisi['status'];
+
+            if (! in_array($status, [self::STATUS_DRAFT, self::STATUS_BERLAKU], true)) {
+                throw new RuntimeException(
+                    'Tahun berlaku hanya bisa diubah pada draft, atau pada revisi berlaku yang '
+                    . 'sedang dibuka lewat izin sunting. Status sekarang: ' . $status . '.'
+                );
+            }
+
+            $tahunMulai = (int) $revisi['tahun_mulai'];
+            $tahunAkhir = (int) $revisi['tahun_akhir'];
+            $dari       = (int) $revisi['berlaku_mulai_tahun'];
+            $opdId      = $revisi['opd_id'] !== null ? (int) $revisi['opd_id'] : null;
+
+            $this->validasiLingkupDraft($tahunMulai, $tahunAkhir, $tahunBaru);
+
+            if ($tahunBaru === $dari) {
+                return ['dari' => $dari, 'ke' => $tahunBaru, 'digeser' => []];
+            }
+
+            // Revisi ke-1 dan seterusnya tidak boleh merebut tahun pertama
+            // periode: itu jatah Kondisi Awal.
+            if ($tahunBaru === $tahunMulai) {
+                throw new RuntimeException(
+                    'Tahun ' . $tahunBaru . ' adalah awal periode dan dipayungi Kondisi Awal. '
+                    . 'Revisi paling cepat berlaku mulai ' . ($tahunMulai + 1) . '.'
+                );
+            }
+
+            // Tahun tujuan tidak boleh sudah dipakai revisi lain (draft yang
+            // masih diusulkan sekalipun, supaya bentroknya ketahuan sekarang,
+            // bukan saat pengesahan).
+            $bentrok = $this->lingkup($opdId, $tahunMulai, $tahunAkhir)
+                ->whereIn('status', [self::STATUS_BERLAKU, self::STATUS_SUPERSEDED, self::STATUS_MENUNGGU])
+                ->where('berlaku_mulai_tahun', $tahunBaru)
+                ->where('id !=', $revisiId)
+                ->get()->getRowArray();
+
+            if ($bentrok !== null) {
+                throw new RuntimeException(
+                    'Tahun ' . $tahunBaru . ' sudah dipakai "' . $bentrok['nama'] . '" '
+                    . '(revisi ke-' . $bentrok['nomor'] . ', status ' . $bentrok['status'] . '). '
+                    . 'Satu tahun hanya boleh dipayungi satu revisi.'
+                );
+            }
+
+            if ($status === self::STATUS_DRAFT) {
+                $db->table('iku_revisi')->where('id', $revisiId)->update([
+                    'berlaku_mulai_tahun' => $tahunBaru,
+                    'updated_at'          => date('Y-m-d H:i:s'),
+                ]);
+
+                return ['dari' => $dari, 'ke' => $tahunBaru, 'digeser' => []];
+            }
+
+            // ---- revisi BERLAKU: jahit ulang timeline -----------------------
+            $tetangga = $this->lingkup($opdId, $tahunMulai, $tahunAkhir)
+                ->whereIn('status', [self::STATUS_BERLAKU, self::STATUS_SUPERSEDED])
+                ->where('id !=', $revisiId)
+                ->orderBy('berlaku_mulai_tahun', 'ASC')
+                ->get()->getResultArray();
+
+            $sebelum = null; // tetangga terdekat di bawah
+            $sesudah = null; // tetangga terdekat di atas
+
+            foreach ($tetangga as $t) {
+                $m = (int) $t['berlaku_mulai_tahun'];
+                if ($m < $dari) {
+                    $sebelum = $t;      // terurut ASC: yang terakhir < dari adalah yang terdekat
+                } elseif ($m > $dari && $sesudah === null) {
+                    $sesudah = $t;
+                }
+            }
+
+            // Tidak boleh melompati tetangga: urutan revisi harus tetap sama
+            // dengan urutan nomornya, karena arsip tiap revisi dibekukan dari
+            // keadaan pendahulunya.
+            if ($sebelum !== null && $tahunBaru <= (int) $sebelum['berlaku_mulai_tahun']) {
+                throw new RuntimeException(
+                    'Tahun baru harus sesudah ' . $sebelum['berlaku_mulai_tahun']
+                    . ' — tahun mulai "' . $sebelum['nama'] . '" yang berlaku sebelum revisi ini.'
+                );
+            }
+
+            if ($sesudah !== null && $tahunBaru >= (int) $sesudah['berlaku_mulai_tahun']) {
+                throw new RuntimeException(
+                    'Tahun baru harus sebelum ' . $sesudah['berlaku_mulai_tahun']
+                    . ' — tahun mulai "' . $sesudah['nama'] . '" yang berlaku sesudah revisi ini.'
+                );
+            }
+
+            $digeser = [];
+
+            // Revisi sebelumnya menutup diri tepat sebelum tahun baru — baik
+            // maju (payungnya memendek) maupun mundur (payungnya memanjang).
+            if ($sebelum !== null) {
+                $db->table('iku_revisi')->where('id', (int) $sebelum['id'])->update([
+                    'berlaku_sampai_tahun' => $tahunBaru - 1,
+                    'updated_at'           => date('Y-m-d H:i:s'),
+                ]);
+                $digeser[] = (int) $sebelum['id'];
+            }
+
+            $db->table('iku_revisi')->where('id', $revisiId)->update([
+                'berlaku_mulai_tahun' => $tahunBaru,
+                'updated_at'          => date('Y-m-d H:i:s'),
+            ]);
+
+            return ['dari' => $dari, 'ke' => $tahunBaru, 'digeser' => $digeser];
+        }, 'ubah tahun berlaku revisi IKU');
     }
 
     /** Buang draft. Barisnya tetap disimpan supaya jejak usulan tidak hilang. */

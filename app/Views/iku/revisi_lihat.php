@@ -32,6 +32,30 @@ $tanda = static function (string $jenis): array {
                     <?= $revisi['berlaku_sampai_tahun'] !== null ? (int) $revisi['berlaku_sampai_tahun'] : 'sekarang' ?>
                 <?php endif; ?>
             </div>
+
+            <?php /* Hanya muncul saat revisinya memang boleh disunting (draft,
+                     atau berlaku di bawah izin). Mengubah tahun berlaku revisi
+                     BERLAKU ikut menggeser batas revisi sebelumnya — modelnya
+                     yang menjahit, form ini cuma menyampaikan niat. */ ?>
+            <?php if (! empty($bolehUbahBerlaku)): ?>
+                <form method="post"
+                      action="<?= base_url($baseUrl . '/revisi/berlaku/' . (int) $revisi['id']) ?>"
+                      class="d-flex align-items-center gap-1 mt-2"
+                      onsubmit="return confirm('Ubah tahun mulai berlaku revisi ini? Masa berlaku revisi sebelumnya ikut disesuaikan.');">
+                    <?= csrf_field() ?>
+                    <select name="berlaku_mulai_tahun" class="form-select form-select-sm" style="width:auto">
+                        <?php /* Tahun pertama periode milik Kondisi Awal, jadi pilihan mulai +1. */ ?>
+                        <?php foreach (range((int) $revisi['tahun_mulai'] + 1, (int) $revisi['tahun_akhir']) as $th): ?>
+                            <option value="<?= $th ?>" <?= $th === (int) $revisi['berlaku_mulai_tahun'] ? 'selected' : '' ?>>
+                                <?= $th ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <button type="submit" class="btn btn-outline-primary btn-sm text-nowrap">
+                        <i class="fa-solid fa-calendar-pen me-1"></i>Ubah Tahun
+                    </button>
+                </form>
+            <?php endif; ?>
         </div>
         <div class="col-md-3">
             <div class="text-secondary">Dasar</div>

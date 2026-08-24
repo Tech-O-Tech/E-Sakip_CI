@@ -197,6 +197,7 @@ $routes->group(
         $routes->post('iku/revisi/izin/tarik/(:num)', 'AdminKab\IkuController::revisiTarikIzin/$1');
         $routes->post('iku/revisi/izin/selesai/(:num)', 'AdminKab\IkuController::revisiSelesaikanIzin/$1');
 
+        $routes->post('iku/revisi/berlaku/(:num)', 'AdminKab\IkuController::revisiUbahBerlaku/$1');
         $routes->post('iku/revisi/sahkan/(:num)', 'AdminKab\IkuController::revisiSahkan/$1');
         $routes->post('iku/revisi/batalkan/(:num)', 'AdminKab\IkuController::revisiBatalkan/$1');
 
@@ -506,6 +507,7 @@ $routes->group('adminopd', ['filter' => 'auth:admin_opd,admin,admin_kecamatan'],
     $routes->get('iku/revisi/lihat/(:num)', 'AdminOpd\IkuController::revisiLihat/$1');
     $routes->get('iku/revisi/sunting/(:num)', 'AdminOpd\IkuController::revisiSunting/$1');
     $routes->post('iku/revisi/sunting/(:num)', 'AdminOpd\IkuController::revisiSuntingSimpan/$1');
+    $routes->post('iku/revisi/berlaku/(:num)', 'AdminOpd\IkuController::revisiUbahBerlaku/$1');
 
     // Izin sunting revisi IKU yang sudah berlaku (lihat catatan di blok AdminKab).
     $routes->post('iku/revisi/izin/ajukan/(:num)', 'AdminOpd\IkuController::revisiMintaIzin/$1');

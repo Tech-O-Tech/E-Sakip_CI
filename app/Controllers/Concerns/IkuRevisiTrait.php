@@ -523,6 +523,11 @@ trait IkuRevisiTrait
             'years'   => range((int) $revisi['tahun_mulai'], (int) $revisi['tahun_akhir']),
             'baseUrl' => $this->revisiBaseUrl(),
             'keadaanIzin'    => $this->revisiKeadaanIzin($revisi),
+            // Kondisi Awal (nomor 0) adalah jangkar awal periode; tahun
+            // berlakunya tidak pernah bisa digeser.
+            'bolehUbahBerlaku' => $this->bolehRevisi()
+                && (int) $revisi['nomor'] !== 0
+                && $this->revisiBolehDisunting($revisi),
         ]);
     }
 
@@ -646,6 +651,53 @@ trait IkuRevisiTrait
                     . 'ajukan revisinya dari daftar bila sudah selesai.');
         } catch (Throwable $e) {
             return redirect()->back()->withInput()->with('error', $e->getMessage());
+        }
+    }
+
+    /**
+     * POST: ubah tahun mulai berlaku revisi.
+     *
+     * Gerbangnya sama persis dengan menyunting isi: draft bebas diubah
+     * penyusunnya; revisi berlaku hanya saat izin sunting sedang terbuka.
+     * Masa berlaku menentukan revisi mana yang melayani LAKIP tiap tahun,
+     * jadi ia bagian dari isi revisi — bukan atribut kosmetik.
+     */
+    public function revisiUbahBerlaku($id = null)
+    {
+        if (! $this->bolehRevisi()) {
+            return redirect()->to($this->urlRevisi())
+                ->with('error', 'Anda tidak berwenang mengubah revisi IKU.');
+        }
+
+        $revisiId = (int) $id;
+        $revisi   = $this->revisi()->ambil($revisiId);
+
+        if (! $this->revisiMilikLingkup($revisi)) {
+            return redirect()->to($this->urlRevisi())->with('error', 'Revisi tidak ditemukan.');
+        }
+
+        if (! $this->revisiBolehDisunting($revisi)) {
+            $alasan = $this->revisiKeadaanIzin($revisi)['alasan']
+                ?? 'Revisi ini terkunci. Ajukan izin sunting dulu untuk mengubah tahun berlakunya.';
+
+            return redirect()->to($this->urlRevisi('/lihat/' . $revisiId))->with('error', $alasan);
+        }
+
+        $tahunBaru = (int) $this->request->getPost('berlaku_mulai_tahun');
+
+        try {
+            $hasil = $this->revisi()->ubahTahunBerlaku($revisiId, $tahunBaru);
+
+            $pesan = $hasil['dari'] === $hasil['ke']
+                ? 'Tahun berlaku tidak berubah.'
+                : 'Tahun mulai berlaku diubah dari ' . $hasil['dari'] . ' menjadi ' . $hasil['ke'] . '.'
+                    . ($hasil['digeser'] !== []
+                        ? ' Masa berlaku revisi sebelumnya ikut disesuaikan.'
+                        : '');
+
+            return redirect()->to($this->urlRevisi('/lihat/' . $revisiId))->with('success', $pesan);
+        } catch (Throwable $e) {
+            return redirect()->to($this->urlRevisi('/lihat/' . $revisiId))->with('error', $e->getMessage());
         }
     }
 

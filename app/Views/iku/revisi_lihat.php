@@ -42,7 +42,7 @@ $tanda = static function (string $jenis): array {
         </div>
         <div class="col-md-3">
             <div class="text-secondary">Dibekukan</div>
-            <div class="fw-semibold"><?= esc($revisi['dibekukan_pada'] ?: '—') ?></div>
+            <div class="fw-semibold"><?= esc(($revisi['dibekukan_pada'] ?? null) ?: '—') ?></div>
         </div>
         <?php if (! empty($revisi['catatan'])): ?>
             <div class="col-12">
@@ -53,10 +53,83 @@ $tanda = static function (string $jenis): array {
     </div>
 </div>
 
-<?php if (in_array($revisi['status'], ['berlaku', 'superseded'], true)): ?>
-    <div class="alert alert-light border small">
-        Ini <strong>arsip beku</strong>. Isinya adalah IKU sebagaimana berlaku pada masanya dan
-        sengaja tidak bisa diubah — LAKIP tahun-tahun tersebut membacanya dari sini.
+<?php
+/* Keadaan kunci revisi ini. Dikirim IkuRevisiTrait::revisiLihat(); layar lama
+   yang belum mengirimnya tetap merender arsip beku seperti sebelumnya. */
+$keadaanIzin = $keadaanIzin ?? ['terkunci' => false, 'izin' => null, 'boleh_minta' => false,
+                               'boleh_tarik' => false, 'sedang_disunting' => false, 'alasan' => null];
+$aksiIzin    = base_url($baseUrl . '/revisi/izin');
+?>
+
+<?php if (! empty($keadaanIzin['sedang_disunting'])): ?>
+    <div class="alert alert-warning">
+        <div class="fw-semibold mb-1">
+            <i class="fa-solid fa-unlock me-1"></i>Revisi ini sedang terbuka untuk diperbaiki
+        </div>
+        <div class="small mb-2"><?= esc($keadaanIzin['alasan'] ?? '') ?></div>
+
+        <?php /* Dua langkah terpisah dengan sengaja: menyimpan boleh berkali-kali,
+                 sedangkan menerapkan ke IKU berjalan adalah keputusan tersendiri
+                 yang menutup izinnya. */ ?>
+        <div class="d-flex flex-wrap gap-2">
+            <a class="btn btn-primary btn-sm"
+               href="<?= base_url($baseUrl . '/revisi/sunting/' . (int) $revisi['id']) ?>">
+                <i class="fa-solid fa-pen me-1"></i>Sunting Isi Revisi
+            </a>
+
+            <form method="post" action="<?= $aksiIzin . '/selesai/' . (int) $revisi['id'] ?>"
+                  onsubmit="return confirm('Terapkan perbaikan ke IKU berjalan dan tutup izin sunting?\n\nIKU berjalan akan mengikuti isi arsip revisi ini. Laporan LAKIP yang sudah difinalkan tidak ikut berubah.');">
+                <?= csrf_field() ?>
+                <button class="btn btn-success btn-sm">
+                    <i class="fa-solid fa-check me-1"></i>Selesai &amp; Terapkan ke IKU Berjalan
+                </button>
+            </form>
+        </div>
+    </div>
+
+<?php elseif (! empty($keadaanIzin['terkunci'])): ?>
+    <div class="alert alert-light border">
+        <div class="fw-semibold mb-1">
+            <i class="fa-solid fa-lock me-1"></i>Arsip beku
+        </div>
+        <div class="small mb-2">
+            Isinya adalah IKU sebagaimana berlaku pada masanya &mdash; LAKIP tahun-tahun
+            tersebut membacanya dari sini.
+            <?= esc($keadaanIzin['alasan'] ?? '') ?>
+        </div>
+
+        <?php if (! empty($keadaanIzin['boleh_tarik']) && ! empty($keadaanIzin['izin'])): ?>
+            <div class="small text-secondary mb-2">
+                Diajukan <?= esc($keadaanIzin['izin']['diminta_nama'] ?? '&mdash;') ?>
+                <?= ! empty($keadaanIzin['izin']['diminta_pada'])
+                    ? esc(date('d M Y H:i', strtotime($keadaanIzin['izin']['diminta_pada'])))
+                    : '' ?>
+                &mdash; alasan: <?= esc($keadaanIzin['izin']['alasan'] ?? '') ?>
+            </div>
+            <form method="post" action="<?= $aksiIzin . '/tarik/' . (int) $keadaanIzin['izin']['id'] ?>"
+                  onsubmit="return confirm('Tarik permohonan izin sunting?');">
+                <?= csrf_field() ?>
+                <button class="btn btn-outline-secondary btn-sm">
+                    <i class="fa-solid fa-rotate-left me-1"></i>Tarik Permohonan
+                </button>
+            </form>
+        <?php endif; ?>
+
+        <?php if (! empty($keadaanIzin['boleh_minta'])): ?>
+            <form method="post" action="<?= $aksiIzin . '/ajukan/' . (int) $revisi['id'] ?>" class="row g-2">
+                <?= csrf_field() ?>
+                <div class="col-md-9">
+                    <input type="text" name="alasan" class="form-control form-control-sm" required
+                           maxlength="500"
+                           placeholder="Alasan perbaikan — mis. salah ketik indikator 3, atau target 2032 keliru">
+                </div>
+                <div class="col-md-3 d-grid">
+                    <button class="btn btn-warning btn-sm">
+                        <i class="fa-solid fa-unlock me-1"></i>Ajukan Izin Sunting
+                    </button>
+                </div>
+            </form>
+        <?php endif; ?>
     </div>
 <?php endif; ?>
 

@@ -30,6 +30,21 @@ $tahunAddon = (string) ($scope['tahun'] ?? '');
 $modeAddon  = (string) ($scope['mode'] ?? 'opd');
 $opdAddon   = (int) ($scope['opdScope'] ?? 0);
 
+/* Sumber dokumen yang sedang tampil (IKU/Renstra + versinya).
+   Ikut dikirim pada tiap form: analisis faktor menempel pada BARIS, dan id
+   baris IKU hidup di ruang angka yang sama dengan id target Renstra. Tanpa
+   sumbernya, server tidak bisa tahu id itu milik yang mana. Layar AdminKab
+   tidak punya pemilih ini, jadi di sana keduanya kosong. */
+// Hanya layar LAKIP OPD yang punya pemilih sumber.
+$sumberLakip      = $sumberLakip      ?? [];
+$sumberAddon      = $sumberLakip['sumber'] ?? '';
+$sumberVersiAddon = (int) ($sumberLakip['versi']['id'] ?? 0);
+
+$bidangSumberAddon = ($sumberAddon !== ''
+        ? '<input type="hidden" name="sumber" value="' . esc($sumberAddon, 'attr') . '">' : '')
+    . ($sumberVersiAddon > 0
+        ? '<input type="hidden" name="sumber_versi" value="' . $sumberVersiAddon . '">' : '');
+
 // format_helper tidak ikut autoload — pakai pembungkus bercadangan
 // (pola yang sama dipakai adminOpd/pk_renaksi/monev.php).
 $rupiahAddon = static function ($nilai) {
@@ -193,7 +208,8 @@ foreach ($indikatorRows as $r) {
                                             <?= csrf_field() ?>
                                             <input type="hidden" name="tahun" value="<?= esc($tahunAddon, 'attr') ?>">
                                             <input type="hidden" name="mode" value="<?= esc($modeAddon, 'attr') ?>">
-                                            <input type="hidden" name="opd_id" value="<?= $opdAddon ?>">
+                    <?= $bidangSumberAddon ?>
+                                            <input type="hidden" name="opd_id" value="<?= $opdAddon ?>"><?= $bidangSumberAddon ?>
                                         </form>
                                         <?php endif; ?>
                                     <?php else: ?>
@@ -300,7 +316,7 @@ foreach ($indikatorRows as $r) {
                                     <?= csrf_field() ?>
                                     <input type="hidden" name="tahun" value="<?= esc($tahunAddon, 'attr') ?>">
                                     <input type="hidden" name="mode" value="<?= esc($modeAddon, 'attr') ?>">
-                                    <input type="hidden" name="opd_id" value="<?= $opdAddon ?>">
+                                    <input type="hidden" name="opd_id" value="<?= $opdAddon ?>"><?= $bidangSumberAddon ?>
                                 </form>
                             <?php else: ?>
                                 <span class="text-muted">-</span>
@@ -332,7 +348,7 @@ foreach ($indikatorRows as $r) {
                     <input type="hidden" name="target_id" id="analisis-target-id" value="">
                     <input type="hidden" name="tahun" value="<?= esc($tahunAddon, 'attr') ?>">
                     <input type="hidden" name="mode" value="<?= esc($modeAddon, 'attr') ?>">
-                    <input type="hidden" name="opd_id" value="<?= $opdAddon ?>">
+                    <input type="hidden" name="opd_id" value="<?= $opdAddon ?>"><?= $bidangSumberAddon ?>
 
                     <div class="modal-header">
                         <h5 class="modal-title" id="analisis-judul">Tambah Analisis Faktor</h5>
@@ -376,7 +392,7 @@ foreach ($indikatorRows as $r) {
                     <?= csrf_field() ?>
                     <input type="hidden" name="id" id="efisiensi-id" value="">
                     <input type="hidden" name="mode" value="<?= esc($modeAddon, 'attr') ?>">
-                    <input type="hidden" name="opd_id" value="<?= $opdAddon ?>">
+                    <input type="hidden" name="opd_id" value="<?= $opdAddon ?>"><?= $bidangSumberAddon ?>
 
                     <div class="modal-header">
                         <h5 class="modal-title" id="efisiensi-judul">Tambah Efisiensi Program</h5>

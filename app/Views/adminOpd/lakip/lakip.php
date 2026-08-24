@@ -256,6 +256,86 @@
                 }
                 ?>
 
+
+                <?php
+                /* ============ SUMBER & VERSI ============
+                 *
+                 * LAKIP menilai capaian terhadap dokumen tertentu. Selama
+                 * dokumen itu tidak tertulis di layar, "salah dokumen" tidak
+                 * bisa ketahuan siapa pun sampai laporannya sudah jadi.
+                 */
+                $sl = $sumberLakip ?? null;
+                ?>
+                <?php if ($sl !== null): ?>
+                    <form method="get" class="row g-2 align-items-end mb-3">
+                        <?php foreach (['tahun' => $filters['tahun'] ?? '', 'status' => $filters['status'] ?? '',
+                                        'mode' => $mode ?? '', 'opd_id' => $selectedOpdId ?? ''] as $k => $v): ?>
+                            <?php if ($v !== '' && $v !== null): ?>
+                                <input type="hidden" name="<?= esc($k) ?>" value="<?= esc($v) ?>">
+                            <?php endif; ?>
+                        <?php endforeach; ?>
+
+                        <div class="col-md-4">
+                            <label class="form-label fw-semibold text-secondary mb-1">Dinilai terhadap</label>
+                            <select name="sumber" class="form-select" onchange="this.form.submit()">
+                                <?php foreach ($sl['pilihan_sumber'] as $p): ?>
+                                    <option value="<?= esc($p['nilai']) ?>"
+                                        <?= $sl['sumber'] === $p['nilai'] ? 'selected' : '' ?>
+                                        <?= empty($p['tersedia']) ? 'disabled' : '' ?>>
+                                        <?= esc($p['label']) ?><?= ! empty($p['bawaan']) ? ' (bawaan)' : '' ?><?= empty($p['tersedia'])
+                                            ? ' — belum ada versi' : '' ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold text-secondary mb-1">Versi yang dipakai</label>
+                            <?php if (empty($sl['daftar_versi'])): ?>
+                                <div class="form-control bg-light text-muted">
+                                    Belum ada versi yang berlaku untuk tahun ini
+                                </div>
+                            <?php else: ?>
+                                <select name="sumber_versi" class="form-select" onchange="this.form.submit()">
+                                    <?php foreach ($sl['daftar_versi'] as $v): ?>
+                                        <option value="<?= (int) $v['id'] ?>"
+                                            <?= ! empty($sl['versi']) && (int) $sl['versi']['id'] === (int) $v['id'] ? 'selected' : '' ?>>
+                                            V<?= (int) $v['version_no'] ?> — <?= esc($v['label']) ?>
+                                            <?= ! empty($v['rekomendasi']) ? ' (rekomendasi)' : '' ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            <?php endif; ?>
+                        </div>
+                    </form>
+
+                    <?php if (! empty($sl['catatan'])): ?>
+                        <div class="alert alert-warning py-2 px-3 small">
+                            <i class="fas fa-triangle-exclamation me-1"></i><?= esc($sl['catatan']) ?>
+                        </div>
+                    <?php endif; ?>
+
+                    <?php if (! empty($sl['alasan_wajib'])): ?>
+                        <?php /* §27: memilih selain rekomendasi harus disadari, bukan
+                                 terjadi diam-diam karena dropdown-nya tergeser. */ ?>
+                        <div class="alert alert-warning py-2 px-3 small">
+                            <i class="fas fa-circle-exclamation me-1"></i>
+                            Anda memakai versi yang <strong>bukan rekomendasi</strong> untuk tahun laporan ini.
+                            Pastikan itu memang disengaja &mdash; capaian akan dinilai terhadap target versi tersebut.
+                        </div>
+                    <?php endif; ?>
+
+                    <div class="small text-muted mb-3">
+                        <i class="fas fa-circle-info me-1"></i>
+                        Tabel di bawah dibangun dari
+                        <strong><?= esc(strtoupper($sl['sumber'])) ?></strong><?= ! empty($sl['versi'])
+                            ? ' versi <strong>V' . (int) $sl['versi']['version_no'] . ' — ' . esc($sl['versi']['label']) . '</strong>'
+                            : '' ?>.
+                        Realisasi yang Anda isi menempel pada indikatornya, bukan pada versinya &mdash;
+                        mengganti versi di atas tidak menghapus capaian yang sudah terisi.
+                    </div>
+                <?php endif; ?>
+
                 <div class="table-responsive">
                     <table class="table table-bordered table-striped text-center small align-middle">
                         <thead class="table-success">

@@ -92,7 +92,15 @@ class LakipPenyesuaianModel extends Model
      *
      * @return array<int, array<string, array<string, mixed>>> [target_id => [jenis => baris]]
      */
-    public function petaAktif(string $tahun, string $mode, ?int $opdId): array
+    /**
+     * Peta penyesuaian aktif, dikunci id baris.
+     *
+     * @param string|null $sumber batasi pada satu sumber ('iku'|'renstra'|
+     *                            'rpjmd'). null = semua sumber; baris tetap
+     *                            dikunci memakai kolom milik sumbernya
+     *                            masing-masing.
+     */
+    public function petaAktif(string $tahun, string $mode, ?int $opdId, ?string $sumber = null): array
     {
         if (! $this->siap() || $tahun === '') {
             return [];
@@ -117,8 +125,24 @@ class LakipPenyesuaianModel extends Model
 
         $peta = [];
 
+        $saring = $sumber !== null ? $this->sumberSah($mode, $sumber) : null;
+
         foreach ($b->get()->getResultArray() as $r) {
-            $targetId = (int) ($mode === 'kabupaten' ? $r['rpjmd_target_id'] : $r['renstra_target_id']);
+            // Sumber dibaca dari barisnya sendiri, bukan disimpulkan dari mode:
+            // satu OPD bisa punya penyesuaian bersumber Renstra tahun lalu dan
+            // bersumber IKU tahun ini. Baris lama tanpa `source_type` memang
+            // Renstra/RPJMD — sumber IKU belum mungkin saat itu.
+            $sumberBaris = (string) ($r['source_type'] ?? '');
+
+            if ($sumberBaris === '') {
+                $sumberBaris = $r['rpjmd_target_id'] !== null ? 'rpjmd' : 'renstra';
+            }
+
+            if ($saring !== null && $sumberBaris !== $saring) {
+                continue;
+            }
+
+            $targetId = (int) ($r[$this->kolomKunci($sumberBaris)] ?? 0);
 
             if ($targetId <= 0) {
                 continue;
@@ -174,6 +198,46 @@ class LakipPenyesuaianModel extends Model
      *                      'dasar_kebijakan','nomor_dasar','tanggal_dasar','alasan',
      *                      'usul_revisi_iku']
      */
+    /**
+     * Kolom kunci baris untuk satu sumber.
+     *
+     * Sengaja SATU tempat: `simpan()`, `petaAktif()`, dan `riwayat()` harus
+     * memakai kolom yang sama persis. Kalau ketiganya menebak sendiri-sendiri,
+     * penyesuaian bisa tersimpan lalu tidak pernah terbaca kembali — tanpa
+     * galat apa pun.
+     */
+    private function kolomKunci(string $sumber): string
+    {
+        switch ($sumber) {
+            case 'iku':
+                return 'iku_indikator_id';
+
+            case 'rpjmd':
+                return 'rpjmd_target_id';
+
+            default:
+                return 'renstra_target_id';
+        }
+    }
+
+    /** Sumber baris yang sah untuk satu mode; nilai asing jatuh ke bawaan mode. */
+    private function sumberSah(string $mode, $diminta): string
+    {
+        $sumber = trim((string) ($diminta ?? ''));
+
+        if ($mode === 'kabupaten') {
+            return 'rpjmd';
+        }
+
+        return in_array($sumber, ['iku', 'renstra'], true) ? $sumber : 'renstra';
+    }
+
+    /** Apakah kolom sumber sudah dipasang (migrasi 2026-08-24). */
+    private function punyaKolomSumber(): bool
+    {
+        return $this->db->fieldExists('source_type', 'lakip_penyesuaian');
+    }
+
     public function simpan(array $scope, array $data, ?int $userId = null): int
     {
         if (! $this->siap()) {
@@ -213,14 +277,25 @@ class LakipPenyesuaianModel extends Model
             throw new RuntimeException('Alasan penyesuaian wajib diisi.');
         }
 
-        $snapshotModel = new LakipSnapshotModel();
+        // Koneksi diwariskan, tidak dibuat baru. Tanpa ini model pasangan
+        // selalu bicara ke basis data BAWAAN — di produksi kebetulan sama,
+        // tetapi pada salinan uji ia diam-diam membaca data produksi, dan
+        // status "setelah final" jadi disimpulkan dari tahun yang salah.
+        $snapshotModel = new LakipSnapshotModel($this->db);
         $snapshot      = $snapshotModel->aktif($tahun, $mode, $opdId);
 
         $setelahFinal = $snapshot !== null && $snapshot['status'] === LakipSnapshotModel::STATUS_FINAL;
 
+        $sumber = $this->sumberSah($mode, $data['sumber'] ?? null);
+        $kunci  = $this->kolomKunci($sumber);
+
         $barisSnapshotId = null;
         if ($snapshot !== null) {
-            $kolom = $mode === 'kabupaten' ? 'rpjmd_target_id' : 'renstra_target_id';
+            // Kolom kunci di `lakip_snapshot_baris` mengikuti sumber yang sama.
+            // Sebelum ini selalu `renstra_target_id`, yang pada snapshot
+            // bersumber IKU memang NULL — penyesuaian setelah finalisasi
+            // karena itu tidak pernah tertaut ke baris beku yang dikoreksinya.
+            $kolom = $kunci;
             $baris = $this->db->table('lakip_snapshot_baris')
                 ->select('id')
                 ->where('snapshot_id', (int) $snapshot['id'])
@@ -235,8 +310,8 @@ class LakipPenyesuaianModel extends Model
             'tahun'             => $tahun,
             'mode'              => $mode,
             'opd_id'            => $opdId,
-            'renstra_target_id' => $mode === 'kabupaten' ? null : $targetId,
-            'rpjmd_target_id'   => $mode === 'kabupaten' ? $targetId : null,
+            'renstra_target_id' => $kunci === 'renstra_target_id' ? $targetId : null,
+            'rpjmd_target_id'   => $kunci === 'rpjmd_target_id' ? $targetId : null,
             'snapshot_id'       => $snapshot !== null ? (int) $snapshot['id'] : null,
             'snapshot_baris_id' => $barisSnapshotId,
             'jenis'             => $jenis,
@@ -247,6 +322,8 @@ class LakipPenyesuaianModel extends Model
             'tanggal_dasar'     => $this->kosongJadiNull($data['tanggal_dasar'] ?? null),
             'alasan'            => $alasan,
             'setelah_final'     => $setelahFinal ? 1 : 0,
+            'sumber_kolom_iku'  => $kunci === 'iku_indikator_id' ? $targetId : null,
+            'sumber_tipe'       => $sumber,
             'usul_revisi_iku'   => ! empty($data['usul_revisi_iku']) ? 1 : 0,
             'aktif'             => 1,
             'dibuat_oleh'       => $userId,
@@ -254,20 +331,51 @@ class LakipPenyesuaianModel extends Model
             'updated_at'        => date('Y-m-d H:i:s'),
         ];
 
-        return $this->dalamTransaksi(function () use ($isi, $tahun, $mode, $opdId, $targetId, $jenis) {
+        // Instalasi yang belum menjalankan migrasi 2026-08-24 tidak punya kedua
+        // kolom ini. Menyisipkannya di sana akan menggagalkan SELURUH
+        // penyimpanan penyesuaian, termasuk yang bersumber Renstra dan sudah
+        // berjalan baik — jadi kolomnya hanya ikut bila memang ada.
+        $tipeSumber = $isi['sumber_tipe'];
+        $kunciIku   = $isi['sumber_kolom_iku'];
+        unset($isi['sumber_tipe'], $isi['sumber_kolom_iku']);
+
+        if ($this->punyaKolomSumber()) {
+            $isi['source_type']      = $tipeSumber;
+            $isi['iku_indikator_id'] = $kunciIku;
+        } elseif ($kunci === 'iku_indikator_id') {
+            throw new RuntimeException(
+                'Penyesuaian untuk LAKIP bersumber IKU membutuhkan migrasi '
+                . 'db/update_2026-08-24_penyesuaian_sumber_iku.sql. Jalankan dulu di server ini.'
+            );
+        }
+
+        return $this->dalamTransaksi(function () use ($isi, $tahun, $mode, $opdId, $targetId, $jenis, $kunci, $tipeSumber) {
             // Penyesuaian sebelumnya untuk sasaran yang sama di-nonaktifkan
             // lebih dulu — bukan dihapus, dan bukan pula ditimpa. UNIQUE index
             // `uq_lakip_penyesuaian_aktif` akan menolak dua baris aktif.
-            $kolom = $mode === 'kabupaten' ? 'rpjmd_target_id' : 'renstra_target_id';
-
-            $this->db->table('lakip_penyesuaian')
+            $lama = $this->db->table('lakip_penyesuaian')
                 ->where('tahun', $tahun)
                 ->where('mode', $mode)
                 ->where('opd_id', $opdId)
-                ->where($kolom, $targetId)
+                ->where($kunci, $targetId)
                 ->where('jenis', $jenis)
-                ->where('aktif', 1)
-                ->update(['aktif' => 0, 'updated_at' => date('Y-m-d H:i:s')]);
+                ->where('aktif', 1);
+
+            // Baris lama (sebelum migrasi) tidak punya source_type; ia
+            // dianggap 'renstra' oleh `sumber_key`, jadi penyaringnya pun
+            // harus memperlakukan NULL sebagai 'renstra'.
+            if ($this->punyaKolomSumber()) {
+                if ($tipeSumber === 'renstra') {
+                    $lama->groupStart()
+                        ->where('source_type', 'renstra')
+                        ->orWhere('source_type IS NULL', null, false)
+                        ->groupEnd();
+                } else {
+                    $lama->where('source_type', $tipeSumber);
+                }
+            }
+
+            $lama->update(['aktif' => 0, 'updated_at' => date('Y-m-d H:i:s')]);
 
             $this->db->table('lakip_penyesuaian')->insert($isi);
 

@@ -29,6 +29,18 @@ $bmScope = $addendumScope ?? ['mode' => 'opd', 'tahun' => '', 'opdScope' => null
 $bmTahun = (string) ($bmScope['tahun'] ?? '');
 $bmMode  = (string) ($bmScope['mode'] ?? 'opd');
 $bmOpd   = (int) ($bmScope['opdScope'] ?? 0);
+
+/* Sumber dokumen yang sedang tampil. Ikut dikirim pada form benchmark:
+   angka pembanding menempel pada INDIKATOR, dan id indikator IKU hidup di
+   ruang angka yang sama dengan id indikator Renstra. Tanpa sumbernya, server
+   tidak bisa tahu id itu milik yang mana. Layar AdminKab tidak punya pemilih
+   ini, jadi di sana kosong. */
+$sumberLakip = $sumberLakip ?? [];
+$bmSumber    = (string) ($sumberLakip['sumber'] ?? '');
+
+$bmBidangSumber = $bmSumber !== ''
+    ? '<input type="hidden" name="sumber" value="' . esc($bmSumber, 'attr') . '">'
+    : '';
 $bmBase  = $addendumBase ?? 'adminopd/lakip';
 
 $bmLabelDaerah = $bmMode === 'kabupaten' ? 'Kabupaten Pringsewu' : 'OPD Terpilih';
@@ -157,7 +169,7 @@ $bmLabelDaerah = $bmMode === 'kabupaten' ? 'Kabupaten Pringsewu' : 'OPD Terpilih
                         <?= csrf_field() ?>
                         <input type="hidden" name="tahun" value="<?= esc($bmTahun) ?>">
                         <input type="hidden" name="mode" value="<?= esc($bmMode) ?>">
-                        <input type="hidden" name="opd_id" value="<?= $bmOpd ?: '' ?>">
+                        <input type="hidden" name="opd_id" value="<?= $bmOpd ?: '' ?>"><?= $bmBidangSumber ?>
                         <input type="hidden" name="indikator_id" id="bm-form-indikator">
 
                         <div class="modal-header">
@@ -353,7 +365,7 @@ $bmLabelDaerah = $bmMode === 'kabupaten' ? 'Kabupaten Pringsewu' : 'OPD Terpilih
                         <?= csrf_field() ?>
                         <input type="hidden" name="tahun" value="<?= esc($bmTahun) ?>">
                         <input type="hidden" name="mode" value="<?= esc($bmMode) ?>">
-                        <input type="hidden" name="opd_id" value="<?= $bmOpd ?: '' ?>">
+                        <input type="hidden" name="opd_id" value="<?= $bmOpd ?: '' ?>"><?= $bmBidangSumber ?>
                     </form>
                 <?php endif; ?>
             <?php endforeach; ?>

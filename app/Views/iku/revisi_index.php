@@ -7,6 +7,7 @@ $judulHalaman = 'Revisi IKU';
 $badge = static function (string $status): array {
     return match ($status) {
         'draft'      => ['bg-warning text-dark', 'Draft'],
+        'menunggu'   => ['bg-primary',           'Menunggu Verifikasi'],
         'berlaku'    => ['bg-success',           'Berlaku'],
         'superseded' => ['bg-secondary',         'Arsip'],
         'batal'      => ['bg-dark',              'Dibatalkan'],
@@ -124,7 +125,20 @@ $badge = static function (string $status): array {
                                     <i class="fa-solid fa-pen"></i> Sunting
                                 </a>
 
-                                <?php if ($bolehSahkan): ?>
+                                <?php /* Dua jalur yang berbeda tegas: lingkup Kabupaten
+                                         mengesahkan sendiri, lingkup OPD mengajukan ke
+                                         Admin Kabupaten. Yang menentukan bukan izin,
+                                         melainkan lingkupnya. */ ?>
+                                <?php if (! empty($perluVerifikasi)): ?>
+                                    <form method="post" class="d-inline"
+                                          action="<?= base_url($baseUrl . '/revisi/ajukan/' . (int) $r['id']) ?>"
+                                          onsubmit="return confirm('Ajukan revisi ini untuk disahkan Admin Kabupaten? Selama menunggu, isinya tidak bisa disunting.');">
+                                        <?= csrf_field() ?>
+                                        <button class="btn btn-sm btn-primary mb-1">
+                                            <i class="fa-solid fa-paper-plane"></i> Ajukan
+                                        </button>
+                                    </form>
+                                <?php elseif ($bolehSahkan): ?>
                                     <form method="post" class="d-inline"
                                           action="<?= base_url($baseUrl . '/revisi/sahkan/' . (int) $r['id']) ?>"
                                           onsubmit="return confirm('Sahkan revisi ini? Isinya akan diterapkan ke IKU berjalan, dan revisi sebelumnya menjadi arsip. Data lama TIDAK dihapus.');">
@@ -141,6 +155,17 @@ $badge = static function (string $status): array {
                                     <?= csrf_field() ?>
                                     <button class="btn btn-sm btn-outline-danger mb-1">
                                         <i class="fa-solid fa-xmark"></i> Batalkan
+                                    </button>
+                                </form>
+                            <?php endif; ?>
+
+                            <?php if ($r['status'] === 'menunggu' && $bolehRevisi): ?>
+                                <form method="post" class="d-inline"
+                                      action="<?= base_url($baseUrl . '/revisi/tarik/' . (int) $r['id']) ?>"
+                                      onsubmit="return confirm('Tarik pengajuan? Revisi kembali jadi draft dan bisa disunting.');">
+                                    <?= csrf_field() ?>
+                                    <button class="btn btn-sm btn-outline-danger mb-1">
+                                        <i class="fa-solid fa-rotate-left"></i> Tarik Pengajuan
                                     </button>
                                 </form>
                             <?php endif; ?>

@@ -33,8 +33,14 @@ if ($show_opd) {
 $opdTercetak = [];
 $no          = 1;
 
-// No + (OPD) + Sasaran + Indikator + Definisi + Formula + Satuan + tahun + Sumber + PJ + Status + Aksi
-$totalKolom = 10 + ($show_opd ? 1 : 0) + max(1, count($years));
+// No + (OPD) + Sasaran + Indikator + Definisi + Formula + Satuan + tahun + Sumber + PJ + Aksi
+//
+// Kolom "Status" (draft/selesai per indikator) DIHAPUS. Ia tidak pernah dibaca
+// modul mana pun — LAKIP, RKT, dan MONEV tidak menyaringnya, dan getMatrix()
+// tidak pernah dipanggil dengan saringan status dari menu IKU. Yang tersisa
+// hanyalah lencana yang bisa diklik tanpa akibat, berdiri di sebelah status
+// revisi yang justru punya arti.
+$totalKolom = 9 + ($show_opd ? 1 : 0) + max(1, count($years));
 ?>
 
 <div class="table-responsive table-wrap mt-3">
@@ -53,7 +59,6 @@ $totalKolom = 10 + ($show_opd ? 1 : 0) + max(1, count($years));
                 <th colspan="<?= max(1, count($years)) ?>" class="align-middle">Target Capaian per Tahun</th>
                 <th rowspan="2" class="align-middle">Sumber Data</th>
                 <th rowspan="2" class="align-middle">Penanggung Jawab</th>
-                <th rowspan="2" class="align-middle">Status</th>
                 <th rowspan="2" class="align-middle">Aksi</th>
             </tr>
             <tr class="text-center">
@@ -131,23 +136,6 @@ $totalKolom = 10 + ($show_opd ? 1 : 0) + max(1, count($years));
                                 <td class="text-start"><?= esc(($indikator['sumber_data'] ?? '') !== '' ? $indikator['sumber_data'] : '-') ?></td>
                                 <td class="text-start"><?= esc(($indikator['penanggung_jawab'] ?? '') !== '' ? $indikator['penanggung_jawab'] : '-') ?></td>
 
-                                <td class="text-center">
-                                    <?php $selesai = strtolower(trim((string) ($indikator['status'] ?? 'draft'))) === 'selesai'; ?>
-                                    <span class="badge <?= $selesai ? 'bg-success' : 'bg-warning text-dark' ?>">
-                                        <?= $selesai ? 'Selesai' : 'Draft' ?>
-                                    </span>
-                                    <?php if ($can_manage && user_can($perm . '.update')): ?>
-                                        <form method="post"
-                                              action="<?= base_url($base_url . '/change_status/' . (int) $indikator['id']) ?>"
-                                              class="d-inline">
-                                            <?= csrf_field() ?>
-                                            <button type="submit" class="btn btn-link btn-sm p-0 ms-1 text-decoration-none"
-                                                    title="Ubah status indikator ini">
-                                                <i class="fas fa-sync-alt"></i>
-                                            </button>
-                                        </form>
-                                    <?php endif; ?>
-                                </td>
                             <?php endif; ?>
 
                             <?php if ($barisPertamaSasaran): ?>

@@ -171,10 +171,56 @@ trait LakipAddendumTrait
      *
      * @return array<string, mixed>|null baris target + indikatornya
      */
-    protected function targetLakipSah(int $targetId, string $mode, string $tahun, ?int $opdScope): ?array
+    /**
+     * Sumber dokumen yang sedang dipilih di layar ('iku'|'renstra'|'rpjmd'),
+     * atau null bila layar ini tidak punya pemilih sumber.
+     *
+     * SEAM. Ditimpa LakipOpdController. Dipakai untuk menyaring penyesuaian
+     * kebijakan: id baris IKU dan id baris Renstra hidup di ruang angka yang
+     * sama, jadi tanpa penyaring ini penyesuaian milik sumber lain bisa
+     * menempel pada baris yang kebetulan ber-id sama.
+     */
+    protected function sumberDokumenLakip(string $mode): ?string
     {
+        return $mode === 'kabupaten' ? 'rpjmd' : null;
+    }
+
+    protected function targetLakipSah(
+        int $targetId,
+        string $mode,
+        string $tahun,
+        ?int $opdScope,
+        ?string $sumber = null
+    ): ?array {
         if ($targetId <= 0 || $tahun === '') {
             return null;
+        }
+
+        // Sumber IKU: id yang dikirim adalah id INDIKATOR IKU BERJALAN, bukan
+        // id target Renstra. Tanpa cabang ini, penyesuaian pada baris IKU
+        // ditolak sebagai "tidak ada pada tahun & lingkup ini" — atau, lebih
+        // buruk, DITERIMA karena kebetulan ada renstra_target ber-id sama.
+        if ($sumber === 'iku' && $mode !== 'kabupaten') {
+            $b = $this->db->table('iku_indikator ii')
+                ->select('ii.id AS target_id, ii.indikator AS indikator_sasaran, ii.id AS indikator_id, isa.opd_id')
+                ->join('iku_sasaran isa', 'isa.id = ii.iku_sasaran_id', 'left')
+                ->where('ii.id', $targetId);
+
+            if ($this->db->fieldExists('dihentikan_pada', 'iku_indikator')) {
+                $b->where('ii.dihentikan_pada IS NULL', null, false);
+            }
+
+            if (! empty($opdScope)) {
+                $b->where('isa.opd_id', (int) $opdScope);
+            }
+
+            $baris = $b->get()->getRowArray();
+
+            if ($baris) {
+                $baris['tahun'] = $tahun;
+            }
+
+            return $baris ?: null;
         }
 
         if ($mode === 'kabupaten') {
@@ -222,7 +268,11 @@ trait LakipAddendumTrait
         $opdEfisiensi = ($mode === 'kabupaten') ? 0 : $opd;
 
         return [
-            'analisisMap'    => $this->analisis()->getByTahunGrouped($tahun, $mode, $opd),
+            // Sumber ikut disaring: analisis milik Renstra tidak boleh muncul
+            // pada baris IKU yang kebetulan ber-id sama.
+            'analisisMap'    => $this->analisis()->getByTahunGrouped(
+                $tahun, $mode, $opd, $this->sumberDokumenLakip($mode)
+            ),
             'efisiensiRows'  => $this->efisiensi()->getByTahun($tahun, $opdEfisiensi),
             'programOptions' => $tahun !== '' ? $this->efisiensi()->programOptions($tahun, $opd) : [],
             'addendumScope'  => $scope,
@@ -276,6 +326,20 @@ trait LakipAddendumTrait
             $params['tahun'] = $scope['tahun'];
         }
 
+        // Pilihan sumber dokumen (IKU/Renstra + versinya) ikut pulang. Tanpa
+        // ini, menekan tombol snapshot melempar operator kembali ke sumber
+        // BAWAAN — ia menyiapkan snapshot dari versi IKU yang dipilihnya, lalu
+        // mendarat di halaman yang menampilkan versi lain, dan menyimpulkan
+        // snapshotnya salah. Layar AdminKab tidak pernah mengirim keduanya,
+        // jadi tidak ada yang berubah di sana.
+        foreach (['sumber', 'sumber_versi'] as $kunciSumber) {
+            $nilai = trim((string) ($this->request->getPost($kunciSumber) ?? ''));
+
+            if ($nilai !== '') {
+                $params[$kunciSumber] = $nilai;
+            }
+        }
+
         $qs = $params ? ('?' . http_build_query($params)) : '';
 
         return base_url($this->lakipBaseUrl()) . $qs;
@@ -298,8 +362,15 @@ trait LakipAddendumTrait
             return redirect()->to($back)->with('error', $scope['alasan'] ?? 'Tidak berhak menyimpan data ini.');
         }
 
+        // Sumber dokumen ikut dikirim form (lihat `$bidangLingkup` pada partial
+        // addendum). Ia menentukan di TABEL MANA id itu harus ada — id
+        // indikator IKU dan id target Renstra hidup di ruang angka yang sama,
+        // jadi memverifikasinya ke tabel yang salah bukan sekadar gagal, tapi
+        // bisa lolos untuk baris yang keliru.
+        $sumberDok = $this->sumberDokumenLakip((string) $scope['mode']);
+
         $targetId = (int) ($this->request->getPost('target_id') ?? 0);
-        $target   = $this->targetLakipSah($targetId, $scope['mode'], $scope['tahun'], $scope['opdScope']);
+        $target   = $this->targetLakipSah($targetId, $scope['mode'], $scope['tahun'], $scope['opdScope'], $sumberDok);
         if (!$target) {
             return redirect()->to($back)->with('error', 'Indikator tidak ditemukan pada tahun & unit yang dipilih.');
         }
@@ -333,7 +404,7 @@ trait LakipAddendumTrait
         if ($id > 0) {
             // Edit: baris harus milik lingkup yang sama (cegah IDOR).
             $lama = $this->analisis()->ambil($id);
-            if (!$lama || !$this->analisisMilikLingkup($lama, $scope, $targetId)) {
+            if (!$lama || !$this->analisisMilikLingkup($lama, $scope, $targetId, $sumberDok)) {
                 return redirect()->to($back)->with('error', 'Data analisis tidak ditemukan pada unit Anda.');
             }
 
@@ -342,21 +413,42 @@ trait LakipAddendumTrait
             return redirect()->to($back)->with('success', 'Analisis faktor berhasil diperbarui.');
         }
 
-        $this->analisis()->insert($isi + [
-            'renstra_target_id' => ($scope['mode'] === 'kabupaten') ? null : $targetId,
-            'rpjmd_target_id'   => ($scope['mode'] === 'kabupaten') ? $targetId : null,
+        $model  = $this->analisis();
+        $sumber = $model->sumberSah((string) $scope['mode'], $sumberDok);
+        $kunci  = $model->kolomKunci($sumber);
+
+        // Hanya kolom kunci milik sumbernya yang diisi; dua lainnya sengaja
+        // NULL supaya tidak ada id yang tampak sah di kolom yang artinya lain.
+        $barisBaru = [
+            'renstra_target_id' => $kunci === 'renstra_target_id' ? $targetId : null,
+            'rpjmd_target_id'   => $kunci === 'rpjmd_target_id' ? $targetId : null,
             'opd_id'            => (int) ($scope['opdScope'] ?? 0),
             'tahun'             => $scope['tahun'],
             'created_by'        => $userId,
             'updated_by'        => $userId,
-        ]);
+        ];
+
+        if ($model->punyaKolomSumber()) {
+            $barisBaru['iku_indikator_id'] = $kunci === 'iku_indikator_id' ? $targetId : null;
+            $barisBaru['source_type']      = $sumber;
+        } elseif ($kunci === 'iku_indikator_id') {
+            return redirect()->to($back)->with('error',
+                'Analisis untuk LAKIP bersumber IKU membutuhkan migrasi '
+                . 'db/update_2026-08-25_izin_sunting_iku_dan_analisis_iku.sql. Jalankan dulu di server ini.');
+        }
+
+        $model->insert($isi + $barisBaru);
 
         return redirect()->to($back)->with('success', 'Analisis faktor berhasil ditambahkan.');
     }
 
     /** Baris analisis benar-benar milik lingkup (mode, tahun, OPD, target) ini? */
-    private function analisisMilikLingkup(array $baris, array $scope, ?int $targetId = null): bool
-    {
+    private function analisisMilikLingkup(
+        array $baris,
+        array $scope,
+        ?int $targetId = null,
+        ?string $sumber = null
+    ): bool {
         if ((string) $baris['tahun'] !== (string) $scope['tahun']) {
             return false;
         }
@@ -364,7 +456,21 @@ trait LakipAddendumTrait
             return false;
         }
 
-        $kolom = ($scope['mode'] === 'kabupaten') ? 'rpjmd_target_id' : 'renstra_target_id';
+        $model = $this->analisis();
+
+        // Sumber baris dibaca dari BARISNYA, lalu dicocokkan dengan sumber yang
+        // sedang aktif di layar. Tanpa pencocokan ini, baris analisis milik
+        // Renstra bisa disunting lewat layar yang sedang menampilkan IKU hanya
+        // karena id-nya kebetulan sama.
+        $sumberBaris = $model->sumberBaris($baris);
+        $sumberAktif = $model->sumberSah((string) $scope['mode'], $sumber);
+
+        if ($sumberBaris !== $sumberAktif) {
+            return false;
+        }
+
+        $kolom = $model->kolomKunci($sumberBaris);
+
         if (empty($baris[$kolom])) {
             return false;
         }

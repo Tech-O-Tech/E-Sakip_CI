@@ -182,7 +182,7 @@
                     <div class="casc-empty">
                         <div class="ce-icon"><i class="fas fa-diagram-project"></i></div>
                         <h5>Pohon Kinerja Belum Tersedia</h5>
-                        <p>Belum ada data cascading Renstra/Eselon untuk Perangkat Daerah &amp; periode ini.</p>
+                        <p>Belum ada data cascading Eselon untuk Perangkat Daerah &amp; periode ini.</p>
                     </div>
 
                 <?php else: ?>

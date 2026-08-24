@@ -104,6 +104,28 @@ $routes->group(
         $routes->get('dashboard/misi/(:num)', 'AdminKabupatenController::misiDetail/$1');
         $routes->get('dashboard/anggaran-kinerja', 'AdminKabupatenController::anggaranKinerja');
 
+        // VERIFIKASI pengajuan versi dokumen (§17, §47).
+        // Segmen 'verifikasi' sengaja TIDAK dipetakan di ModulePermissionFilter:
+        // wewenangnya per-modul (rpjmd/renstra/iku/lakip .version.verify) dan
+        // hanya VerifikasiController yang tahu modul mana yang sedang dibuka.
+        $routes->get('verifikasi', 'AdminKab\VerifikasiController::index');
+        $routes->get('verifikasi/lihat/(:num)', 'AdminKab\VerifikasiController::lihat/$1');
+        $routes->post('verifikasi/setujui/(:num)', 'AdminKab\VerifikasiController::setujui/$1');
+        $routes->post('verifikasi/kembalikan/(:num)', 'AdminKab\VerifikasiController::kembalikan/$1');
+        $routes->post('verifikasi/koreksi/setujui/(:num)', 'AdminKab\VerifikasiController::koreksiSetujui/$1');
+        $routes->post('verifikasi/koreksi/kembalikan/(:num)', 'AdminKab\VerifikasiController::koreksiKembalikan/$1');
+
+        // Keputusan izin sunting: membuka kunci menu Renstra sebuah OPD.
+        $routes->post('verifikasi/izin/setujui/(:num)', 'AdminKab\VerifikasiController::izinSetujui/$1');
+        $routes->post('verifikasi/izin/tolak/(:num)', 'AdminKab\VerifikasiController::izinTolak/$1');
+        $routes->post('verifikasi/izin/cabut/(:num)', 'AdminKab\VerifikasiController::izinCabut/$1');
+
+        // Keputusan revisi IKU milik OPD. Revisi IKU tingkat Kabupaten TIDAK
+        // lewat sini — ia disahkan lewat menunya sendiri.
+        $routes->get('verifikasi/iku/lihat/(:num)', 'AdminKab\VerifikasiController::ikuRevisiLihat/$1');
+        $routes->post('verifikasi/iku/sahkan/(:num)', 'AdminKab\VerifikasiController::ikuRevisiSahkan/$1');
+        $routes->post('verifikasi/iku/kembalikan/(:num)', 'AdminKab\VerifikasiController::ikuRevisiKembalikan/$1');
+
         // Evaluasi Kinerja (Inspektorat) — placeholder
         $routes->get('evaluasi_inspektorat', 'AdminKabupatenController::evaluasi_inspektorat');
 
@@ -168,6 +190,13 @@ $routes->group(
         $routes->get('iku/revisi/lihat/(:num)', 'AdminKab\IkuController::revisiLihat/$1');
         $routes->get('iku/revisi/sunting/(:num)', 'AdminKab\IkuController::revisiSunting/$1');
         $routes->post('iku/revisi/sunting/(:num)', 'AdminKab\IkuController::revisiSuntingSimpan/$1');
+
+        // Izin sunting revisi IKU yang sudah berlaku — mesin & antrean sama
+        // dengan Renstra, hanya modulnya yang berbeda.
+        $routes->post('iku/revisi/izin/ajukan/(:num)', 'AdminKab\IkuController::revisiMintaIzin/$1');
+        $routes->post('iku/revisi/izin/tarik/(:num)', 'AdminKab\IkuController::revisiTarikIzin/$1');
+        $routes->post('iku/revisi/izin/selesai/(:num)', 'AdminKab\IkuController::revisiSelesaikanIzin/$1');
+
         $routes->post('iku/revisi/sahkan/(:num)', 'AdminKab\IkuController::revisiSahkan/$1');
         $routes->post('iku/revisi/batalkan/(:num)', 'AdminKab\IkuController::revisiBatalkan/$1');
 
@@ -175,6 +204,30 @@ $routes->group(
         // ke grup khusus super admin (auth:admin) di bawah.
 
         // RPJMD
+        // VERSI DOKUMEN — didaftarkan SEBELUM rute rpjmd lain supaya
+        // 'rpjmd/versi/...' tidak tertelan pola yang lebih umum di bawahnya.
+        //
+        // Catatan otorisasi: ModulePermissionFilter menyimpulkan aksi dari
+        // substring path, sehingga 'rpjmd/versi/tetapkan/5' hanya akan menuntut
+        // rpjmd.view. Penjagaan sebenarnya ada di DokumenVersiTrait yang
+        // memeriksa rpjmd.version.* secara eksplisit — jangan andalkan modperm.
+        $routes->get('rpjmd/versi', 'RpjmdController::versiIndex');
+        $routes->get('rpjmd/versi/buat', 'RpjmdController::versiBuat');
+        $routes->post('rpjmd/versi/simpan', 'RpjmdController::versiSimpan');
+        $routes->get('rpjmd/versi/banding', 'RpjmdController::versiBanding');
+        $routes->get('rpjmd/versi/lihat/(:num)', 'RpjmdController::versiLihat/$1');
+        $routes->get('rpjmd/versi/keterangan/(:num)', 'RpjmdController::versiKeterangan/$1');
+        $routes->post('rpjmd/versi/keterangan/(:num)', 'RpjmdController::versiKeteranganSimpan/$1');
+        $routes->post('rpjmd/versi/isi-baseline/(:num)', 'RpjmdController::versiIsiBaseline/$1');
+        $routes->get('rpjmd/versi/koreksi/(:num)', 'RpjmdController::versiKoreksi/$1');
+        $routes->post('rpjmd/versi/koreksi/(:num)', 'RpjmdController::versiKoreksiSimpan/$1');
+        $routes->post('rpjmd/versi/koreksi/(:num)/batal/(:num)', 'RpjmdController::versiKoreksiBatal/$1/$2');
+        $routes->get('rpjmd/versi/sunting/(:num)', 'RpjmdController::versiSunting/$1');
+        $routes->post('rpjmd/versi/sunting/(:num)', 'RpjmdController::versiSuntingSimpan/$1');
+        $routes->post('rpjmd/versi/ajukan/(:num)', 'RpjmdController::versiAjukan/$1');
+        $routes->post('rpjmd/versi/tetapkan/(:num)', 'RpjmdController::versiTetapkan/$1');
+        $routes->post('rpjmd/versi/batalkan/(:num)', 'RpjmdController::versiBatalkan/$1');
+
         $routes->get('rpjmd/cetak', 'RpjmdController::cetak');
         $routes->get('rpjmd', 'RpjmdController::index');
         $routes->get('rpjmd/tambah', 'RpjmdController::tambah');
@@ -368,6 +421,45 @@ $routes->group('adminopd', ['filter' => 'auth:admin_opd,admin,admin_kecamatan'],
     $routes->get('dashboard/program/(:num)', 'AdminOpdController::program/$1');
 
     // Renstra
+    // VERSI DOKUMEN — lihat catatan otorisasi pada grup RPJMD di atas.
+    // Lingkup OPD diambil dari SESI (RenstraController::versiOpdId), tidak
+    // pernah dari request, sehingga tidak ada jalan menyentuh versi OPD lain.
+    $routes->get('renstra/versi', 'AdminOpd\RenstraController::versiIndex');
+    $routes->get('renstra/versi/buat', 'AdminOpd\RenstraController::versiBuat');
+    $routes->post('renstra/versi/simpan', 'AdminOpd\RenstraController::versiSimpan');
+    $routes->get('renstra/versi/banding', 'AdminOpd\RenstraController::versiBanding');
+    $routes->get('renstra/versi/lihat/(:num)', 'AdminOpd\RenstraController::versiLihat/$1');
+    $routes->get('renstra/versi/keterangan/(:num)', 'AdminOpd\RenstraController::versiKeterangan/$1');
+    $routes->post('renstra/versi/keterangan/(:num)', 'AdminOpd\RenstraController::versiKeteranganSimpan/$1');
+    $routes->post('renstra/versi/isi-baseline/(:num)', 'AdminOpd\RenstraController::versiIsiBaseline/$1');
+    $routes->get('renstra/versi/koreksi/(:num)', 'AdminOpd\RenstraController::versiKoreksi/$1');
+    $routes->post('renstra/versi/koreksi/(:num)', 'AdminOpd\RenstraController::versiKoreksiSimpan/$1');
+    $routes->post('renstra/versi/koreksi/(:num)/batal/(:num)', 'AdminOpd\RenstraController::versiKoreksiBatal/$1/$2');
+    $routes->get('renstra/versi/sunting/(:num)', 'AdminOpd\RenstraController::versiSunting/$1');
+    $routes->post('renstra/versi/sunting/(:num)', 'AdminOpd\RenstraController::versiSuntingSimpan/$1');
+    $routes->post('renstra/versi/ajukan/(:num)', 'AdminOpd\RenstraController::versiAjukan/$1');
+    $routes->post('renstra/versi/tetapkan/(:num)', 'AdminOpd\RenstraController::versiTetapkan/$1');
+    $routes->post('renstra/versi/batalkan/(:num)', 'AdminOpd\RenstraController::versiBatalkan/$1');
+
+    // Mengisi ISI draft versi Renstra, satu tujuan per pengiriman. Formnya
+    // berkas view yang sama dengan "Tambah Renstra" (lihat RenstraVersiIsiTrait),
+    // sehingga bentuk isiannya tidak mungkin menyimpang dari yang sudah dikenal.
+    $routes->get('renstra/versi/tujuan/tambah/(:num)', 'AdminOpd\RenstraController::versiTujuanTambah/$1');
+    $routes->get('renstra/versi/tujuan/sunting/(:num)/(:num)', 'AdminOpd\RenstraController::versiTujuanSunting/$1/$2');
+    $routes->post('renstra/versi/tujuan/simpan/(:num)', 'AdminOpd\RenstraController::versiTujuanSimpan/$1');
+    $routes->post('renstra/versi/tujuan/hapus/(:num)/(:num)', 'AdminOpd\RenstraController::versiTujuanHapus/$1/$2');
+
+    // Menunjuk versi mana yang jadi tampilan utama menu Renstra. POST, karena
+    // ia mengubah apa yang dilihat seluruh pengguna OPD itu — bukan sekadar
+    // cara seseorang melihat halaman untuk dirinya sendiri.
+    $routes->post('renstra/versi/jadikan-utama/(:num)', 'AdminOpd\RenstraController::versiJadikanUtama/$1');
+    $routes->post('renstra/versi/lepas-utama/(:num)', 'AdminOpd\RenstraController::versiLepasUtama/$1');
+
+    // IZIN SUNTING Renstra yang sudah ditetapkan. Yang dibuka kuncinya, bukan
+    // arsipnya: hasil penyuntingan menjadi versi berikutnya saat diajukan.
+    $routes->post('renstra/izin-sunting/ajukan', 'AdminOpd\RenstraController::renstraMintaIzin');
+    $routes->post('renstra/izin-sunting/tarik/(:num)', 'AdminOpd\RenstraController::renstraTarikIzin/$1');
+
     $routes->get('renstra', 'AdminOpd\RenstraController::index');
     $routes->get('renstra/cetak', 'AdminOpd\RenstraController::cetak');
     $routes->get('renstra/tambah', 'AdminOpd\RenstraController::tambah_renstra');
@@ -376,6 +468,9 @@ $routes->group('adminopd', ['filter' => 'auth:admin_opd,admin,admin_kecamatan'],
     $routes->post('renstra/update/(:num)', 'AdminOpd\RenstraController::update/$1');
     $routes->match(['get', 'post', 'delete'], 'renstra/delete/(:num)', 'AdminOpd\RenstraController::delete/$1');
     $routes->post('renstra/update-status', 'AdminOpd\RenstraController::updateStatus');
+    // Siklus hidup Renstra berjalan (= Versi 1): ajukan validasi & tarik permohonan.
+    $routes->post('renstra/ajukan-validasi', 'AdminOpd\RenstraController::renstraAjukanValidasi');
+    $routes->post('renstra/tarik-permohonan', 'AdminOpd\RenstraController::renstraTarikPermohonan');
     $routes->get('renstra/edit-tujuan/(:num)', 'AdminOpd\RenstraController::editTujuan/$1');
     $routes->post('renstra/update-tujuan/(:num)', 'AdminOpd\RenstraController::updateTujuan/$1');
 
@@ -411,6 +506,15 @@ $routes->group('adminopd', ['filter' => 'auth:admin_opd,admin,admin_kecamatan'],
     $routes->get('iku/revisi/lihat/(:num)', 'AdminOpd\IkuController::revisiLihat/$1');
     $routes->get('iku/revisi/sunting/(:num)', 'AdminOpd\IkuController::revisiSunting/$1');
     $routes->post('iku/revisi/sunting/(:num)', 'AdminOpd\IkuController::revisiSuntingSimpan/$1');
+
+    // Izin sunting revisi IKU yang sudah berlaku (lihat catatan di blok AdminKab).
+    $routes->post('iku/revisi/izin/ajukan/(:num)', 'AdminOpd\IkuController::revisiMintaIzin/$1');
+    $routes->post('iku/revisi/izin/tarik/(:num)', 'AdminOpd\IkuController::revisiTarikIzin/$1');
+    $routes->post('iku/revisi/izin/selesai/(:num)', 'AdminOpd\IkuController::revisiSelesaikanIzin/$1');
+
+    $routes->post('iku/ajukan-pengesahan', 'AdminOpd\IkuController::ajukanPengesahan');
+    $routes->post('iku/revisi/ajukan/(:num)', 'AdminOpd\IkuController::revisiAjukan/$1');
+    $routes->post('iku/revisi/tarik/(:num)', 'AdminOpd\IkuController::revisiTarik/$1');
     $routes->post('iku/revisi/sahkan/(:num)', 'AdminOpd\IkuController::revisiSahkan/$1');
     $routes->post('iku/revisi/batalkan/(:num)', 'AdminOpd\IkuController::revisiBatalkan/$1');
 

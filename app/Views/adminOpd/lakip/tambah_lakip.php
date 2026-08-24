@@ -41,7 +41,17 @@
       <form id="lakip-form" method="POST" action="<?= base_url('adminopd/lakip/save') ?>">
         <?= csrf_field() ?>
 
-        <?php if ($role === 'admin_kab'): ?>
+        <?php $slf = $sumberLakipForm ?? null; ?>
+
+        <?php if ($slf !== null && ($slf['sumber'] ?? '') === 'iku'): ?>
+          <?php /* Baris bersumber IKU tidak punya target Renstra/RPJMD. Yang
+                   dikirim adalah indikator IKU berjalan + revisi yang dipakai,
+                   plus target yang dibekukan saat baris ini dibuat. */ ?>
+          <input type="hidden" name="sumber_lakip" value="iku">
+          <input type="hidden" name="source_entity_id" value="<?= (int) $slf['entity_id'] ?>">
+          <input type="hidden" name="source_version_id" value="<?= (int) $slf['versi_id'] ?>">
+          <input type="hidden" name="tahun" value="<?= esc($tahun ?? '') ?>">
+        <?php elseif ($role === 'admin_kab'): ?>
           <!-- simpan ID TARGET RPJMD -->
           <input type="hidden" name="rpjmd_target_id" value="<?= esc($target['id'] ?? '') ?>">
         <?php else: ?>

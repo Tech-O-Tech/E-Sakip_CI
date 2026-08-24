@@ -22,6 +22,58 @@ class CascadingController extends BaseController
         $this->opdId = session()->get('opd_id');
     }
 
+    /** @var array<int,int|null> memo padanan IKU; satu simpan bisa membuat puluhan baris */
+    private array $memoJangkarIku = [];
+
+    /**
+     * Kolom jangkar untuk baris cascading BARU: Renstra dan IKU sekaligus.
+     *
+     * Tanpa ini, baris yang dibuat sesudah migrasi 2026-08-27 hanya berjangkar
+     * Renstra — jadi ia tidak ikut membaca revisi IKU, dan ikut mati bila
+     * indikator Renstra-nya dihapus. Justru dua hal itu yang mau dihindari.
+     *
+     * @return array<string,mixed> siap digabung ke array insert
+     */
+    private function jangkarSumber($renstraIndikatorId): array
+    {
+        $kolom = ['renstra_indikator_sasaran_id' => $renstraIndikatorId];
+
+        // DB yang belum dimigrasi tetap dilayani dengan perilaku lama.
+        if (! $this->db->fieldExists('iku_indikator_id', 'cascading_sasaran_opd')) {
+            return $kolom;
+        }
+
+        $kunci = (int) $renstraIndikatorId;
+
+        if (! array_key_exists($kunci, $this->memoJangkarIku)) {
+            $this->memoJangkarIku[$kunci] = $this->cascadingModel->padananIkuIndikator($kunci);
+        }
+
+        $ikuId = $this->memoJangkarIku[$kunci];
+
+        $kolom['iku_indikator_id'] = $ikuId;
+        $kolom['source_type']      = $ikuId !== null ? 'iku' : 'renstra';
+
+        return $kolom;
+    }
+
+    /**
+     * Satu-satunya pintu masuk baris `cascading_sasaran_opd`.
+     *
+     * Semua penyimpanan cascading (ES III, ES IV, Pelaksana; baru maupun
+     * hasil sunting) lewat sini supaya jangkar IKU tidak mungkin terlupa di
+     * salah satu dari delapan tempat insert.
+     */
+    private function insertCascadingRow(array $data): int
+    {
+        // Union, bukan array_merge: nilai yang sudah ada di $data menang.
+        $data += $this->jangkarSumber($data['renstra_indikator_sasaran_id'] ?? null);
+
+        $this->db->table('cascading_sasaran_opd')->insert($data);
+
+        return (int) $this->db->insertID();
+    }
+
     public function index()
     {
         $periode = $this->request->getGet('periode');
@@ -75,7 +127,9 @@ class CascadingController extends BaseController
             'view' => $view,
             'title' => ($view === 'pohon' ? 'Pohon Kinerja' : 'Cascading'),
             'programEs3' => $programEs3 ?? [],
-            'showProgramPk' => true,
+            // Kolom sasaran eselon di TABEL cukup menampilkan sasarannya saja;
+            // rincian Program & Kegiatan PK tetap tampil di Pohon Kinerja.
+            'showProgramPk' => false,
             'opd_missing' => empty($this->opdId),
             'filters' => [
                 'periode' => $periode
@@ -124,7 +178,9 @@ class CascadingController extends BaseController
             'rowspan'       => $this->buildRowspanMeta($rows),
             'firstShow'     => $this->buildFirstShowMeta($rows),
             'programEs3'    => $this->cascadingModel->programPkByEs3($this->opdId, (int) $start, (int) $end),
-            'showProgramPk' => true,
+            // Kolom sasaran eselon di TABEL cukup menampilkan sasarannya saja;
+            // rincian Program & Kegiatan PK tetap tampil di Pohon Kinerja.
+            'showProgramPk' => false,
         ]);
     }
 
@@ -164,7 +220,9 @@ class CascadingController extends BaseController
             'rowspan' => $rowspan,
             'firstShow' => $firstShow,
             'programEs3' => $this->cascadingModel->programPkByEs3($this->opdId, $start, $end),
-            'showProgramPk' => true,
+            // Kolom sasaran eselon di TABEL cukup menampilkan sasarannya saja;
+            // rincian Program & Kegiatan PK tetap tampil di Pohon Kinerja.
+            'showProgramPk' => false,
             'tahun_mulai' => $start,
             'tahun_akhir' => $end,
             'periode' => $periode,
@@ -364,7 +422,7 @@ class CascadingController extends BaseController
             // INSERT SASARAN ESS III
             // ==========================
 
-            $this->db->table('cascading_sasaran_opd')->insert([
+            $this->insertCascadingRow([
                 'opd_id' => $opdId,
                 'renstra_indikator_sasaran_id' => $renstraIndikatorId,
                 'parent_id' => null,
@@ -406,7 +464,7 @@ class CascadingController extends BaseController
                             if (empty($es4['nama']))
                                 continue;
 
-                            $this->db->table('cascading_sasaran_opd')->insert([
+                            $this->insertCascadingRow([
                                 'opd_id' => $opdId,
                                 'renstra_indikator_sasaran_id' => $renstraIndikatorId,
                                 'parent_id' => $es3Id,
@@ -465,7 +523,7 @@ class CascadingController extends BaseController
             if (empty($es3['nama']))
                 continue;
 
-            $this->db->table('cascading_sasaran_opd')->insert([
+            $this->insertCascadingRow([
                 'opd_id' => $opdId,
                 'renstra_indikator_sasaran_id' => $renstraIndikatorId,
                 'parent_id' => null,
@@ -520,7 +578,7 @@ class CascadingController extends BaseController
             if (empty($es4['nama']))
                 continue;
 
-            $this->db->table('cascading_sasaran_opd')->insert([
+            $this->insertCascadingRow([
                 'opd_id' => $opdId,
                 'renstra_indikator_sasaran_id' => $renstraIndikatorId,
                 'parent_id' => $parentId,
@@ -705,7 +763,7 @@ class CascadingController extends BaseController
                 foreach ($sasaranBaru as $es3) {
                     if (empty($es3['nama'])) continue;
 
-                    $this->db->table('cascading_sasaran_opd')->insert([
+                    $this->insertCascadingRow([
                         'opd_id' => $currentSasaran['opd_id'],
                         'renstra_indikator_sasaran_id' => $currentSasaran['renstra_indikator_sasaran_id'],
                         'parent_id' => null,
@@ -814,7 +872,7 @@ class CascadingController extends BaseController
                 foreach ($sasaranBaru as $es4) {
                     if (empty($es4['nama'])) continue;
 
-                    $this->db->table('cascading_sasaran_opd')->insert([
+                    $this->insertCascadingRow([
                         'opd_id' => $currentSasaran['opd_id'],
                         'renstra_indikator_sasaran_id' => $currentSasaran['renstra_indikator_sasaran_id'],
                         'parent_id' => $currentSasaran['parent_id'],
@@ -984,7 +1042,7 @@ class CascadingController extends BaseController
                 continue;
             }
 
-            $this->db->table('cascading_sasaran_opd')->insert([
+            $this->insertCascadingRow([
                 'opd_id'                       => $indikator['opd_id'],
                 'renstra_indikator_sasaran_id' => $indikator['renstra_indikator_sasaran_id'],
                 'parent_id'                    => $indikator['es4_id'],
@@ -1143,7 +1201,7 @@ class CascadingController extends BaseController
                     continue;
                 }
 
-                $this->db->table('cascading_sasaran_opd')->insert([
+                $this->insertCascadingRow([
                     'opd_id'                       => $sasaran['opd_id'],
                     'renstra_indikator_sasaran_id' => $sasaran['renstra_indikator_sasaran_id'],
                     'parent_id'                    => $sasaran['parent_id'],

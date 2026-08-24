@@ -45,8 +45,18 @@ $tpl = in_array($peranSekarang, ['admin_opd', 'admin_kecamatan'], true)
     </style>
 </head>
 
-<body>
-    <div class="d-flex flex-column min-vh-100">
+<body class="bg-light min-vh-100 d-flex flex-column position-relative">
+    <?php
+    /*
+     * `id="main-content"` + `.content-wrapper` WAJIB ada.
+     *
+     * Sidebar menggesernya lewat margin-left saat dibuka. Tanpa pembungkus ini
+     * sidebar menimpa isi halaman — termasuk tombol burger di pojok kiri atas,
+     * sehingga menu tidak bisa ditutup lagi. Seluruh halaman lama memakai pola
+     * yang sama; cangkang ini sempat tertinggal.
+     */
+    ?>
+    <div id="main-content" class="content-wrapper d-flex flex-column" style="transition: margin-left .3s ease;">
         <?= $this->include($tpl . '/templates/header.php'); ?>
         <?= $this->include($tpl . '/templates/sidebar.php'); ?>
 

@@ -75,6 +75,11 @@ class LakipSnapshotModel extends Model
     public const STATUS_DRAFT = 'draft';
     public const STATUS_FINAL = 'final';
 
+    /** Sumber baris yang mungkin dibekukan. Nilainya sama dengan LakipSourceService. */
+    public const SUMBER_RENSTRA = 'renstra';
+    public const SUMBER_RPJMD   = 'rpjmd';
+    public const SUMBER_IKU     = 'iku';
+
     /* =========================================================
      * KESIAPAN
      * =======================================================*/
@@ -190,8 +195,10 @@ class LakipSnapshotModel extends Model
             return $kosong;
         }
 
-        $mode  = $snapshot['mode'];
-        $baris = $this->db->table('lakip_snapshot_baris')
+        $mode   = $snapshot['mode'];
+        $sumber = $this->sumberSnapshot($snapshot);
+        $kunci  = $this->kolomKunci($sumber);
+        $baris  = $this->db->table('lakip_snapshot_baris')
             ->where('snapshot_id', $snapshotId)
             ->orderBy('urutan', 'ASC')
             ->orderBy('id', 'ASC')
@@ -202,7 +209,7 @@ class LakipSnapshotModel extends Model
         $lakipMap = [];
 
         foreach ($baris as $b) {
-            $targetId = (int) ($mode === 'kabupaten' ? $b['rpjmd_target_id'] : $b['renstra_target_id']);
+            $targetId = (int) ($b[$kunci] ?? 0);
 
             $row = [
                 'target_id'         => $targetId,
@@ -215,6 +222,15 @@ class LakipSnapshotModel extends Model
                 'sasaran_id'        => $b['sasaran_id'] !== null ? (int) $b['sasaran_id'] : null,
                 'sasaran'           => $b['sasaran'],
             ];
+
+            if ($sumber === self::SUMBER_IKU) {
+                // View LAKIP membaca `arsip_id` untuk menautkan baris ke
+                // arsip revisinya; tanpa ini tautan "lihat di IKU" mati.
+                $row['arsip_id']              = $b['iku_revisi_indikator_id'] !== null
+                    ? (int) $b['iku_revisi_indikator_id']
+                    : null;
+                $row['perubahan_substansial'] = (int) ($b['perubahan_substansial'] ?? 0);
+            }
 
             // Jalur RPJMD memang tidak punya kedua kolom ini. Menambahkannya
             // akan mengubah $sasKey pada view AdminKab (opd_id ikut jadi bagian
@@ -238,6 +254,8 @@ class LakipSnapshotModel extends Model
                 'id'                => (int) $b['lakip_id'],
                 'renstra_target_id' => $b['renstra_target_id'] !== null ? (int) $b['renstra_target_id'] : null,
                 'rpjmd_target_id'   => $b['rpjmd_target_id'] !== null ? (int) $b['rpjmd_target_id'] : null,
+                'source_type'       => $sumber,
+                'source_entity_id'  => $sumber === self::SUMBER_IKU ? $targetId : null,
                 'target_hitung'     => $b['target_hitung'],
                 'target_lalu'       => $b['target_lalu'],
                 'capaian_lalu'      => $b['capaian_lalu'],
@@ -465,14 +483,14 @@ class LakipSnapshotModel extends Model
             return $hasil;
         }
 
-        $mode = $snapshot['mode'];
-        $beku = [];
+        $kunci = $this->kolomKunci($this->sumberSnapshot($snapshot));
+        $beku  = [];
 
         foreach (
             $this->db->table('lakip_snapshot_baris')
                 ->where('snapshot_id', $snapshotId)->get()->getResultArray() as $b
         ) {
-            $beku[(int) ($mode === 'kabupaten' ? $b['rpjmd_target_id'] : $b['renstra_target_id'])] = $b;
+            $beku[(int) ($b[$kunci] ?? 0)] = $b;
         }
 
         $lakipMap = $bahan['lakipMap'] ?? [];
@@ -552,6 +570,67 @@ class LakipSnapshotModel extends Model
      * Dipanggil HANYA dari dalam dalamTransaksi(): kalau penulisan baris gagal
      * di tengah, kepala snapshot ikut dibatalkan (Case 13).
      */
+    /* =========================================================
+     * SUMBER BARIS
+     * =======================================================*/
+
+    /**
+     * Sumber baris yang dibekukan snapshot ini.
+     *
+     * Sebelum LAKIP boleh bersumber IKU, "sumber" bisa disimpulkan dari mode
+     * saja (kabupaten -> rpjmd, selain itu -> renstra). Sekarang tidak lagi:
+     * satu OPD yang sama bisa membekukan dokumen ber-sumber Renstra tahun lalu
+     * dan ber-sumber IKU tahun ini. Karena itu sumbernya DICATAT, bukan
+     * disimpulkan ulang saat dibaca — snapshot yang dibaca dengan asumsi sumber
+     * yang salah menghasilkan tabel kosong tanpa galat apa pun.
+     */
+    private function sumberBahan(array $bahan, string $mode): string
+    {
+        $sumber = (string) ($bahan['sumber_type'] ?? '');
+
+        if ($sumber === self::SUMBER_IKU) {
+            return self::SUMBER_IKU;
+        }
+
+        return $mode === 'kabupaten' ? self::SUMBER_RPJMD : self::SUMBER_RENSTRA;
+    }
+
+    /**
+     * Kolom `lakip_snapshot_baris` yang memegang kunci baris untuk satu sumber.
+     *
+     * Kunci itulah yang menautkan baris beku ke baris hidup: id target Renstra,
+     * id target RPJMD, atau — untuk IKU — id indikator BERJALAN (bukan id
+     * arsipnya, karena arsip berganti tiap revisi sementara realisasi disimpan
+     * terhadap indikator berjalan).
+     */
+    private function kolomKunci(string $sumber): string
+    {
+        switch ($sumber) {
+            case self::SUMBER_IKU:
+                return 'iku_indikator_id';
+
+            case self::SUMBER_RPJMD:
+                return 'rpjmd_target_id';
+
+            default:
+                return 'renstra_target_id';
+        }
+    }
+
+    /** Sumber yang tercatat pada satu snapshot; jatuh ke tebakan lama bila kosong. */
+    private function sumberSnapshot(array $snapshot): string
+    {
+        $sumber = (string) ($snapshot['source_type'] ?? '');
+
+        if (in_array($sumber, [self::SUMBER_IKU, self::SUMBER_RENSTRA, self::SUMBER_RPJMD], true)) {
+            return $sumber;
+        }
+
+        // Snapshot lama dibuat sebelum kolom ini ada. Semuanya Renstra/RPJMD:
+        // sumber IKU belum mungkin saat itu.
+        return $snapshot['mode'] === 'kabupaten' ? self::SUMBER_RPJMD : self::SUMBER_RENSTRA;
+    }
+
     private function tulisVersi(
         string $tahun,
         string $mode,
@@ -561,8 +640,10 @@ class LakipSnapshotModel extends Model
         ?int $userId,
         string $aksi
     ): int {
-        $db  = $this->db;
-        $now = date('Y-m-d H:i:s');
+        $db     = $this->db;
+        $now    = date('Y-m-d H:i:s');
+        $sumber = $this->sumberBahan($bahan, $mode);
+        $kunci  = $this->kolomKunci($sumber);
 
         $kepala = [
             'tahun'                => $tahun,
@@ -573,6 +654,10 @@ class LakipSnapshotModel extends Model
             'status'               => self::STATUS_DRAFT,
             'aktif'                => 1,
             'sumber_iku_revisi_id' => isset($bahan['iku_revisi_id']) ? (int) $bahan['iku_revisi_id'] : null,
+            'source_type'          => $sumber,
+            'source_version_id'    => isset($bahan['sumber_versi_id']) && (int) $bahan['sumber_versi_id'] > 0
+                ? (int) $bahan['sumber_versi_id']
+                : null,
             'filter_status'        => ($bahan['filter_status'] ?? '') !== '' ? (string) $bahan['filter_status'] : null,
             'catatan'              => $bahan['catatan'] ?? null,
             'dibuat_oleh'          => $userId,
@@ -599,9 +684,25 @@ class LakipSnapshotModel extends Model
             $db->table('lakip_snapshot_baris')->insert([
                 'snapshot_id'       => $snapshotId,
                 'urutan'            => $urutan,
-                'sumber'            => $mode === 'kabupaten' ? 'rpjmd' : 'renstra',
-                'renstra_target_id' => $mode === 'kabupaten' ? null : ($targetId ?: null),
-                'rpjmd_target_id'   => $mode === 'kabupaten' ? ($targetId ?: null) : null,
+                'sumber'            => $sumber,
+                // Hanya kolom kunci milik sumbernya yang diisi; dua lainnya
+                // sengaja NULL supaya tidak ada id yang tampak sah di kolom
+                // yang artinya lain.
+                'renstra_target_id' => $kunci === 'renstra_target_id' ? ($targetId ?: null) : null,
+                'rpjmd_target_id'   => $kunci === 'rpjmd_target_id' ? ($targetId ?: null) : null,
+                'iku_indikator_id'  => $kunci === 'iku_indikator_id' ? ($targetId ?: null) : null,
+
+                // Jejak ke baris ARSIP revisi: bukan kunci, hanya penelusuran —
+                // dari sini terbaca redaksi indikator persis seperti saat itu.
+                'iku_revisi_indikator_id' => $sumber === self::SUMBER_IKU && ! empty($r['arsip_id'])
+                    ? (int) $r['arsip_id']
+                    : null,
+                'perubahan_substansial'   => ! empty($r['perubahan_substansial']) ? 1 : 0,
+                'source_type'             => $sumber,
+                'source_version_id'       => isset($bahan['sumber_versi_id']) && (int) $bahan['sumber_versi_id'] > 0
+                    ? (int) $bahan['sumber_versi_id']
+                    : null,
+
                 'lakip_id'          => $lk !== null ? (int) $lk['id'] : null,
                 'opd_id'            => (int) ($r['opd_id'] ?? $opdId),
                 'nama_opd'          => $r['nama_opd'] ?? null,

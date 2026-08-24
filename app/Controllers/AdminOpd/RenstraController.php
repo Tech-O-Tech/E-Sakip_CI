@@ -3,20 +3,35 @@
 namespace App\Controllers\AdminOpd;
 
 use App\Controllers\BaseController;
+use App\Controllers\Concerns\DokumenVersiTrait;
+use App\Controllers\Concerns\RenstraSiklusTrait;
+use App\Controllers\Concerns\RenstraVersiIsiTrait;
 use CodeIgniter\HTTP\ResponseInterface;
 use App\Models\Opd\RenstraModel;
 use App\Models\RpjmdModel;
 use App\Models\OpdModel;
 use App\Models\PkModel;
+use App\Services\Version\VersionScope;
 
 
 class RenstraController extends BaseController
 {
+    // Aksi versi dokumen. Seluruh method lama di bawah TIDAK tersentuh:
+    // trait hanya menambah method baru berawalan `versi*`.
+    use DokumenVersiTrait;
+
+    // Siklus hidup Renstra berjalan: susun -> ajukan validasi -> ditetapkan.
+    // Renstra yang disusun di menu ini ADALAH Versi 1.
+    use RenstraSiklusTrait;
+
+    // Pengisian isi versi Renstra memakai form "Tambah Renstra" yang sama.
+    use RenstraVersiIsiTrait;
+
     protected $renstraModel;
     protected $rpjmdModel;
     protected $opdModel;
     protected $pkModel;
-    
+
 
     public function __construct()
     {
@@ -24,6 +39,39 @@ class RenstraController extends BaseController
         $this->rpjmdModel = new RpjmdModel();
         $this->opdModel = new OpdModel();
         $this->pkModel = new PkModel();
+    }
+
+    /* =========================================================
+     *  LINGKUP VERSI — Renstra selalu milik satu OPD
+     * =======================================================*/
+
+    protected function versiModul(): string
+    {
+        return VersionScope::MODUL_RENSTRA;
+    }
+
+    /**
+     * Diambil dari SESI, tidak pernah dari request.
+     *
+     * Ini penjaga anti-IDOR yang paling murah: Admin OPD tidak punya cara
+     * menyebutkan opd_id lain, sehingga seluruh aksi versi otomatis terkurung
+     * di lingkupnya sendiri (§13, §55).
+     */
+    protected function versiOpdId(): ?int
+    {
+        $id = session()->get('opd_id');
+
+        return $id === null ? null : (int) $id;
+    }
+
+    protected function versiBaseUrl(): string
+    {
+        return 'adminopd/renstra';
+    }
+
+    protected function versiNamaDokumen(): string
+    {
+        return 'Renstra';
     }
     /* =========================================================
      *  HELPERS: Anti XSS / Script
@@ -64,15 +112,47 @@ class RenstraController extends BaseController
         $periode = trim($this->request->getGet('periode') ?? '');
         $status = trim($this->request->getGet('status') ?? '');
 
-        // ambil data renstra (flatten) + target sasaran + target tujuan
-        $renstraData = $this->renstraModel->getFilteredRenstra(
-            $opdId,
-            $misi ?: null,
-            $tujuan ?: null,
-            $rpjmd ?: null,
-            $status ?: null,
-            $periode ?: null
-        );
+        // Versi mana yang sedang dilihat, menurut tiga aturan berurutan:
+        //   1. ada ?versi=<id> yang sah -> versi itu
+        //   2. ada ?versi= tapi bukan id sah ('berjalan') -> kondisi berjalan
+        //   3. tidak ada parameter sama sekali -> tunjukan tampilan utama,
+        //      kalau OPD ini memasangnya; kalau tidak, kondisi berjalan
+        $paramVersi   = $this->request->getGet('versi');
+        $versiPilihan = $periode === '' ? [] : $this->renstraVersiPilihan($periode);
+        $versiAktif   = $this->renstraVersiDipilih($paramVersi, $periode);
+        $dariTunjukan = false;
+
+        if ($versiAktif === null && $paramVersi === null && $periode !== '') {
+            $versiAktif   = $this->renstraVersiTunjukan($periode);
+            $dariTunjukan = $versiAktif !== null;
+        }
+
+        // Versi yang berlaku menurut TANGGAL — dipakai tampilan untuk menyatakan
+        // bila tunjukan ternyata menyimpang darinya.
+        $versiMenurutTanggal = null;
+
+        if ($dariTunjukan && ($scopeTampil = $this->versiScope($periode)) !== null) {
+            $versiMenurutTanggal = (new \App\Services\Version\VersionResolver())
+                ->getEffectiveVersion($scopeTampil, date('Y-m-d'));
+        }
+
+        if ($versiAktif !== null) {
+            // Membaca versi berarti membaca arsip. Saringan status tidak
+            // berlaku di sana: draft/selesai adalah keadaan PENGERJAAN, dan
+            // versi yang sudah ditetapkan tidak lagi dikerjakan.
+            $status      = '';
+            $renstraData = $this->renstraIsiVersi($versiAktif, $rpjmd ?: null, $tujuan ?: null);
+        } else {
+            // ambil data renstra (flatten) + target sasaran + target tujuan
+            $renstraData = $this->renstraModel->getFilteredRenstra(
+                $opdId,
+                $misi ?: null,
+                $tujuan ?: null,
+                $rpjmd ?: null,
+                $status ?: null,
+                $periode ?: null
+            );
+        }
 
         // Sumber opsi dropdown filter: HANYA di-scope periode (bukan misi/tujuan/rpjmd/status)
         // agar opsi tidak menciut setelah salah satu filter dipilih.
@@ -95,8 +175,21 @@ class RenstraController extends BaseController
 
         $currentOpd = $this->opdModel->find($opdId);
 
+        // Keadaan siklus hidup periode yang sedang dilihat (draft / menunggu
+        // verifikasi / sudah ditetapkan). Null bila periode belum dipilih.
+        $siklus = null;
+
+        if ($periode !== '' && preg_match('/^(\d{4})\s*-\s*(\d{4})$/', $periode, $mPeriode)) {
+            $siklus = $this->renstraKeadaan((int) $mPeriode[1], (int) $mPeriode[2]);
+        }
+
         // dd($renstraData);
         $data = [
+            'siklus' => $siklus,
+            'versi_pilihan' => $versiPilihan,
+            'versi_aktif' => $versiAktif,
+            'versi_dari_tunjukan' => $dariTunjukan,
+            'versi_menurut_tanggal' => $versiMenurutTanggal,
             'title' => 'Rencana Strategis - ' . ($currentOpd['nama_opd'] ?? ''),
             'current_opd' => $currentOpd,
             'periode_master' => $periodeMaster,
@@ -137,20 +230,36 @@ class RenstraController extends BaseController
                 ->with('error', 'Periode wajib dipilih untuk cetak PDF Renstra.');
         }
 
-        $renstraData = $this->renstraModel->getFilteredRenstra(
-            $opdId,
-            $misi ?: null,
-            $tujuan ?: null,
-            $rpjmd ?: null,
-            $status ?: null,
-            $periode ?: null
-        );
+        // Versi yang dicetak mengikuti versi yang sedang dilihat di layar,
+        // supaya berkas PDF-nya tidak pernah berisi lain dari yang dibaca —
+        // termasuk saat yang tampil di layar berasal dari tunjukan.
+        $paramVersi = $this->request->getGet('versi');
+        $versiAktif = $this->renstraVersiDipilih($paramVersi, $periode);
+
+        if ($versiAktif === null && $paramVersi === null) {
+            $versiAktif = $this->renstraVersiTunjukan($periode);
+        }
+
+        if ($versiAktif !== null) {
+            $status      = '';
+            $renstraData = $this->renstraIsiVersi($versiAktif, $rpjmd ?: null, $tujuan ?: null);
+        } else {
+            $renstraData = $this->renstraModel->getFilteredRenstra(
+                $opdId,
+                $misi ?: null,
+                $tujuan ?: null,
+                $rpjmd ?: null,
+                $status ?: null,
+                $periode ?: null
+            );
+        }
 
         $currentOpd = $this->opdModel->find($opdId);
         [$tahunMulai, $tahunAkhir] = array_map('trim', explode('-', $periode));
 
         $html = view('adminOpd/renstra/renstra_cetak', [
             'renstra_data' => $renstraData,
+            'versi_aktif' => $versiAktif,
             'filters' => [
                 'misi' => $misi,
                 'tujuan' => $tujuan,
@@ -184,7 +293,8 @@ class RenstraController extends BaseController
         $this->response->setHeader('Content-Type', 'application/pdf');
         $namaOpd = trim((string) ($currentOpd['nama_opd'] ?? ''));
         $namaFile = $namaOpd !== '' ? preg_replace('/[^A-Za-z0-9]+/', '-', $namaOpd) . '-' : '';
-        $mpdf->Output('Renstra-OPD-' . $namaFile . $periode . '.pdf', 'I');
+        $tandaVersi = $versiAktif !== null ? '-V' . (int) $versiAktif['version_no'] : '';
+        $mpdf->Output('Renstra-OPD-' . $namaFile . $periode . $tandaVersi . '.pdf', 'I');
         exit;
     }
 
@@ -224,6 +334,10 @@ class RenstraController extends BaseController
 
     public function edit($id = null)
     {
+        if ($tolak = $this->renstraPastikanBoleh($this->renstraKeadaanDariSasaran((int) $id))) {
+            return $tolak;
+        }
+
         $session = session();
         $opdId = $session->get('opd_id');
 
@@ -275,6 +389,15 @@ class RenstraController extends BaseController
 
     public function save()
     {
+        // Terkunci bila periode ini sedang menunggu verifikasi atau sudah
+        // ditetapkan. Diperiksa di server, bukan sekadar tombolnya disembunyikan.
+        if ($tolak = $this->renstraPastikanBoleh($this->renstraKeadaan(
+            (int) $this->request->getPost('tahun_mulai'),
+            (int) $this->request->getPost('tahun_akhir')
+        ))) {
+            return $tolak;
+        }
+
         $db = \Config\Database::connect();
         $db->transStart();
 
@@ -467,6 +590,10 @@ class RenstraController extends BaseController
     }
     public function update($id = null)
     {
+        if ($tolak = $this->renstraPastikanBoleh($this->renstraKeadaanDariSasaran((int) $id))) {
+            return $tolak;
+        }
+
         if (!$id) {
             return redirect()->back()->with('error', 'ID sasaran Renstra tidak valid');
         }
@@ -576,6 +703,10 @@ class RenstraController extends BaseController
 
     public function delete($id = null)
     {
+        if ($tolak = $this->renstraPastikanBoleh($this->renstraKeadaanDariSasaran((int) $id))) {
+            return $tolak;
+        }
+
         if (!$id) {
             return redirect()->back()->with('error', 'ID tidak valid');
         }
@@ -624,6 +755,17 @@ class RenstraController extends BaseController
 
         // Get JSON input (like RENJA)
         $json = $this->request->getJSON(true);
+
+        // Penguncian siklus hidup. Jalur ini AJAX, jadi penolakannya harus
+        // berupa JSON — redirect akan diterima sebagai sukses oleh pemanggilnya.
+        $keadaanStatus = $this->renstraKeadaanDariSasaran((int) ($json['id'] ?? 0));
+
+        if ($keadaanStatus['terkunci']) {
+            return $this->response->setJSON([
+                'success' => false,
+                'message' => $keadaanStatus['alasan'],
+            ]);
+        }
         $id = $json['id'] ?? null;
 
         if (!$id) {
@@ -667,6 +809,17 @@ class RenstraController extends BaseController
     }
     public function editTujuan($tujuanId)
     {
+        // Kepemilikan diperiksa LEBIH DULU. renstra_tujuan tidak punya opd_id,
+        // jadi tidak ada query di bawah yang aman dengan sendirinya.
+        if (! $this->renstraTujuanMilikSaya((int) $tujuanId)) {
+            return redirect()->to(base_url('adminopd/renstra'))
+                ->with('error', 'Tujuan Renstra itu bukan milik OPD Anda.');
+        }
+
+        if ($tolak = $this->renstraPastikanBoleh($this->renstraKeadaanDariTujuan((int) $tujuanId))) {
+            return $tolak;
+        }
+
         $db = \Config\Database::connect();
         $session = session();
         $opdId = $session->get('opd_id');
@@ -725,6 +878,17 @@ class RenstraController extends BaseController
     }
     public function updateTujuan($tujuanId)
     {
+        // Kepemilikan diperiksa LEBIH DULU. renstra_tujuan tidak punya opd_id,
+        // jadi tidak ada query di bawah yang aman dengan sendirinya.
+        if (! $this->renstraTujuanMilikSaya((int) $tujuanId)) {
+            return redirect()->to(base_url('adminopd/renstra'))
+                ->with('error', 'Tujuan Renstra itu bukan milik OPD Anda.');
+        }
+
+        if ($tolak = $this->renstraPastikanBoleh($this->renstraKeadaanDariTujuan((int) $tujuanId))) {
+            return $tolak;
+        }
+
         try {
 
             $post = $this->request->getPost();

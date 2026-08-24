@@ -73,11 +73,11 @@ trait IkuFormTrait
      *
      * @return array<int, int[]> [id_sasaran_sumber => [id_indikator_sumber, ...]]
      */
-    private function bacaPilihanSync(array $post): array
+    private function bacaPilihanSync(array $post, string $medan = 'pilih'): array
     {
         $pilihan = [];
 
-        foreach ((array) ($post['pilih'] ?? []) as $sasaranId => $daftarIndikator) {
+        foreach ((array) ($post[$medan] ?? []) as $sasaranId => $daftarIndikator) {
             $sasaranId = (int) $sasaranId;
             if ($sasaranId <= 0 || !is_array($daftarIndikator)) {
                 continue;
@@ -109,13 +109,24 @@ trait IkuFormTrait
             $bagian[] = $stat['target'] . ' target tahunan';
         }
 
-        if (empty($bagian)) {
+        // Diperbarui dilaporkan terpisah dari ditambahkan: yang satu menambah
+        // baris, yang lain MENIMPA nilai yang sudah dipakai, dan pemakainya
+        // berhak tahu berapa banyak yang tertimpa.
+        $diperbarui = (int) ($stat['diperbarui'] ?? 0);
+
+        if (empty($bagian) && $diperbarui === 0) {
             return $stat['dilewati'] > 0
                 ? 'Tidak ada data baru — ' . $stat['dilewati'] . ' indikator yang dipilih sudah ada di IKU.'
                 : 'Tidak ada data yang dipilih untuk disalin.';
         }
 
-        $pesan = 'Sync berhasil: ' . implode(', ', $bagian) . ' ditambahkan.';
+        $pesan = $bagian === []
+            ? 'Sync berhasil.'
+            : 'Sync berhasil: ' . implode(', ', $bagian) . ' ditambahkan.';
+
+        if ($diperbarui > 0) {
+            $pesan .= ' ' . $diperbarui . ' indikator diperbarui mengikuti sumbernya.';
+        }
 
         if ($stat['dilewati'] > 0) {
             $pesan .= ' ' . $stat['dilewati'] . ' indikator dilewati karena sudah ada.';

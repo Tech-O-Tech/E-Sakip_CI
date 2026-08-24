@@ -5,6 +5,7 @@
  * Super admin (bypass) melihat semua. Dipakai oleh sidebar adminKabupaten & adminOpd.
  */
 helper('rbac');
+helper('versi');
 $role    = session()->get('role');
 $dashUrl = in_array($role, ['admin_opd', 'admin_kecamatan'], true)
     ? base_url('adminopd/dashboard')
@@ -107,6 +108,7 @@ $canRencanaKab = user_can('rpjmd.view') || user_can('rkpd.view') || user_can('ik
     <button class="<?= $ddBtn ?>" type="button" id="ddRencanaKab" data-bs-toggle="dropdown" aria-expanded="false"><span><i class="fas fa-clipboard-list"></i> Perencanaan Kinerja</span></button>
     <ul class="dropdown-menu w-100" aria-labelledby="ddRencanaKab">
       <?php if (user_can('rpjmd.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminkab/rpjmd') ?>">RPJMD</a></li><?php endif; ?>
+      <?php if (user_can('rpjmd.version.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminkab/rpjmd/versi') ?>">&nbsp;&nbsp;&#8226; Versi RPJMD</a></li><?php endif; ?>
       <?php if (user_can('rkpd.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminkab/rkpd') ?>">RKPD</a></li><?php endif; ?>
       <?php if (user_can('iku_kab.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminkab/iku') ?>">IKU</a></li><?php endif; ?>
       <?php if (user_can('iku_kab.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminkab/iku/revisi') ?>">&nbsp;&nbsp;&#8226; Revisi IKU</a></li><?php endif; ?>
@@ -117,6 +119,18 @@ $canRencanaKab = user_can('rpjmd.view') || user_can('rkpd.view') || user_can('ik
       <?php if (user_can('pk_bupati.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminkab/pk/bupati') ?>">Perjanjian Kinerja Bupati</a></li><?php endif; ?>
     </ul>
   </div>
+<?php endif; ?>
+<?php /* VERIFIKASI — hanya muncul bagi yang berwenang menyetujui versi (§47).
+         Badge angka memakai versi_pending_count() yang di-cache per request dan
+         mengembalikan 0 bila tabel registri belum terpasang. */ ?>
+<?php if (versi_boleh_verifikasi()): ?>
+  <?php $jmlPending = versi_pending_count(); ?>
+  <a class="<?= $linkCls ?> d-flex justify-content-between align-items-center" href="<?= base_url('adminkab/verifikasi') ?>">
+    <span><i class="fas fa-gavel"></i> Verifikasi</span>
+    <?php if ($jmlPending > 0): ?>
+      <span class="badge bg-danger rounded-pill"><?= $jmlPending ?></span>
+    <?php endif; ?>
+  </a>
 <?php endif; ?>
 <?php if (user_can('target_kab.view') || user_can('monev_kab.view') || user_can('pk_bupati.view')): ?>
   <div class="dropdown">
@@ -164,6 +178,7 @@ $canRencanaOpd = user_can('renstra.view') || user_can('rkt_opd.view') || user_ca
     <button class="<?= $ddBtn ?>" type="button" id="ddRencanaOpd" data-bs-toggle="dropdown" aria-expanded="false"><span><i class="fas fa-clipboard-list"></i> Perencanaan Kinerja</span></button>
     <ul class="dropdown-menu w-100" aria-labelledby="ddRencanaOpd">
       <?php if (user_can('renstra.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminopd/renstra') ?>">Renstra</a></li><?php endif; ?>
+      <?php if (user_can('renstra.version.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminopd/renstra/versi') ?>">&nbsp;&nbsp;&#8226; Versi Renstra</a></li><?php endif; ?>
       <?php if (user_can('rkt_opd.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminopd/rkt') ?>">Renja/RKT</a></li><?php endif; ?>
       <?php if (user_can('iku_opd.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminopd/iku') ?>">IKU</a></li><?php endif; ?>
       <?php if (user_can('iku_opd.view')): ?><li><a class="dropdown-item" href="<?= base_url('adminopd/iku/revisi') ?>">&nbsp;&nbsp;&#8226; Revisi IKU</a></li><?php endif; ?>

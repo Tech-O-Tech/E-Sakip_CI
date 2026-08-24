@@ -34,12 +34,49 @@ trait LakipBenchmarkTrait
         return $this->benchmarkModel ??= new LakipBenchmarkModel();
     }
 
-    /** Boleh input/ubah benchmark? Dipakai view untuk gate tombol + server untuk tolak. */
-    protected function benchmarkCanManage(): bool
+    /**
+     * Boleh input/ubah benchmark pada SATU LINGKUP.
+     *
+     * Tiga izin, tiga jangkauan yang berbeda — dan lingkupnya wajib ikut
+     * diperiksa, bukan hanya nama izinnya:
+     *
+     *   lakip_benchmark.manage       kelola tanpa batas lingkup (izin lama)
+     *   lakip_benchmark.manage_all   kelola seluruh OPD (Kabupaten)
+     *   lakip_benchmark.manage_own   kelola HANYA lingkup sendiri
+     *
+     * Tanpa pemeriksaan lingkup, `manage_own` berubah arti menjadi
+     * `manage_all`: satu OPD bisa mengisi angka pembanding milik OPD lain
+     * hanya dengan menukar `opd_id` di form.
+     *
+     * @param array|null $scope hasil lakipScope(); null = pertanyaan umum
+     *                          "boleh mengelola sama sekali?", dipakai view
+     *                          untuk memutuskan apakah tombolnya dirender.
+     */
+    protected function benchmarkCanManage(?array $scope = null): bool
     {
         helper('rbac');
 
-        return user_can('lakip_benchmark.manage');
+        if (user_can('lakip_benchmark.manage') || user_can('lakip_benchmark.manage_all')) {
+            return true;
+        }
+
+        if (! user_can('lakip_benchmark.manage_own')) {
+            return false;
+        }
+
+        if ($scope === null) {
+            return true;
+        }
+
+        // Lingkup kabupaten bukan milik siapa pun kecuali pemegang manage_all.
+        if ((string) ($scope['mode'] ?? 'opd') === 'kabupaten') {
+            return false;
+        }
+
+        $opdScope = (int) ($scope['opdScope'] ?? 0);
+        $opdSesi  = (int) (session()->get('opd_id') ?? 0);
+
+        return $opdScope > 0 && $opdSesi > 0 && $opdScope === $opdSesi;
     }
 
     /** Boleh melihat chart benchmark? */
@@ -47,8 +84,11 @@ trait LakipBenchmarkTrait
     {
         helper('rbac');
 
-        // Sudah lolos gate halaman LAKIP; izin manage otomatis mencakup lihat.
-        return user_can('lakip_benchmark.view') || user_can('lakip_benchmark.manage');
+        // Sudah lolos gate halaman LAKIP; izin mengelola otomatis mencakup lihat.
+        return user_can('lakip_benchmark.view')
+            || user_can('lakip_benchmark.manage')
+            || user_can('lakip_benchmark.manage_all')
+            || user_can('lakip_benchmark.manage_own');
     }
 
     /**
@@ -84,9 +124,15 @@ trait LakipBenchmarkTrait
         // tidak boleh diagregasi. View menampilkan pesan "pilih satu OPD".
         $perluPilihOpd = ($mode === 'opd') && empty($opd);
 
+        // Sumber ikut disaring: angka pembanding milik Renstra tidak boleh
+        // muncul pada indikator IKU yang kebetulan ber-id sama.
+        $sumberDok = $this->sumberDokumenLakip($mode);
+
         $benchmarkMap = $perluPilihOpd
             ? []
-            : $this->benchmark()->getByTahunKeyedByIndikator($tahun, $mode, $opd ? (int) $opd : null);
+            : $this->benchmark()->getByTahunKeyedByIndikator(
+                $tahun, $mode, $opd ? (int) $opd : null, $sumberDok
+            );
 
         $daftar = [];
         if (!$perluPilihOpd) {
@@ -127,7 +173,7 @@ trait LakipBenchmarkTrait
 
         return [
             'benchmarkList'          => array_values($daftar),
-            'benchmarkCanManage'     => $this->benchmarkCanManage(),
+            'benchmarkCanManage'     => $this->benchmarkCanManage($scope),
             'benchmarkCanView'       => $this->benchmarkCanView(),
             'benchmarkPerluPilihOpd' => $perluPilihOpd,
             'benchmarkSiap'          => $this->benchmark()->siap(),
@@ -200,7 +246,7 @@ trait LakipBenchmarkTrait
         }
 
         // Otorisasi di server — bukan sekadar tombol yang disembunyikan.
-        if (!$this->benchmarkCanManage()) {
+        if (!$this->benchmarkCanManage($scope)) {
             return redirect()->to($back)->with('error', 'Anda tidak berhak mengubah data benchmark Provinsi/Nasional.');
         }
 
@@ -209,8 +255,11 @@ trait LakipBenchmarkTrait
             return redirect()->to($back)->with('error', 'Pilih satu OPD dulu sebelum mengisi benchmark.');
         }
 
+        $sumberDok   = $this->sumberDokumenLakip((string) $scope['mode']);
         $indikatorId = (int) ($this->request->getPost('indikator_id') ?? 0);
-        $indikator   = $this->benchmark()->indikatorSah($indikatorId, $scope['mode'], $scope['tahun'], $scope['opdScope']);
+        $indikator   = $this->benchmark()->indikatorSah(
+            $indikatorId, $scope['mode'], $scope['tahun'], $scope['opdScope'], $sumberDok
+        );
         if (!$indikator) {
             return redirect()->to($back)->with('error', 'Indikator tidak ditemukan pada tahun & unit yang dipilih.');
         }
@@ -247,7 +296,14 @@ trait LakipBenchmarkTrait
         }
 
         $userId = (int) session()->get('user_id') ?: null;
-        $kolom  = LakipBenchmarkModel::kolomIndikator($scope['mode']);
+        $sumber = LakipBenchmarkModel::sumberSah((string) $scope['mode'], $sumberDok);
+        $kolom  = LakipBenchmarkModel::kolomIndikator($scope['mode'], $sumber);
+
+        if ($kolom === 'iku_indikator_id' && ! $this->benchmark()->punyaKolomSumber()) {
+            return redirect()->to($back)->with('error',
+                'Benchmark untuk LAKIP bersumber IKU membutuhkan migrasi '
+                . 'db/update_2026-08-26_benchmark_sumber_iku.sql. Jalankan dulu di server ini.');
+        }
         $opdId  = ($scope['mode'] === 'kabupaten') ? 0 : (int) $scope['opdScope'];
 
         $isi = $teks + [
@@ -256,7 +312,11 @@ trait LakipBenchmarkTrait
             'updated_by'     => $userId,
         ];
 
-        $lama = $this->benchmark()->cariByIndikator($indikatorId, $scope['tahun'], $scope['mode']);
+        if ($this->benchmark()->punyaKolomSumber()) {
+            $isi['source_type'] = $sumber;
+        }
+
+        $lama = $this->benchmark()->cariByIndikator($indikatorId, $scope['tahun'], $scope['mode'], $sumberDok);
 
         $this->db->transStart();
 
@@ -288,7 +348,7 @@ trait LakipBenchmarkTrait
         $scope = $this->lakipScopeFromPost();
         $back  = $this->kembaliLakip($scope);
 
-        if (!$this->benchmarkCanManage()) {
+        if (!$this->benchmarkCanManage($scope)) {
             return redirect()->to($back)->with('error', 'Anda tidak berhak menghapus data benchmark Provinsi/Nasional.');
         }
 

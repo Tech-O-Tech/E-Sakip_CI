@@ -26,10 +26,27 @@ $filter_url     = $filter_url ?? '';
 
 $totalIndikator = 0;
 $totalBaru      = 0;
+$totalBerubah   = 0;
 foreach ($kandidat as $s) {
     $totalIndikator += count($s['indikator'] ?? []);
     $totalBaru      += (int) ($s['jumlah_baru'] ?? 0);
+    $totalBerubah   += (int) ($s['jumlah_berubah'] ?? 0);
 }
+?>
+
+<?php
+/* Versi sumber hanya ditawarkan bila memang ada versi yang sudah ditetapkan
+   DAN berisi. Untuk RPJMD (yang belum punya pilihan versi) daftarnya kosong
+   dan seluruh blok ini tidak muncul sama sekali. */
+$versiTersedia = $versi_tersedia ?? [];
+$versiDipilih  = $versi_dipilih ?? null;
+
+/* Ke mana hasil sync bermuara. Ini bukan detail teknis: selisihnya adalah
+   antara "IKU langsung berubah" dan "IKU baru berubah setelah disahkan",
+   dan pengisi form berhak tahu yang mana sebelum menekan tombol. */
+$keRevisi      = ! empty($ke_revisi);
+$revisiBerlaku = $revisi_berlaku ?? null;
+$draftTersedia = $draft_tersedia ?? [];
 ?>
 
 <form method="get" action="<?= esc($filter_url, 'attr') ?>" class="row g-2 mb-3 align-items-end">
@@ -43,19 +60,102 @@ foreach ($kandidat as $s) {
             <?php endforeach; ?>
         </select>
     </div>
+
+    <?php if (! empty($versiTersedia)): ?>
+        <div class="col-md-7">
+            <label class="form-label fw-semibold text-secondary mb-1">
+                Versi <?= esc($sumber_label) ?> yang disalin
+            </label>
+            <select name="renstra_versi" class="form-select" onchange="this.form.submit()">
+                <option value="">Kondisi berjalan (terkini)</option>
+                <?php foreach ($versiTersedia as $v): ?>
+                    <option value="<?= (int) $v['id'] ?>"
+                        <?= $versiDipilih !== null && (int) $versiDipilih['id'] === (int) $v['id'] ? 'selected' : '' ?>>
+                        V<?= (int) $v['version_no'] ?> — <?= esc($v['label']) ?>
+                        (<?= (int) $v['jumlah_sasaran'] ?> sasaran, berlaku <?= esc($v['effective_from']) ?>)
+                    </option>
+                <?php endforeach; ?>
+            </select>
+            <div class="form-text">
+                IKU disalin <strong>sekali</strong> dari sumber ini lalu hidup sendiri —
+                Renstra yang berubah kemudian tidak ikut mengubah IKU.
+            </div>
+        </div>
+    <?php endif; ?>
 </form>
 
 <div class="alert alert-info d-flex flex-wrap gap-3 align-items-center">
     <div>
         <i class="fas fa-info-circle me-1"></i>
         Data di bawah diambil dari <strong><?= esc($sumber_label) ?></strong> periode
-        <strong><?= esc($periode['period'] ?? '-') ?></strong>.
+        <strong><?= esc($periode['period'] ?? '-') ?></strong>,
+        <?php if ($versiDipilih !== null): ?>
+            versi <strong>V<?= (int) $versiDipilih['version_no'] ?> — <?= esc($versiDipilih['label']) ?></strong>.
+            Isinya tetap sebagaimana saat versi itu ditetapkan.
+        <?php else: ?>
+            <strong>kondisi berjalan</strong>. Baris yang sudah dipensiunkan tidak ikut ditawarkan.
+        <?php endif; ?>
     </div>
     <div class="ms-auto small">
         <span class="badge bg-secondary"><?= $totalIndikator ?> indikator tersedia</span>
         <span class="badge bg-success"><?= $totalBaru ?> belum ada di IKU</span>
+        <?php if ($totalBerubah > 0): ?>
+            <span class="badge bg-warning text-dark"><?= $totalBerubah ?> berbeda dari IKU</span>
+        <?php endif; ?>
     </div>
 </div>
+
+<?php
+$tanpaPadanan = $tanpa_padanan ?? [];
+?>
+
+<?php if ($tanpaPadanan !== []): ?>
+    <div class="alert alert-light border">
+        <i class="fas fa-circle-info me-1"></i>
+        <strong><?= count($tanpaPadanan) ?> indikator IKU tidak ada pada sumber ini.</strong>
+        <div class="small text-muted mt-1">
+            Ini <strong>bukan kesalahan</strong>. IKU memang boleh memuat indikator yang tidak
+            ada di <?= esc($sumber_label) ?> &mdash; itulah gunanya ia dokumen tersendiri.
+            Daftar ini hanya supaya Anda tahu mana yang berdiri sendiri, terutama setelah
+            berganti versi sumber. Tidak ada yang dihapus dari sini.
+        </div>
+        <ul class="small mt-2 mb-0">
+            <?php foreach ($tanpaPadanan as $t): ?>
+                <li>
+                    <?= esc($t['indikator']) ?>
+                    <span class="text-muted">(<?= esc($t['sasaran']) ?>)</span>
+                    <?php if (! empty($t['dari_sumber'])): ?>
+                        <span class="badge bg-light text-dark border ms-1"
+                              title="Dulu disalin dari dokumen perencanaan, tapi tidak ada pada sumber yang dipilih sekarang">
+                            pernah dari <?= esc($sumber_label) ?>
+                        </span>
+                    <?php endif; ?>
+                </li>
+            <?php endforeach; ?>
+        </ul>
+    </div>
+<?php endif; ?>
+
+<?php if ($keRevisi): ?>
+    <div class="alert alert-warning">
+        <i class="fas fa-shield-halved me-1"></i>
+        <strong>IKU periode ini sudah punya revisi yang berlaku<?= ! empty($revisiBerlaku['nama'])
+            ? ' (' . esc($revisiBerlaku['nama']) . ')' : '' ?>.</strong>
+        <div class="small mt-1">
+            Karena itu hasil sync <strong>tidak langsung masuk ke IKU berjalan</strong> —
+            ia masuk ke sebuah <strong>draft revisi</strong>, lalu ikut antre disahkan
+            Admin Kabupaten seperti perubahan lainnya. Menambah indikator langsung ke
+            dokumen yang sudah resmi berarti mengubahnya tanpa sepengetahuan siapa pun.
+        </div>
+
+        <?php if (empty($draftTersedia)): ?>
+            <div class="mt-2">
+                Belum ada draft revisi yang bisa menampungnya.
+                <a href="<?= esc(rtrim($back_url, '/') . '/revisi', 'attr') ?>">Buat revisi lebih dulu</a>.
+            </div>
+        <?php endif; ?>
+    </div>
+<?php endif; ?>
 
 <?php if (empty($kandidat)): ?>
 
@@ -74,16 +174,45 @@ foreach ($kandidat as $s) {
     <form method="post" action="<?= esc($action_url, 'attr') ?>" id="sync-form">
         <?= csrf_field() ?>
         <input type="hidden" name="periode" value="<?= esc($periode['key'] ?? '', 'attr') ?>">
+        <?php /* Versi ikut terkirim supaya yang tersimpan benar-benar berasal
+                 dari sumber yang tampil di layar, bukan dari sumber lain yang
+                 kebetulan menjadi bawaan saat POST diproses. */ ?>
+        <input type="hidden" name="renstra_versi"
+               value="<?= $versiDipilih !== null ? (int) $versiDipilih['id'] : '' ?>">
 
-        <div class="d-flex gap-2 mb-2 flex-wrap">
-            <button type="button" class="btn btn-outline-success btn-sm" id="pilih-semua">
-                <i class="fas fa-check-double me-1"></i> Pilih semua yang belum ada
-            </button>
-            <button type="button" class="btn btn-outline-secondary btn-sm" id="kosongkan">
-                <i class="fas fa-times me-1"></i> Kosongkan pilihan
-            </button>
-            <span class="ms-auto align-self-center small text-muted">
-                Terpilih: <strong id="jumlah-terpilih">0</strong> indikator
+        <?php if ($keRevisi && ! empty($draftTersedia)): ?>
+            <div class="mb-3">
+                <label class="form-label fw-semibold text-secondary mb-1">
+                    Masukkan ke draft revisi <span class="text-danger">*</span>
+                </label>
+                <select name="revisi_tujuan" class="form-select" required>
+                    <option value="">-- Pilih draft --</option>
+                    <?php foreach ($draftTersedia as $d): ?>
+                        <option value="<?= (int) $d['id'] ?>">
+                            <?= esc($d['nomor'] ?? '') ?><?= ! empty($d['nama']) ? ' — ' . esc($d['nama']) : '' ?>
+                            (berlaku mulai <?= (int) $d['berlaku_mulai_tahun'] ?>)
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+        <?php endif; ?>
+
+        <?php /* Tidak ada lagi pemilihan per indikator untuk yang BARU: seluruh
+                 isi versi sumber diambil. Yang tersisa hanyalah keputusan atas
+                 indikator yang BERUBAH, sebab mengambilnya berarti menimpa
+                 nilai yang mungkin sengaja diubah di IKU. */ ?>
+        <div class="alert alert-success py-2 px-3 small d-flex flex-wrap gap-2 align-items-center">
+            <i class="fas fa-check-double"></i>
+            <div>
+                <strong>Seluruh <?= $totalBaru ?> indikator yang belum ada akan diambil.</strong>
+                <?php if ($totalBerubah > 0): ?>
+                    Untuk <?= $totalBerubah ?> indikator yang <strong>berbeda</strong> dari IKU,
+                    centang sendiri mana yang nilainya mau diikutkan &mdash; mengambilnya berarti
+                    <strong>menimpa</strong> nilai yang sekarang dipakai.
+                <?php endif; ?>
+            </div>
+            <span class="ms-auto text-muted">
+                Perubahan dicentang: <strong id="jumlah-terpilih">0</strong>
             </span>
         </div>
 
@@ -91,9 +220,7 @@ foreach ($kandidat as $s) {
             <table class="table table-bordered table-striped align-middle small iku-table" data-no-paginate>
                 <thead class="table-success text-dark">
                     <tr class="text-center">
-                        <th style="width:38px;">
-                            <input type="checkbox" class="form-check-input" id="centang-induk" title="Pilih semua yang belum ada">
-                        </th>
+                        <th style="width:38px;" title="Hanya indikator yang BERUBAH yang perlu dicentang">&nbsp;</th>
                         <th>Sasaran <?= esc($sumber_label) ?></th>
                         <th>Indikator</th>
                         <th>Satuan</th>
@@ -127,13 +254,33 @@ foreach ($kandidat as $s) {
                                 <?php if ($ind === null): ?>
                                     <td class="text-center">-</td>
                                 <?php else: ?>
+                                    <?php
+                                    /* Nama medannya berbeda menurut keadaan, dan itu
+                                       disengaja: `pilih` menambah baris baru,
+                                       `perbarui` MENIMPA nilai yang sudah dipakai.
+                                       Satu nama untuk dua akibat cepat atau lambat
+                                       membuat orang menimpa tanpa bermaksud. */
+                                    $bandingInd = $ind['banding'] ?? ($ind['sudah_ada'] ? 'sama' : 'baru');
+                                    $medanInd   = $bandingInd === 'berubah' ? 'perbarui' : 'pilih';
+                                    ?>
                                     <td class="text-center">
-                                        <input type="checkbox"
-                                               class="form-check-input centang-indikator"
-                                               name="pilih[<?= (int) $sasaran['sumber_id'] ?>][<?= (int) $ind['sumber_id'] ?>]"
-                                               value="1"
-                                               data-baru="<?= $ind['sudah_ada'] ? '0' : '1' ?>"
-                                               <?= $ind['sudah_ada'] ? '' : 'checked' ?>>
+                                        <?php if ($bandingInd === 'baru'): ?>
+                                            <?php /* Ikut terkirim tanpa bisa dibatalkan: seluruh isi
+                                                     versi sumber memang diambil. */ ?>
+                                            <input type="hidden"
+                                                   name="pilih[<?= (int) $sasaran['sumber_id'] ?>][<?= (int) $ind['sumber_id'] ?>]"
+                                                   value="1">
+                                            <i class="fas fa-arrow-right-to-bracket text-success"
+                                               title="Akan diambil"></i>
+                                        <?php elseif ($bandingInd === 'berubah'): ?>
+                                            <input type="checkbox"
+                                                   class="form-check-input centang-indikator"
+                                                   name="perbarui[<?= (int) $sasaran['sumber_id'] ?>][<?= (int) $ind['sumber_id'] ?>]"
+                                                   value="1"
+                                                   title="Ambil perubahan ini (menimpa nilai IKU sekarang)">
+                                        <?php else: ?>
+                                            <span class="text-muted" title="Sama dengan IKU berjalan">&mdash;</span>
+                                        <?php endif; ?>
                                     </td>
                                 <?php endif; ?>
 
@@ -162,16 +309,48 @@ foreach ($kandidat as $s) {
                                         <td class="text-center">-</td>
                                     <?php else: ?>
                                         <?php foreach ($years as $tahun): ?>
-                                            <?php $nilai = $ind['target'][(int) $tahun] ?? null; ?>
-                                            <td class="text-center"><?= esc(($nilai === null || $nilai === '') ? '-' : $nilai) ?></td>
+                                            <?php
+                                            $nilai = $ind['target'][(int) $tahun] ?? null;
+                                            $geser = $ind['selisih']['target ' . (int) $tahun] ?? null;
+                                            ?>
+                                            <td class="text-center <?= $geser !== null ? 'table-warning' : '' ?>">
+                                                <?= esc(($nilai === null || $nilai === '') ? '-' : $nilai) ?>
+                                                <?php if ($geser !== null): ?>
+                                                    <div class="text-muted" style="font-size:.75em">
+                                                        IKU: <?= esc($geser['iku'] === '' ? '-' : $geser['iku']) ?>
+                                                    </div>
+                                                <?php endif; ?>
+                                            </td>
                                         <?php endforeach; ?>
                                     <?php endif; ?>
 
                                     <td class="text-center">
-                                        <?php if ($ind['sudah_ada']): ?>
-                                            <span class="badge bg-secondary">Sudah ada</span>
-                                        <?php else: ?>
+                                        <?php if ($bandingInd === 'baru'): ?>
                                             <span class="badge bg-success">Baru</span>
+                                        <?php elseif ($bandingInd === 'berubah'): ?>
+                                            <span class="badge bg-warning text-dark">Berubah</span>
+                                            <?php
+                                            $bukanTarget = [];
+
+                                            foreach ($ind['selisih'] ?? [] as $medan => $d) {
+                                                if (strpos($medan, 'target ') !== 0) {
+                                                    $bukanTarget[$medan] = $d;
+                                                }
+                                            }
+                                            ?>
+                                            <?php if ($bukanTarget !== []): ?>
+                                                <div class="text-muted mt-1" style="font-size:.75em">
+                                                    <?php foreach ($bukanTarget as $medan => $d): ?>
+                                                        <div>
+                                                            <?= esc($medan) ?>:
+                                                            <?= esc($d['iku'] === '' ? '-' : $d['iku']) ?>
+                                                            &rarr; <strong><?= esc($d['sumber'] === '' ? '-' : $d['sumber']) ?></strong>
+                                                        </div>
+                                                    <?php endforeach; ?>
+                                                </div>
+                                            <?php endif; ?>
+                                        <?php else: ?>
+                                            <span class="badge bg-light text-dark border">Sama</span>
                                         <?php endif; ?>
                                     </td>
                                 <?php endif; ?>
@@ -195,40 +374,24 @@ foreach ($kandidat as $s) {
     <script>
         (function () {
             const form     = document.getElementById('sync-form');
-            const induk    = document.getElementById('centang-induk');
-            const tombolAll = document.getElementById('pilih-semua');
-            const tombolNol = document.getElementById('kosongkan');
-            const jumlahEl  = document.getElementById('jumlah-terpilih');
+            const jumlahEl = document.getElementById('jumlah-terpilih');
 
+            // Hanya indikator BERUBAH yang punya kotak centang; yang baru ikut
+            // lewat medan tersembunyi dan tidak perlu dihitung di sini.
             const semua = () => Array.from(form.querySelectorAll('.centang-indikator'));
 
             function hitung() {
-                jumlahEl.textContent = semua().filter(c => c.checked).length;
+                if (jumlahEl) jumlahEl.textContent = semua().filter(c => c.checked).length;
             }
 
-            /** Indikator yang sudah ada di IKU sengaja tidak ikut "pilih semua". */
-            function setSemua(nilai, hanyaBaru) {
-                semua().forEach(c => {
-                    if (hanyaBaru && c.dataset.baru !== '1') return;
-                    c.checked = nilai;
-                });
-                hitung();
-            }
-
-            induk.checked = true;
-            induk.addEventListener('change', () => setSemua(induk.checked, induk.checked));
-            tombolAll.addEventListener('click', () => setSemua(true, true));
-            tombolNol.addEventListener('click', () => { setSemua(false, false); induk.checked = false; });
             form.addEventListener('change', e => {
                 if (e.target.classList.contains('centang-indikator')) hitung();
             });
 
-            form.addEventListener('submit', e => {
-                if (semua().filter(c => c.checked).length === 0) {
-                    e.preventDefault();
-                    alert('Pilih minimal satu indikator untuk disalin.');
-                }
-            });
+            /* Pengiriman TIDAK lagi diblokir saat tak ada centang: indikator baru
+               ikut lewat medan tersembunyi, jadi "nol centang" bukan berarti
+               "tidak ada yang disalin". Yang benar-benar kosong ditolak server. */
+            form.addEventListener('submit', () => hitung());
 
             hitung();
         })();

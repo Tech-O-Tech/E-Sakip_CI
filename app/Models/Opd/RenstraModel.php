@@ -920,10 +920,37 @@ class RenstraModel extends Model
             ->join('rpjmd_tujuan rtj', 'rtj.id = rps.tujuan_id', 'left')
             ->join('rpjmd_misi rm', 'rm.id = rtj.misi_id', 'left')
 
-            // Indikator Sasaran Renstra
-            ->join('renstra_indikator_sasaran ris', 'ris.renstra_sasaran_id = rs.id', 'left')
+            /* Indikator Sasaran Renstra.
+             *
+             * Saringan pensiun diletakkan pada KLAUSA JOIN, bukan WHERE. Di
+             * WHERE, sasaran yang seluruh indikatornya dipensiunkan ikut
+             * tersaring habis — sasaran yang masih hidup lenyap dari layar
+             * hanya karena indikatornya berhenti, dan tidak ada yang tahu ia
+             * pernah ada. Di JOIN, sasarannya tetap muncul dengan kolom
+             * indikator kosong, sehingga kekurangannya terlihat. */
+            ->join(
+                'renstra_indikator_sasaran ris',
+                'ris.renstra_sasaran_id = rs.id AND ris.dihentikan_pada IS NULL',
+                'left',
+                false
+            )
 
             ->join('satuan s', 's.id = ris.satuan', 'left');
+
+        /* Baris yang sudah DIPENSIUNKAN tidak lagi bagian dari Renstra.
+         *
+         * Tanpa saringan ini, menu Renstra menampilkan baris yang versi
+         * terakhir sudah menyatakan berhenti — sementara Sync IKU, yang
+         * menyaringnya, melaporkan "tidak ada sasaran". Dua layar membaca
+         * tabel yang sama lalu menjawab berbeda, dan yang salah justru layar
+         * yang tampak paling meyakinkan.
+         *
+         * Dipensiunkan BUKAN dihapus: barisnya tetap ada dan tetap bisa dibaca
+         * lewat pemilih versi, sehingga LAKIP dan Renaksi tahun-tahun lampau
+         * tidak kehilangan rujukannya. Yang berubah hanya: ia tidak lagi
+         * ditampilkan sebagai bagian dari Renstra yang berjalan.
+         */
+        $query->where('rs.dihentikan_pada IS NULL', null, false);
 
         // Filter OPD
         if ($opdId !== null) {

@@ -7,6 +7,18 @@ if ($namaOpdTxt !== '') {
 }
 $subjudulParts[] = 'Periode ' . $periodeTxt;
 
+/* Berkas PDF beredar lepas dari layar yang mencetaknya. Kalau isinya diambil
+   dari versi tersimpan, versinya HARUS tertulis di dokumen — tanpa itu, dua
+   cetakan dengan angka berbeda tampak sama-sama sah dan tidak ada cara
+   membedakannya. */
+$versiAktif = $versi_aktif ?? null;
+
+if ($versiAktif !== null) {
+    $subjudulParts[] = 'Versi V' . (int) $versiAktif['version_no'] . ' — ' . $versiAktif['label']
+        . ' (berlaku sejak ' . $versiAktif['effective_from']
+        . (empty($versiAktif['effective_to']) ? '' : ' s.d. ' . $versiAktif['effective_to']) . ')';
+}
+
 $filters = $filters ?? [];
 $filterLabels = [];
 if (!empty($filters['rpjmd'])) {

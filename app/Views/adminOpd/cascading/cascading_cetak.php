@@ -1,6 +1,6 @@
 <?php
 $namaOpdTxt = trim((string) ($nama_opd ?? ''));
-$subjudulParts = ['Matriks Cascading RPJMD -> Renstra OPD'];
+$subjudulParts = ['Matriks Cascading RPJMD -> Renstra -> IKU -> Eselon Perangkat Daerah'];
 if ($namaOpdTxt !== '') {
     $subjudulParts[] = 'Perangkat Daerah: ' . $namaOpdTxt;
 }

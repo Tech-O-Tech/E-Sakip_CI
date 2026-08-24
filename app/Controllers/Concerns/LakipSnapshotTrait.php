@@ -183,7 +183,12 @@ trait LakipSnapshotTrait
             'snapshotTerkunci'    => ! empty($sumber['terkunci']),
             'snapshotLintasOpd'   => $lintasOpd,
             'snapshotPesan'       => $sumber['pesan'] ?? null,
-            'penyesuaianPeta'     => $this->penyesuaian()->petaAktif($tahun, $mode, $opd),
+            'penyesuaianPeta'     => $this->penyesuaian()->petaAktif(
+                $tahun,
+                $mode,
+                $opd,
+                $this->sumberDokumenLakip($mode)
+            ),
             'penyesuaianRiwayat'  => $lintasOpd ? [] : $this->penyesuaian()->riwayat($tahun, $mode, $opd),
             'bolehSnapshot'       => $this->bolehSnapshot(),
             'bolehFinalisasi'     => $this->bolehFinalisasi(),
@@ -349,7 +354,19 @@ trait LakipSnapshotTrait
         // Pencegah IDOR: id target dari request diverifikasi ulang ke tahun &
         // lingkup yang sedang aktif, sama seperti analisisSave()/efisiensiSave().
         $targetId = (int) ($post['target_id'] ?? 0);
-        $target   = $this->targetLakipSah($targetId, (string) $scope['mode'], (string) $scope['tahun'], $scope['opdScope']);
+
+        // Sumber ikut dikirim form panel snapshot. Ia menentukan DI TABEL MANA
+        // id itu harus ada — id indikator IKU dan id target Renstra hidup di
+        // ruang angka yang sama, jadi memverifikasinya ke tabel yang salah
+        // bukan sekadar gagal, tapi bisa lolos untuk baris yang keliru.
+        $sumberDok = $this->sumberDokumenLakip((string) $scope['mode']);
+        $target    = $this->targetLakipSah(
+            $targetId,
+            (string) $scope['mode'],
+            (string) $scope['tahun'],
+            $scope['opdScope'],
+            $sumberDok
+        );
 
         if (! $target) {
             return redirect()->to($this->kembaliLakip($scope))
@@ -358,6 +375,7 @@ trait LakipSnapshotTrait
 
         try {
             $id = $this->penyesuaian()->simpan($scope, [
+                'sumber'            => $sumberDok,
                 'target_id'         => $targetId,
                 'jenis'             => (string) ($post['jenis'] ?? ''),
                 'nilai_asli'        => $post['nilai_asli'] ?? null,
@@ -489,12 +507,7 @@ trait LakipSnapshotTrait
         $opd    = $scope['opdScope'];
         $status = (string) ($this->request->getPost('status') ?? $this->request->getGet('status') ?? '');
 
-        $hidup = $this->lakipModel->getLakipByMode(
-            $mode,
-            $tahun,
-            ($status !== '' ? $status : null),
-            $mode === 'kabupaten' ? null : (int) $opd
-        );
+        $hidup = $this->barisHidupUntukSnapshot($mode, $tahun, $status, $opd);
 
         $opdEfisiensi = ($mode === 'kabupaten') ? 0 : $opd;
 
@@ -515,13 +528,69 @@ trait LakipSnapshotTrait
             $revisiId = null;
         }
 
+        // Bila sumbernya memang IKU, versi YANG DIPILIH operator-lah yang
+        // dibekukan — bukan revisi yang kebetulan efektif hari ini. Dua kolom
+        // yang menyebut revisi berbeda pada satu snapshot hanya akan membuat
+        // penelusuran berikutnya bertengkar dengan dirinya sendiri.
+        if (($hidup['sumber_type'] ?? null) === 'iku' && ! empty($hidup['sumber_versi_id'])) {
+            $revisiId = (int) $hidup['sumber_versi_id'];
+        }
+
         return [
-            'rows'          => $hidup['rows'],
-            'lakipMap'      => $hidup['lakipMap'],
-            'analisisMap'   => $this->analisis()->getByTahunGrouped($tahun, $mode, $opd),
-            'efisiensiRows' => $this->efisiensi()->getByTahun($tahun, $opdEfisiensi),
-            'filter_status' => $status,
-            'iku_revisi_id' => $revisiId,
+            'rows'            => $hidup['rows'],
+            'lakipMap'        => $hidup['lakipMap'],
+            // Sumbernya WAJIB sama dengan sumber baris yang dibekukan di
+            // atas — bukan sumber yang kebetulan dipilih di layar. Kalau
+            // berbeda, snapshot membekukan baris IKU tetapi analisis Renstra,
+            // dan keduanya tidak akan pernah bertemu saat dibaca ulang.
+            'analisisMap'     => $this->analisis()->getByTahunGrouped(
+                $tahun,
+                $mode,
+                $opd,
+                $hidup['sumber_type'] ?? $this->sumberDokumenLakip($mode)
+            ),
+            'efisiensiRows'   => $this->efisiensi()->getByTahun($tahun, $opdEfisiensi),
+            'filter_status'   => $status,
+            'iku_revisi_id'   => $revisiId,
+            'sumber_type'     => $hidup['sumber_type'] ?? null,
+            'sumber_versi_id' => $hidup['sumber_versi_id'] ?? null,
+        ];
+    }
+
+    /**
+     * Baris & peta LAKIP hidup yang akan dibekukan.
+     *
+     * SEBUAH SEAM YANG SENGAJA BISA DITIMPA. Jangan diubah jadi private.
+     *
+     * Default-nya menyimpulkan sumber dari mode saja — benar untuk LAKIP
+     * Kabupaten, yang memang hanya punya RPJMD. Tetapi layar LAKIP OPD kini
+     * punya PEMILIH sumber (IKU atau Renstra, per versi). Kalau seam ini tidak
+     * ditimpa di sana, tombol "Siapkan Snapshot" akan membekukan baris Renstra
+     * padahal yang dilihat dan dinilai operator adalah baris IKU: dokumen beku
+     * yang isinya tidak pernah tampil di layar mana pun, dan tidak ada galat
+     * yang memberitahu.
+     *
+     * @return array{rows:array, lakipMap:array, sumber_type:?string, sumber_versi_id:?int}
+     */
+    /**
+     * Sumber dokumen yang sedang dipilih di layar.
+     *
+     * DISEDIAKAN LakipAddendumTrait, yang selalu dipakai bersama trait ini.
+     * Dinyatakan abstract di sini supaya ketergantungan itu gagal saat kelas
+     * disusun — bukan saat tombol snapshot ditekan di produksi.
+     */
+    abstract protected function sumberDokumenLakip(string $mode): ?string;
+
+    protected function barisHidupUntukSnapshot(string $mode, string $tahun, string $status, $opd): array
+    {
+        return $this->lakipModel->getLakipByMode(
+            $mode,
+            $tahun,
+            ($status !== '' ? $status : null),
+            $mode === 'kabupaten' ? null : (int) $opd
+        ) + [
+            'sumber_type'     => $mode === 'kabupaten' ? 'rpjmd' : 'renstra',
+            'sumber_versi_id' => null,
         ];
     }
 

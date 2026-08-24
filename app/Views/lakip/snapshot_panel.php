@@ -24,6 +24,9 @@ $penyesuaianRiwayat = $penyesuaianRiwayat ?? [];
 $bolehSnapshot      = $bolehSnapshot      ?? false;
 $bolehFinalisasi    = $bolehFinalisasi    ?? false;
 $bolehPenyesuaian   = $bolehPenyesuaian   ?? false;
+// Hanya layar LAKIP OPD yang punya pemilih sumber; AdminKab tidak
+// mengirim variabel ini sama sekali.
+$sumberLakip        = $sumberLakip        ?? [];
 $scope              = $addendumScope      ?? ['tahun' => '', 'mode' => 'opd', 'opdScope' => null, 'canWrite' => false];
 
 if (! $snapshotSiap) {
@@ -34,10 +37,39 @@ $tahun = (string) ($scope['tahun'] ?? '');
 $mode  = (string) ($scope['mode'] ?? 'opd');
 $opd   = (int) ($scope['opdScope'] ?? 0);
 
+/* Sumber dokumen yang sedang tampil (IKU/Renstra + versinya). Ikut dikirim
+   pada SETIAP aksi snapshot: yang dibekukan harus dokumen yang dilihat
+   operator, bukan sumber bawaan. Layar AdminKab tidak punya pemilih ini,
+   sehingga di sana keduanya kosong dan tidak ada yang berubah. */
+$sumberTampil     = $sumberLakip['sumber'] ?? '';
+$sumberVersiTampil = (int) ($sumberLakip['versi']['id'] ?? 0);
+
 /** Bidang tersembunyi lingkup, diverifikasi ulang di server. */
 $bidangLingkup = '<input type="hidden" name="tahun" value="' . esc($tahun, 'attr') . '">'
     . '<input type="hidden" name="mode" value="' . esc($mode, 'attr') . '">'
-    . ($mode === 'opd' && $opd > 0 ? '<input type="hidden" name="opd_id" value="' . $opd . '">' : '');
+    . ($mode === 'opd' && $opd > 0 ? '<input type="hidden" name="opd_id" value="' . $opd . '">' : '')
+    . ($sumberTampil !== '' ? '<input type="hidden" name="sumber" value="' . esc($sumberTampil, 'attr') . '">' : '')
+    . ($sumberVersiTampil > 0 ? '<input type="hidden" name="sumber_versi" value="' . $sumberVersiTampil . '">' : '');
+
+/** Potongan query string sumber, untuk tautan (GET) di panel ini. */
+$qsSumber = ($sumberTampil !== '' ? '&sumber=' . rawurlencode($sumberTampil) : '')
+    . ($sumberVersiTampil > 0 ? '&sumber_versi=' . $sumberVersiTampil : '');
+
+/** Label sumber yang DIBEKUKAN snapshot aktif — belum tentu sama dengan yang tampil. */
+$labelSumberBeku = null;
+
+if ($snapshotAktif) {
+    $petaSumber = ['iku' => 'IKU', 'renstra' => 'Renstra', 'rpjmd' => 'RPJMD'];
+    $tipeBeku   = (string) ($snapshotAktif['source_type'] ?? '');
+
+    if (isset($petaSumber[$tipeBeku])) {
+        $labelSumberBeku = $petaSumber[$tipeBeku];
+
+        if (! empty($snapshotAktif['source_version_id'])) {
+            $labelSumberBeku .= ' (versi #' . (int) $snapshotAktif['source_version_id'] . ')';
+        }
+    }
+}
 ?>
 
 <div class="card mt-4 mb-3 border-primary-subtle">
@@ -73,6 +105,28 @@ $bidangLingkup = '<input type="hidden" name="tahun" value="' . esc($tahun, 'attr
             </div>
         <?php else: ?>
 
+            <?php if ($labelSumberBeku !== null): ?>
+                <div class="small text-secondary mb-2">
+                    Snapshot ini dibekukan dari <strong><?= esc($labelSumberBeku) ?></strong>.
+                </div>
+            <?php endif; ?>
+
+            <?php /* Sumber layar berbeda dari sumber yang dibekukan adalah hal
+                     yang wajar (operator sedang melihat-lihat), TETAPI menekan
+                     "Sinkronkan" dalam keadaan itu akan menulis ulang snapshot
+                     dari dokumen lain. Itu perlu disadari sebelum diklik. */ ?>
+            <?php if ($snapshotAktif && ! $snapshotTerkunci && $sumberTampil !== ''
+                      && ! empty($snapshotAktif['source_type'])
+                      && $sumberTampil !== $snapshotAktif['source_type']): ?>
+                <div class="alert alert-warning py-2 small">
+                    <i class="fa-solid fa-triangle-exclamation me-1"></i>
+                    Layar sedang menampilkan sumber <strong><?= esc(strtoupper($sumberTampil)) ?></strong>,
+                    sedangkan snapshot dibekukan dari <strong><?= esc($labelSumberBeku ?? '-') ?></strong>.
+                    Menekan <em>Sinkronkan Snapshot</em> sekarang akan menggantinya dengan sumber yang
+                    sedang tampil.
+                </div>
+            <?php endif; ?>
+
             <?php if ($snapshotDipakai): ?>
                 <div class="alert alert-info py-2 small">
                     <i class="fa-solid fa-circle-info me-1"></i>
@@ -97,12 +151,12 @@ $bidangLingkup = '<input type="hidden" name="tahun" value="' . esc($tahun, 'attr
                     <?php endif; ?>
                 <?php else: ?>
                     <a class="btn btn-outline-primary btn-sm"
-                       href="<?= base_url($snapshotBase) ?>?tahun=<?= esc($tahun, 'url') ?>&mode=<?= esc($mode, 'url') ?><?= $opd ? '&opd_id=' . $opd : '' ?>&snapshot=<?= (int) $snapshotAktif['id'] ?>">
+                       href="<?= base_url($snapshotBase) ?>?tahun=<?= esc($tahun, 'url') ?>&mode=<?= esc($mode, 'url') ?><?= $opd ? '&opd_id=' . $opd : '' ?><?= $qsSumber ?>&snapshot=<?= (int) $snapshotAktif['id'] ?>">
                         <i class="fa-solid fa-eye me-1"></i>Lihat Snapshot
                     </a>
 
                     <a class="btn btn-outline-secondary btn-sm"
-                       href="<?= base_url($snapshotBase) ?>/snapshot/bandingkan?tahun=<?= esc($tahun, 'url') ?>&mode=<?= esc($mode, 'url') ?><?= $opd ? '&opd_id=' . $opd : '' ?>">
+                       href="<?= base_url($snapshotBase) ?>/snapshot/bandingkan?tahun=<?= esc($tahun, 'url') ?>&mode=<?= esc($mode, 'url') ?><?= $opd ? '&opd_id=' . $opd : '' ?><?= $qsSumber ?>">
                         <i class="fa-solid fa-code-compare me-1"></i>Bandingkan dengan Data Terbaru
                     </a>
 

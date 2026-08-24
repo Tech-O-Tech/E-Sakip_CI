@@ -3,15 +3,46 @@
 namespace App\Controllers;
 
 use App\Controllers\BaseController;
+use App\Controllers\Concerns\DokumenVersiTrait;
 use App\Models\RpjmdModel;
+use App\Services\Version\VersionScope;
 
 class RpjmdController extends BaseController
 {
+    // Aksi versi dokumen (daftar, buat, ajukan, tetapkan, bandingkan).
+    // Seluruh method lama di bawah TIDAK tersentuh: trait hanya menambah
+    // method baru berawalan `versi*`.
+    use DokumenVersiTrait;
+
     protected $rpjmdModel;
 
     public function __construct()
     {
         $this->rpjmdModel = new RpjmdModel();
+    }
+
+    /* =========================================================
+     *  LINGKUP VERSI — RPJMD selalu tingkat kabupaten
+     * =======================================================*/
+
+    protected function versiModul(): string
+    {
+        return VersionScope::MODUL_RPJMD;
+    }
+
+    protected function versiOpdId(): ?int
+    {
+        return null; // RPJMD tidak punya pemilik OPD
+    }
+
+    protected function versiBaseUrl(): string
+    {
+        return 'adminkab/rpjmd';
+    }
+
+    protected function versiNamaDokumen(): string
+    {
+        return 'RPJMD';
     }
     private function xssPattern(): string
     {

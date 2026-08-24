@@ -87,6 +87,27 @@
                     'periode' => '',
                     'status' => '',
                 ];
+
+                /* ============ VERSI YANG SEDANG DILIHAT ============
+                 * $versi_aktif null  = kondisi berjalan (perilaku lama, apa adanya)
+                 * $versi_aktif terisi = membaca ARSIP sebuah versi yang sudah
+                 *                       ditetapkan; barisnya milik arsip, bukan
+                 *                       baris berjalan, sehingga seluruh tombol
+                 *                       tulis WAJIB padam di bawah.
+                 */
+                $versiPilihan = $versi_pilihan ?? [];
+                $versiAktif   = $versi_aktif ?? null;
+                $bacaArsip    = $versiAktif !== null;
+
+                /* Tampilan ini bisa berasal dari dua hal, dan bedanya penting:
+                   dipilih sendiri sekali lihat, atau dari TUNJUKAN tampilan
+                   utama yang terpasang tetap. Yang kedua perlu dikatakan, sebab
+                   pemakai yang tidak memilih apa-apa akan mengira ia sedang
+                   melihat kondisi berjalan. */
+                $dariTunjukan = ! empty($versi_dari_tunjukan);
+                $tanggalVersi = $versi_menurut_tanggal ?? null;
+                $selisihTunjuk = $dariTunjukan && $tanggalVersi !== null
+                    && (int) $tanggalVersi['id'] !== (int) $versiAktif['id'];
                 ?>
 
                 <!-- ===================== FORM FILTER ===================== -->
@@ -142,8 +163,31 @@
                         <?php endforeach; ?>
                     </select>
 
+                    <!-- Versi -->
+                    <?php if (! empty($filters['periode']) && ! empty($versiPilihan)): ?>
+                        <select id="versiFilter" name="versi" class="form-select select2-flt" style="flex:1;">
+                            <?php /* Nilainya 'berjalan', bukan kosong: memilih kondisi
+                                     berjalan harus bisa dibedakan dari "tidak memilih
+                                     apa-apa", supaya tunjukan tampilan utama tidak
+                                     menimpanya kembali. */ ?>
+                            <option value="berjalan" <?= $bacaArsip ? '' : 'selected' ?>>
+                                Kondisi berjalan (terkini)
+                            </option>
+                            <?php foreach ($versiPilihan as $v): ?>
+                                <option value="<?= (int) $v['id'] ?>"
+                                    <?= $bacaArsip && (int) $versiAktif['id'] === (int) $v['id'] ? 'selected' : '' ?>>
+                                    V<?= (int) $v['version_no'] ?> — <?= esc($v['label']) ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    <?php endif; ?>
+
                     <!-- Status -->
-                    <select id="statusFilter" name="status" class="form-select select2-flt" style="flex:1;">
+                    <?php /* Status adalah keadaan PENGERJAAN; versi yang sudah
+                             ditetapkan tidak lagi dikerjakan, jadi saringannya
+                             tidak ditawarkan saat membaca arsip. */ ?>
+                    <select id="statusFilter" name="status" class="form-select select2-flt" style="flex:1;"
+                            <?= $bacaArsip ? 'disabled data-terkunci="1"' : '' ?>>
                         <option value="">Semua Status</option>
                         <option value="draft" <?= ($filters['status'] === 'draft') ? 'selected' : '' ?>>Draft</option>
                         <option value="selesai" <?= ($filters['status'] === 'selesai') ? 'selected' : '' ?>>Selesai
@@ -162,17 +206,246 @@
                                 'rpjmd' => $filters['rpjmd'] ?? '',
                                 'periode' => $filters['periode'] ?? '',
                                 'status' => $filters['status'] ?? '',
+                                'versi' => $bacaArsip ? (string) (int) $versiAktif['id'] : 'berjalan',
                             ], static fn($v) => $v !== ''))) ?>" target="_blank" class="btn btn-outline-danger">
                                 <i class="fas fa-file-pdf"></i> Cetak PDF
                             </a>
                         <?php endif; ?>
-                        <?php if (user_can('renstra.create')): ?>
+                        <?php if (user_can('renstra.create') && ! $bacaArsip): ?>
                             <a href="<?= base_url('adminopd/renstra/tambah') ?>" class="btn btn-success">
                                 <i class="fas fa-plus"></i> Tambah RENSTRA
                             </a>
                         <?php endif; ?>
                     </div>
                 </form>
+
+                <?php if ($bacaArsip): ?>
+                    <?php /* Spanduk ini bukan hiasan. Tabel di bawah bentuknya sama
+                             persis dengan tampilan kondisi berjalan, sehingga tanpa
+                             penanda yang jelas pemakai bisa mengira sedang melihat
+                             Renstra yang berlaku hari ini. */ ?>
+                    <div class="alert <?= $selisihTunjuk ? 'alert-warning' : ($dariTunjukan ? 'alert-primary' : 'alert-secondary') ?> d-flex flex-wrap align-items-center gap-2 mb-4">
+                        <i class="fas <?= $dariTunjukan ? 'fa-thumbtack' : 'fa-clock-rotate-left' ?>"></i>
+                        <div class="flex-grow-1">
+                            <strong>
+                                <?= $dariTunjukan ? 'Tampilan utama yang Anda tunjuk' : 'Anda sedang membaca versi tersimpan' ?>:
+                                V<?= (int) $versiAktif['version_no'] ?> — <?= esc($versiAktif['label']) ?></strong>
+                            <div class="small text-muted">
+                                Berlaku sejak <?= esc($versiAktif['effective_from']) ?><?= empty($versiAktif['effective_to'])
+                                    ? ' sampai sekarang' : ' sampai ' . esc($versiAktif['effective_to']) ?>.
+                                Isinya tetap sebagaimana saat ditetapkan dan tidak bisa disunting dari sini.
+                            </div>
+                            <?php if ($selisihTunjuk): ?>
+                                <div class="small mt-1">
+                                    <strong>Perhatikan:</strong> menurut tanggal berlaku, yang berlaku hari ini
+                                    sebenarnya V<?= (int) $tanggalVersi['version_no'] ?> —
+                                    <?= esc($tanggalVersi['label']) ?> (mulai <?= esc($tanggalVersi['effective_from']) ?>).
+                                    Halaman ini menampilkan versi lain karena tunjukan Anda.
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                        <a class="btn btn-sm btn-outline-secondary"
+                           href="<?= base_url('adminopd/renstra?' . http_build_query(array_filter([
+                               'rpjmd' => $filters['rpjmd'] ?? '',
+                               'periode' => $filters['periode'] ?? '',
+                               'versi' => 'berjalan',
+                           ], static fn($v) => $v !== ''))) ?>">
+                            Kembali ke kondisi berjalan
+                        </a>
+                    </div>
+                <?php endif; ?>
+
+                <?php
+                /* ============ SIKLUS HIDUP RENSTRA (Versi 1) ============
+                 * Renstra yang disusun di menu ini ADALAH Versi 1. Panel di
+                 * bawah menampilkan keadaannya dan menyediakan aksinya.
+                 * Penguncian sesungguhnya ada di controller, bukan di sini.
+                 */
+                $sk = $siklus ?? null;
+
+                /* Periode dipecah DI SINI, bukan di dalam blok panel di bawah.
+                   Sebelumnya $skMulai lahir di dalam blok itu lalu dipakai juga
+                   oleh modal di luarnya — sehingga begitu panelnya tidak
+                   tampil (misalnya saat sedang membaca versi), modal meledak
+                   dengan "Undefined variable". Nilai yang dipakai dua tempat
+                   tidak boleh lahir di salah satunya. */
+                $skMulai = 0;
+                $skAkhir = 0;
+
+                if (! empty($filters['periode'])
+                    && preg_match('/^(\d{4})\s*-\s*(\d{4})$/', $filters['periode'], $mSk)) {
+                    $skMulai = (int) $mSk[1];
+                    $skAkhir = (int) $mSk[2];
+                }
+                ?>
+                <?php if ($skMulai > 0 && $sk !== null && ! $bacaArsip): ?>
+                    <?php
+                    /* Sedang disunting berdasarkan izin adalah keadaan tersendiri,
+                       bukan sekadar "published" yang kebetulan terbuka. Tabel di
+                       bawah menampilkan data yang SUDAH menyimpang dari versi
+                       resmi, dan itu harus dikatakan — bukan disembunyikan di
+                       balik lencana hijau "Sudah Ditetapkan". */
+                    $skDisunting = ! empty($sk['sedang_disunting']);
+
+                    $skKelas = match (true) {
+                        $skDisunting                        => ['alert-warning', 'fa-unlock', 'Sedang Disunting (izin diberikan)'],
+                        $sk['status'] === 'pending_approval' => ['alert-primary', 'fa-hourglass-half', 'Menunggu Verifikasi Admin Kabupaten'],
+                        $sk['status'] === 'published'        => ['alert-success', 'fa-circle-check', 'Sudah Ditetapkan & Berlaku'],
+                        default                             => ['alert-warning', 'fa-pen-ruler', 'Masih Disusun (belum divalidasi)'],
+                    };
+                    ?>
+                    <div class="alert <?= $skKelas[0] ?> d-flex flex-wrap justify-content-between align-items-center gap-2">
+                        <div>
+                            <i class="fas <?= $skKelas[1] ?> me-1"></i>
+                            <strong><?= esc($skKelas[2]) ?></strong>
+                            <div class="small mt-1">
+                                <?php if ($skDisunting): ?>
+                                    Admin Kabupaten memberi izin menyunting periode ini. Versi resmi
+                                    <?php if (! empty($sk['versi'])): ?>
+                                        <strong>V<?= (int) $sk['versi']['version_no'] ?></strong>
+                                    <?php endif; ?>
+                                    tetap utuh dan tidak berubah &mdash; yang Anda sunting sekarang adalah
+                                    data berjalan. Setelah selesai, <strong>ajukan ulang untuk divalidasi</strong>;
+                                    hasilnya menjadi versi berikutnya.
+                                    <?php if (! empty($sk['izin']['alasan'])): ?>
+                                        <div class="mt-1 text-muted">
+                                            Alasan permohonan: <em><?= esc($sk['izin']['alasan']) ?></em>
+                                        </div>
+                                    <?php endif; ?>
+                                <?php elseif ($sk['terkunci']): ?>
+                                    <?= esc($sk['alasan']) ?>
+                                    <?php if (! empty($sk['izin']) && $sk['izin']['status'] === 'ditolak'
+                                              && ! empty($sk['izin']['catatan_keputusan'])): ?>
+                                        <div class="mt-1">
+                                            Catatan Admin Kabupaten:
+                                            <em><?= esc($sk['izin']['catatan_keputusan']) ?></em>
+                                        </div>
+                                    <?php endif; ?>
+                                <?php else: ?>
+                                    Renstra periode ini masih bebas disunting. Bila sudah sesuai,
+                                    ajukan untuk divalidasi Admin Kabupaten.
+                                <?php endif; ?>
+
+                                <?php /* Draft berisi yang disusun di menu Versi menghalangi
+                                         pengajuan dari sini, sebab pengajuan dari sini
+                                         membekukan ulang dari kondisi berjalan dan akan
+                                         menimpanya. Alasannya ditulis, bukan sekadar
+                                         tombolnya hilang tanpa keterangan. */ ?>
+                                <?php if (! empty($sk['draft_berisi']) && ! empty($sk['alasan']) && ! $sk['terkunci']): ?>
+                                    <div class="mt-2">
+                                        <i class="fas fa-triangle-exclamation me-1"></i>
+                                        <?= esc($sk['alasan']) ?>
+                                        <a class="ms-1" href="<?= base_url('adminopd/renstra/versi/lihat/'
+                                            . (int) $sk['draft_berisi']['id']) ?>">Buka draft itu</a>
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+
+                        <div class="d-flex flex-wrap gap-2">
+                            <?php if ($sk['boleh_ajukan'] && user_can('renstra.version.submit')): ?>
+                                <form method="post" action="<?= base_url('adminopd/renstra/ajukan-validasi') ?>"
+                                      onsubmit="return confirm('Ajukan Renstra periode <?= esc($filters['periode']) ?> untuk divalidasi? Selama menunggu, isinya tidak bisa disunting.')">
+                                    <?= csrf_field() ?>
+                                    <input type="hidden" name="tahun_mulai" value="<?= $skMulai ?>">
+                                    <input type="hidden" name="tahun_akhir" value="<?= $skAkhir ?>">
+                                    <button class="btn btn-primary btn-sm">
+                                        <i class="fas fa-paper-plane me-1"></i>Ajukan Validasi
+                                    </button>
+                                </form>
+                            <?php endif; ?>
+
+                            <?php if ($sk['boleh_tarik']): ?>
+                                <form method="post" action="<?= base_url('adminopd/renstra/tarik-permohonan') ?>"
+                                      onsubmit="return confirm('Tarik permohonan validasi? Renstra bisa disunting lagi setelahnya.')">
+                                    <?= csrf_field() ?>
+                                    <input type="hidden" name="tahun_mulai" value="<?= $skMulai ?>">
+                                    <input type="hidden" name="tahun_akhir" value="<?= $skAkhir ?>">
+                                    <button class="btn btn-outline-danger btn-sm">
+                                        <i class="fas fa-rotate-left me-1"></i>Tarik Permohonan
+                                    </button>
+                                </form>
+                            <?php endif; ?>
+
+                            <?php /* ===== IZIN SUNTING =====
+                                     Menggantikan tombol "Ajukan Koreksi". Yang diminta
+                                     bukan perubahan satu kolom, melainkan dibukanya
+                                     kunci — sesudah itu penyuntingan berjalan lewat
+                                     form dan tombol yang sudah dikenal. */ ?>
+                            <?php if (! empty($sk['boleh_minta_izin']) && user_can('renstra.izin_sunting.request')): ?>
+                                <button type="button" class="btn btn-primary btn-sm"
+                                        data-bs-toggle="modal" data-bs-target="#modalIzinSunting">
+                                    <i class="fas fa-unlock me-1"></i>Ajukan Izin Sunting
+                                </button>
+                            <?php endif; ?>
+
+                            <?php if (! empty($sk['izin']) && $sk['izin']['status'] === 'pending'
+                                      && user_can('renstra.izin_sunting.request')): ?>
+                                <form method="post"
+                                      action="<?= base_url('adminopd/renstra/izin-sunting/tarik/' . (int) $sk['izin']['id']) ?>"
+                                      onsubmit="return confirm('Tarik permohonan izin sunting?')">
+                                    <?= csrf_field() ?>
+                                    <button class="btn btn-outline-danger btn-sm">
+                                        <i class="fas fa-rotate-left me-1"></i>Tarik Permohonan Izin
+                                    </button>
+                                </form>
+                            <?php endif; ?>
+
+                            <a href="<?= base_url('adminopd/renstra/versi') ?>" class="btn btn-outline-secondary btn-sm">
+                                <i class="fas fa-code-branch me-1"></i>Versi Renstra
+                            </a>
+                        </div>
+                    </div>
+                <?php endif; ?>
+
+                <?php /* Syaratnya WAJIB sama persis dengan syarat tombol pemanggilnya.
+                         Modal tanpa tombol hanya markup mati; tombol tanpa modal
+                         adalah tombol yang tidak melakukan apa-apa. */ ?>
+                <?php if ($skMulai > 0 && $sk !== null && ! $bacaArsip
+                          && ! empty($sk['boleh_minta_izin']) && user_can('renstra.izin_sunting.request')): ?>
+                    <div class="modal fade" id="modalIzinSunting" tabindex="-1">
+                        <div class="modal-dialog">
+                            <form method="post" action="<?= base_url('adminopd/renstra/izin-sunting/ajukan') ?>"
+                                  class="modal-content">
+                                <?= csrf_field() ?>
+                                <input type="hidden" name="tahun_mulai" value="<?= $skMulai ?>">
+                                <input type="hidden" name="tahun_akhir" value="<?= $skAkhir ?>">
+
+                                <div class="modal-header">
+                                    <h5 class="modal-title">Ajukan Izin Sunting Renstra <?= esc($filters['periode']) ?></h5>
+                                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                </div>
+
+                                <div class="modal-body">
+                                    <p class="small text-secondary">
+                                        Setelah Admin Kabupaten menyetujui, Renstra periode ini bisa disunting
+                                        seperti biasa. Versi yang sudah ditetapkan <strong>tidak berubah</strong>;
+                                        hasil penyuntingan Anda menjadi <strong>versi berikutnya</strong> ketika
+                                        diajukan ulang untuk divalidasi.
+                                    </p>
+
+                                    <label class="form-label small fw-semibold">
+                                        Alasan <span class="text-danger">*</span>
+                                    </label>
+                                    <textarea name="alasan" rows="4" class="form-control" required
+                                              maxlength="5000"
+                                              placeholder="Contoh: target indikator X salah ketik, seharusnya 95 bukan 9,5"></textarea>
+                                    <div class="form-text">
+                                        Yang membaca ini adalah orang di instansi lain. Sebutkan apa yang
+                                        keliru dan apa yang akan diperbaiki.
+                                    </div>
+                                </div>
+
+                                <div class="modal-footer">
+                                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Batal</button>
+                                    <button class="btn btn-primary btn-sm">
+                                        <i class="fas fa-paper-plane me-1"></i>Kirim Permohonan
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                <?php endif; ?>
 
                 <!-- ================ LOGIKA TAMPIL DATA ================= -->
                 <?php if (empty($filters['periode'])): ?>
@@ -214,8 +487,14 @@
                                     <th rowspan="2">Kondisi Akhir</th>
                                     <th rowspan="2">Jenis Indikator</th>
 
-                                    <th rowspan="2">Status</th>
-                                    <th rowspan="2">Aksi</th>
+                                    <?php /* Kolom Status & Aksi tidak berlaku bagi arsip:
+                                             status adalah keadaan pengerjaan, dan id barisnya
+                                             milik arsip sehingga tombolnya akan menunjuk baris
+                                             yang salah. */ ?>
+                                    <?php if (! $bacaArsip): ?>
+                                        <th rowspan="2">Status</th>
+                                        <th rowspan="2">Aksi</th>
+                                    <?php endif; ?>
                                 </tr>
                                 <tr>
                                     <?php for ($y = $start; $y <= $end; $y++): ?>
@@ -317,7 +596,7 @@
                                                 <td><?= esc($kondisiAkhir) ?></td>
                                                 <td><?= esc($jenisLabel($ss['jenis'])) ?></td>
 
-                                                <?php if ($isFirstOfSasaran): ?>
+                                                <?php if ($isFirstOfSasaran && ! $bacaArsip): ?>
                                                     <!-- STATUS (per sasaran) -->
                                                     <td rowspan="<?= $sasRowspan[$sid] ?>">
                                                         <?php
@@ -360,8 +639,10 @@
                                                 <?php for ($y = $start; $y <= $end; $y++): ?><td></td><?php endfor; ?>
                                                 <td></td><!-- Kondisi Akhir -->
                                                 <td></td><!-- Jenis Indikator -->
-                                                <td></td><!-- Status -->
-                                                <td></td><!-- Aksi -->
+                                                <?php if (! $bacaArsip): ?>
+                                                    <td></td><!-- Status -->
+                                                    <td></td><!-- Aksi -->
+                                                <?php endif; ?>
                                             <?php endif; ?>
 
                                         </tr>
@@ -389,8 +670,9 @@
             const periodeSelect = document.getElementById('periodeFilter');
             const rpjmdSelect = document.getElementById('rpjmdFilter');
             const statusSelect = document.getElementById('statusFilter');
+            const versiSelect = document.getElementById('versiFilter');
 
-            const otherFilters = [rpjmdSelect, statusSelect];
+            const otherFilters = [rpjmdSelect, statusSelect, versiSelect];
 
             // Semua filter dropdown jadi Select2 (searchable)
             const hasSelect2 = window.jQuery && $.fn.select2;
@@ -402,6 +684,9 @@
                 const hasPeriode = (periodeSelect?.value || '').trim() !== '';
                 otherFilters.forEach(el => {
                     if (!el) return;
+                    // Dikunci dari server (mis. saringan status saat membaca arsip);
+                    // menghidupkannya di sini akan membatalkan keputusan itu.
+                    if (el.dataset.terkunci === '1') return;
                     if (hasSelect2) {
                         $(el).prop('disabled', !hasPeriode);
                     } else {

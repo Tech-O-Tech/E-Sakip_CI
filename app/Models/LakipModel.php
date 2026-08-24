@@ -163,6 +163,191 @@ class LakipModel extends Model
         return $map;
     }
 
+    /* =========================================================
+     * SUMBER IKU
+     *
+     * =====================================================================
+     * MENGAPA DARI ARSIP REVISI, BUKAN DARI IKU BERJALAN
+     *
+     * LAKIP menilai kinerja satu tahun yang sudah lewat. Yang relevan adalah
+     * IKU yang berlaku DI TAHUN ITU — bukan yang kebetulan berlaku saat
+     * laporannya disusun. Membaca IKU berjalan berarti laporan 2026 ikut
+     * berubah setiap kali IKU direvisi di 2028, dan itu membatalkan seluruh
+     * gunanya sebagai dokumen pertanggungjawaban.
+     *
+     * =====================================================================
+     * DUA ID, DAN JANGAN TERTUKAR
+     *
+     * `indikator_id`  -> id indikator IKU BERJALAN (`iku_indikator.id`).
+     *                    Inilah kunci tempat realisasi menempel, sehingga
+     *                    berganti versi tampilan TIDAK menghilangkan capaian
+     *                    yang sudah diisi.
+     * `arsip_id`      -> id baris arsip revisi. Hanya untuk penelusuran.
+     *
+     * Baris arsip yang belum pernah diterapkan ke IKU berjalan tidak punya
+     * `indikator_id`; ia tetap ditampilkan tetapi tidak bisa diisi realisasi —
+     * dan itu jujur, sebab indikatornya memang belum resmi ada.
+     *
+     * @return array<int,array<string,mixed>> bentuknya disamakan dengan
+     *         getIndexRenstraTargets() supaya view tidak perlu tahu sumbernya
+     * =======================================================*/
+    public function getIndexIkuTargets(int $revisiId, int $tahun, ?int $opdId = null): array
+    {
+        if (! $this->db->tableExists('iku_revisi_sasaran')) {
+            return [];
+        }
+
+        $rows = $this->db->table('iku_revisi_indikator ri')
+            ->select("
+                ri.id                      AS arsip_id,
+                ri.sumber_indikator_id     AS indikator_id,
+                ri.indikator               AS indikator_sasaran,
+                COALESCE(ri.satuan_nama, ri.satuan) AS satuan,
+                ri.jenis_indikator         AS jenis_indikator,
+                ri.perubahan_substansial   AS perubahan_substansial,
+                ri.jenis_perubahan         AS jenis_perubahan,
+
+                rt.target                  AS target_tahun_ini,
+
+                rs.id                      AS arsip_sasaran_id,
+                rs.sumber_sasaran_id       AS sasaran_id,
+                rs.sasaran                 AS sasaran,
+
+                r.opd_id                   AS opd_id,
+                o.nama_opd                 AS nama_opd
+            ", false)
+            ->join('iku_revisi_sasaran rs', 'rs.id = ri.revisi_sasaran_id')
+            ->join('iku_revisi r', 'r.id = ri.revisi_id')
+            ->join('iku_revisi_target rt', 'rt.revisi_indikator_id = ri.id AND rt.tahun = ' . (int) $tahun, 'left', false)
+            ->join('opd o', 'o.id = r.opd_id', 'left')
+            ->where('ri.revisi_id', $revisiId)
+            // Baris nisan "dihentikan" bukan isi dokumen; ia penanda perubahan.
+            ->where('ri.jenis_perubahan !=', 'dihentikan');
+
+        if (! empty($opdId)) {
+            $rows->where('r.opd_id', $opdId);
+        }
+
+        $hasil = $rows->orderBy('rs.urutan', 'ASC')->orderBy('ri.urutan', 'ASC')
+            ->orderBy('ri.id', 'ASC')->get()->getResultArray();
+
+        foreach ($hasil as &$r) {
+            $r['tahun'] = $tahun;
+
+            // `target_id` dipakai view sebagai kunci baris. Untuk sumber IKU,
+            // yang stabil lintas versi adalah id indikator BERJALAN.
+            $r['target_id'] = $r['indikator_id'] !== null ? (int) $r['indikator_id'] : null;
+
+            $r['sasaran_id'] = $r['sasaran_id'] !== null
+                ? (int) $r['sasaran_id']
+                // Sasaran arsip yang belum punya padanan berjalan tetap perlu
+                // kunci pengelompokan; dipakai id arsipnya dengan tanda negatif
+                // supaya tidak mungkin bertabrakan dengan id berjalan.
+                : -((int) $r['arsip_sasaran_id']);
+        }
+        unset($r);
+
+        return $hasil;
+    }
+
+    /**
+     * Realisasi LAKIP bersumber IKU, berkunci id indikator IKU BERJALAN.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function getLakipMapIku(int $tahun, ?string $status = null, ?int $opdId = null): array
+    {
+        if (! $this->db->fieldExists('source_entity_id', 'lakip')) {
+            return [];
+        }
+
+        $b = $this->db->table('lakip l')
+            ->select('l.*, l.source_entity_id AS indikator_id')
+            ->where('l.source_type', 'iku')
+            ->where('l.tahun', $tahun)
+            ->where('l.source_entity_id IS NOT NULL', null, false);
+
+        if (! empty($status)) {
+            $b->where('l.status', $status);
+        }
+
+        if (! empty($opdId)) {
+            $b->where('l.opd_id', $opdId);
+        }
+
+        $map = [];
+
+        foreach ($b->get()->getResultArray() as $r) {
+            $map[(int) $r['source_entity_id']] = $r;
+        }
+
+        return $map;
+    }
+
+    /**
+     * Rincian satu indikator IKU untuk form LAKIP tahun tertentu.
+     *
+     * Dicari lewat id indikator IKU BERJALAN, bukan id baris arsip — itulah
+     * kunci yang stabil ketika versi tampilan diganti.
+     *
+     * @return array<string,mixed>|null
+     */
+    public function getIkuTargetDetail(int $revisiId, int $indikatorId, int $tahun): ?array
+    {
+        if (! $this->db->tableExists('iku_revisi_indikator')) {
+            return null;
+        }
+
+        $row = $this->db->table('iku_revisi_indikator ri')
+            ->select("
+                ri.id                      AS arsip_id,
+                ri.sumber_indikator_id     AS indikator_id,
+                ri.indikator               AS indikator_sasaran,
+                COALESCE(ri.satuan_nama, ri.satuan) AS satuan,
+                ri.jenis_indikator,
+                rt.target                  AS target,
+                rs.sasaran                 AS sasaran,
+                rs.sumber_sasaran_id       AS sasaran_id,
+                r.opd_id                   AS opd_id
+            ", false)
+            ->join('iku_revisi_sasaran rs', 'rs.id = ri.revisi_sasaran_id')
+            ->join('iku_revisi r', 'r.id = ri.revisi_id')
+            ->join('iku_revisi_target rt', 'rt.revisi_indikator_id = ri.id AND rt.tahun = ' . (int) $tahun, 'left', false)
+            ->where('ri.revisi_id', $revisiId)
+            ->where('ri.sumber_indikator_id', $indikatorId)
+            ->where('ri.jenis_perubahan !=', 'dihentikan')
+            ->get()->getRowArray();
+
+        if ($row === null) {
+            return null;
+        }
+
+        $row['tahun'] = $tahun;
+
+        return $row;
+    }
+
+    /** Baris LAKIP bersumber IKU untuk satu indikator & tahun. */
+    public function getLakipByIku(int $indikatorId, int $tahun, ?int $opdId = null): ?array
+    {
+        if (! $this->db->fieldExists('source_entity_id', 'lakip')) {
+            return null;
+        }
+
+        $b = $this->db->table('lakip')
+            ->where('source_type', 'iku')
+            ->where('source_entity_id', $indikatorId)
+            ->where('tahun', $tahun);
+
+        if (! empty($opdId)) {
+            $b->where('opd_id', $opdId);
+        }
+
+        $row = $b->get()->getRowArray();
+
+        return $row ?: null;
+    }
+
     /**
      * Ambil LAKIP map untuk RPJMD (key = rpjmd_target_id)
      */

@@ -125,9 +125,11 @@
                     <div class="casc-icon"><i class="fas fa-<?= $isPohon ? 'sitemap' : 'table-cells' ?>"></i></div>
                     <div>
                         <h2><?= $isPohon ? 'Pohon Kinerja' : 'Cascading' ?></h2>
+<?php /* Eselon II kini dibaca dari IKU (jatuh ke Renstra bila belum dipetakan);
+         kolom di atasnya memang masih RPJMD/Renstra, jadi tetap disebut apa adanya. */ ?>
                         <p><?= $isPohon
-                            ? 'Visualisasi pohon kinerja Renstra &rarr; Eselon II / III / IV Perangkat Daerah'
-                            : 'Matriks cascading Renstra &rarr; Eselon II / III / IV Perangkat Daerah' ?></p>
+                            ? 'Visualisasi pohon kinerja RPJMD &rarr; Renstra &rarr; IKU &rarr; Eselon III / IV / Pelaksana'
+                            : 'Matriks cascading RPJMD &rarr; Renstra &rarr; IKU &rarr; Eselon III / IV / Pelaksana' ?></p>
                     </div>
                 </div>
 
@@ -151,7 +153,7 @@
 
                 <!-- ====================== FILTER ====================== -->
                 <div class="casc-toolbar">
-                    <div class="tb-label"><i class="fas fa-filter me-1"></i>Filter Periode RPJMD</div>
+                    <div class="tb-label"><i class="fas fa-filter me-1"></i>Filter Periode Perencanaan</div>
                     <form method="GET" action="<?= base_url('adminopd/cascading') ?>"
                         class="d-flex flex-column flex-md-row gap-2 align-items-stretch align-items-md-center">
                         <input type="hidden" name="view" value="<?= esc($view) ?>">
@@ -181,7 +183,7 @@
                     <div class="casc-empty">
                         <div class="ce-icon"><i class="fas fa-calendar-days"></i></div>
                         <h5>Pilih Periode Terlebih Dahulu</h5>
-                        <p>Silakan pilih periode RPJMD pada filter di atas untuk menampilkan Cascading &amp; Pohon Kinerja.</p>
+                        <p>Silakan pilih periode perencanaan pada filter di atas untuk menampilkan Cascading &amp; Pohon Kinerja.</p>
                     </div>
 
                 <?php elseif (!empty($opd_missing ?? false)): ?>
@@ -248,7 +250,7 @@
                             <div class="casc-empty">
                                 <div class="ce-icon"><i class="fas fa-diagram-project"></i></div>
                                 <h5>Pohon Kinerja Belum Tersedia</h5>
-                                <p>Belum ada data cascading Renstra/Eselon untuk periode ini.</p>
+                                <p>Belum ada data cascading Eselon untuk periode ini.</p>
                             </div>
                         <?php else: ?>
                             <?= $this->include('adminOpd/cascading/_pohon_opd_tree') ?>

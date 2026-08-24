@@ -6,6 +6,7 @@ use App\Controllers\BaseController;
 use App\Controllers\Concerns\IkuFormTrait;
 use App\Controllers\Concerns\IkuRevisiTrait;
 use App\Models\Opd\IkuModel;
+use App\Models\Opd\IkuRevisiModel;
 use App\Models\OpdModel;
 
 /**
@@ -80,7 +81,16 @@ class IkuController extends BaseController
             'tahun_akhir' => $periode['tahun_akhir'] ?? null,
         ]);
 
+        $rev = new IkuRevisiModel();
+
         return view('adminOpd/iku/iku', [
+            // Keadaan pengesahan: yang menunggu keputusan, dan yang sedang berlaku.
+            'revisiMenunggu' => $rev->siap() && ! empty($periode['tahun_mulai'])
+                ? $rev->berjalanMenunggu($opdId, (int) $periode['tahun_mulai'], (int) $periode['tahun_akhir'])
+                : null,
+            'revisiBerlaku'  => $rev->siap() && ! empty($periode['tahun_mulai'])
+                ? $rev->revisiBerlaku($opdId, (int) $periode['tahun_mulai'], (int) $periode['tahun_akhir'])
+                : null,
             'title'            => 'Indikator Kinerja Utama',
             'iku_data'         => $ikuData,
             'grouped_data'     => $groupedData,
@@ -147,6 +157,24 @@ class IkuController extends BaseController
             $data['opd_id'] = $pilihanOpd;
         }
 
+        // Sasaran kembar diperiksa DI SINI, bukan dibiarkan lolos: sync
+        // memakai ulang sasaran bernama sama, sedangkan penambahan manual
+        // selalu membuat baris baru — dan dua sasaran kembar tidak melanggar
+        // apa pun di basis data, jadi tidak ada yang akan menahannya.
+        $kembar = $this->ikuModel->sasaranKembar(
+            $data['opd_id'],
+            (string) ($data['sasaran'] ?? ''),
+            (int) $data['tahun_mulai'],
+            (int) $data['tahun_akhir']
+        );
+
+        if ($kembar !== null) {
+            return redirect()->back()->withInput()->with('error',
+                'Sasaran dengan nama yang sama sudah ada pada periode ini — kemungkinan besar '
+                . 'ikut tersalin saat sync dari Renstra. Tambahkan indikatornya lewat tombol '
+                . 'Edit pada sasaran itu, jangan membuat sasaran baru.');
+        }
+
         try {
             $this->ikuModel->createComplete($data);
         } catch (\Throwable $e) {
@@ -162,6 +190,58 @@ class IkuController extends BaseController
      * SYNC DARI RENSTRA — PRATINJAU
      * GET adminopd/iku/sync?periode=2025-2029
      * =======================================================*/
+
+    /* =========================================================
+     * AJUKAN PENGESAHAN IKU (dari menu IKU, bukan menu Revisi)
+     *
+     * Kembaran "Ajukan Validasi" pada menu Renstra. Sebelum ini, satu-satunya
+     * jalan mengesahkan IKU adalah lewat menu Revisi — dan menu itu kosong
+     * sampai seseorang membuat revisi, sehingga IKU hasil sync tidak punya
+     * pintu apa pun menuju pengesahan.
+     * =======================================================*/
+
+    public function ajukanPengesahan()
+    {
+        $opdId = $this->opdIdSesi();
+
+        if ($opdId === false) {
+            return redirect()->to('/login')->with('error', 'Silakan login terlebih dahulu');
+        }
+
+        if (! user_can('iku_opd.revisi')) {
+            return redirect()->to(base_url('adminopd/iku'))
+                ->with('error', 'Anda tidak berwenang mengajukan pengesahan IKU.');
+        }
+
+        $tm = (int) $this->request->getPost('tahun_mulai');
+        $ta = (int) $this->request->getPost('tahun_akhir');
+
+        if ($tm <= 0 || $ta < $tm) {
+            return redirect()->back()->with('error', 'Periode IKU tidak sah.');
+        }
+
+        $kembali = base_url('adminopd/iku?periode=' . $tm . '-' . $ta);
+
+        try {
+            (new IkuRevisiModel())->bekukanDanAjukan($opdId, $tm, $ta, $this->penggunaIku(), [
+                'catatan' => $this->request->getPost('catatan') ?: null,
+            ]);
+        } catch (\Throwable $e) {
+            return redirect()->to($kembali)->with('error', $e->getMessage());
+        }
+
+        return redirect()->to($kembali)->with('success',
+            'IKU periode ' . $tm . '-' . $ta . ' diajukan untuk disahkan Admin Kabupaten. '
+            . 'Isinya dibekukan apa adanya saat ini — perubahan sesudah ini tidak ikut terkirim.');
+    }
+
+    private function penggunaIku(): ?int
+    {
+        $id = session()->get('user_id') ?? session()->get('id');
+
+        return $id === null ? null : (int) $id;
+    }
+
     public function sync()
     {
         $opdId = $this->opdIdSesi();
@@ -188,11 +268,25 @@ class IkuController extends BaseController
                 ->with('error', 'Belum ada periode Renstra pada OPD ini yang bisa disalin. Isi Renstra terlebih dahulu.');
         }
 
+        // Versi Renstra yang jadi titik tolak. Tanpa parameter ini, sumbernya
+        // kondisi berjalan — perilaku lama, apa adanya.
+        $versiTersedia = $this->ikuModel->versiRenstraTersedia(
+            $opdId,
+            (int) $periode['tahun_mulai'],
+            (int) $periode['tahun_akhir']
+        );
+
+        $versiDipilih = $this->versiRenstraDipilih(
+            $this->request->getGet('renstra_versi'),
+            $versiTersedia
+        );
+
         $kandidat = $this->ikuModel->getKandidatSync(
             'renstra',
             $opdId,
             $periode['tahun_mulai'],
-            $periode['tahun_akhir']
+            $periode['tahun_akhir'],
+            $versiDipilih !== null ? (int) $versiDipilih['id'] : null
         );
 
         $opd = $this->opdModel->find($opdId);
@@ -205,7 +299,10 @@ class IkuController extends BaseController
             'years'          => $periode['years'],
             'nama_opd'       => $opd['nama_opd'] ?? '',
             'role'           => session()->get('role'),
-        ]);
+            'versi_tersedia' => $versiTersedia,
+            'versi_dipilih'  => $versiDipilih,
+            'tanpa_padanan'  => $this->ikuModel->ikuTanpaPadananSumber(),
+        ] + $this->muaraSync($opdId, $periode));
     }
 
     /* =========================================================
@@ -239,20 +336,47 @@ class IkuController extends BaseController
                 ->with('error', 'Periode Renstra tidak valid.');
         }
 
-        $pilihan = $this->bacaPilihanSync($post);
-        if (empty($pilihan)) {
+        // Dua keranjang terpisah: menambah baris baru dan mengambil perubahan
+        // atas baris yang sudah ada adalah dua keputusan berbeda, dan yang
+        // kedua menimpa nilai yang sudah dipakai.
+        $pilihan  = $this->bacaPilihanSync($post);
+        $perbarui = $this->bacaPilihanSync($post, 'perbarui');
+
+        if (empty($pilihan) && empty($perbarui)) {
             return redirect()->to(base_url('adminopd/iku/sync?periode=' . $periode))
-                ->with('error', 'Pilih minimal satu indikator untuk disalin.');
+                ->with('error', 'Pilih minimal satu indikator untuk disalin atau diperbarui.');
         }
 
+        // Versi diperiksa ulang terhadap daftar yang sah, bukan dipercaya dari
+        // form: id karangan tidak boleh membuka arsip OPD lain.
+        $versiTersedia = $this->ikuModel->versiRenstraTersedia(
+            $opdId,
+            (int) $daftarPeriode[$periode]['tahun_mulai'],
+            (int) $daftarPeriode[$periode]['tahun_akhir']
+        );
+
+        $versiDipilih = $this->versiRenstraDipilih($post['renstra_versi'] ?? null, $versiTersedia);
+
+        $muara = $this->muaraSync($opdId, $daftarPeriode[$periode]);
+
         try {
-            $stat = $this->ikuModel->importSync(
-                'renstra',
-                $opdId,
-                $pilihan,
-                $daftarPeriode[$periode]['tahun_mulai'],
-                $daftarPeriode[$periode]['tahun_akhir']
-            );
+            if ($muara['ke_revisi']) {
+                $stat = $this->syncKeDraft($muara, $post, $opdId, $daftarPeriode[$periode],
+                    $versiDipilih, $pilihan, $perbarui);
+
+                if (! is_array($stat)) {
+                    return $stat;
+                }
+            } else {
+                $stat = $this->ikuModel->importSync(
+                    'renstra',
+                    $opdId,
+                    $pilihan,
+                    $daftarPeriode[$periode]['tahun_mulai'],
+                    $daftarPeriode[$periode]['tahun_akhir'],
+                    $versiDipilih !== null ? (int) $versiDipilih['id'] : null
+                );
+            }
         } catch (\Throwable $e) {
             log_message('error', '[IKU SYNC OPD] ' . $e->getMessage());
 
@@ -260,8 +384,133 @@ class IkuController extends BaseController
                 ->with('error', 'Gagal menyalin data Renstra: ' . $e->getMessage());
         }
 
+        if ($muara['ke_revisi']) {
+            return redirect()->to(base_url('adminopd/iku/revisi'))
+                ->with('success', $this->pesanHasilSync($stat)
+                    . ' Semuanya masuk ke DRAFT revisi — IKU berjalan belum berubah, '
+                    . 'dan baru berubah setelah revisi itu diajukan dan disahkan.');
+        }
+
         return redirect()->to(base_url('adminopd/iku?periode=' . $periode))
             ->with('success', $this->pesanHasilSync($stat));
+    }
+
+    /**
+     * Masukkan hasil sync ke draft revisi yang dipilih pengguna.
+     *
+     * Mengembalikan array statistik bila berhasil, atau RedirectResponse bila
+     * pilihannya tidak sah — pemanggil meneruskannya apa adanya.
+     *
+     * @return array|\CodeIgniter\HTTP\RedirectResponse
+     */
+    private function syncKeDraft(
+        array $muara,
+        array $post,
+        int $opdId,
+        array $periode,
+        ?array $versiDipilih,
+        array $pilihan,
+        array $perbarui = []
+    ) {
+        $kembali = base_url('adminopd/iku/sync?periode='
+            . $periode['tahun_mulai'] . '-' . $periode['tahun_akhir']);
+
+        if (empty($muara['draft_tersedia'])) {
+            return redirect()->to($kembali)->with('error',
+                'IKU periode ini sudah punya revisi yang berlaku, jadi hasil sync harus masuk '
+                . 'ke sebuah draft revisi. Buat revisinya lebih dulu di menu Revisi IKU.');
+        }
+
+        // Draft tujuan diperiksa terhadap daftar yang sah, bukan dipercaya dari
+        // form: id karangan tidak boleh menyisipkan baris ke revisi OPD lain.
+        $tujuanId = (int) ($post['revisi_tujuan'] ?? 0);
+        $draft    = null;
+
+        foreach ($muara['draft_tersedia'] as $d) {
+            if ((int) $d['id'] === $tujuanId) {
+                $draft = $d;
+            }
+        }
+
+        if ($draft === null) {
+            return redirect()->to($kembali)->with('error',
+                'Pilih draft revisi yang akan menampung hasil sync.');
+        }
+
+        $kandidat = $this->ikuModel->getKandidatSync(
+            'renstra',
+            $opdId,
+            (int) $periode['tahun_mulai'],
+            (int) $periode['tahun_akhir'],
+            $versiDipilih !== null ? (int) $versiDipilih['id'] : null
+        );
+
+        return (new IkuRevisiModel())->imporKandidat(
+            (int) $draft['id'],
+            $kandidat,
+            $pilihan,
+            'renstra',
+            $versiDipilih !== null ? (int) $versiDipilih['id'] : null,
+            $perbarui
+        );
+    }
+
+    /**
+     * Ke mana hasil sync bermuara: tabel berjalan atau draft revisi.
+     *
+     * Selama IKU belum punya revisi yang berlaku, ia memang masih disusun dan
+     * menyalin langsung ke tabel berjalan sama wajarnya dengan mengetik
+     * manual. Sesudah ada revisi yang disahkan, menambah indikator langsung ke
+     * tabel berjalan berarti mengubah dokumen resmi tanpa sepengetahuan
+     * siapa pun — dan tambahan itu tidak akan muncul di arsip revisi mana pun.
+     *
+     * @return array{ke_revisi:bool, revisi_berlaku:?array, draft_tersedia:array}
+     */
+    private function muaraSync(int $opdId, array $periode): array
+    {
+        $rev = new IkuRevisiModel();
+
+        if (! $rev->siap()) {
+            return ['ke_revisi' => false, 'revisi_berlaku' => null, 'draft_tersedia' => []];
+        }
+
+        $tm = (int) $periode['tahun_mulai'];
+        $ta = (int) $periode['tahun_akhir'];
+
+        $berlaku = $rev->revisiBerlaku($opdId, $tm, $ta);
+
+        return [
+            'ke_revisi'      => $berlaku !== null,
+            'revisi_berlaku' => $berlaku,
+            'draft_tersedia' => $berlaku === null ? [] : $rev->draftTersedia($opdId, $tm, $ta),
+        ];
+    }
+
+    /**
+     * Versi Renstra yang dipilih sebagai sumber, atau null bila memakai
+     * kondisi berjalan.
+     *
+     * Nilainya TIDAK dipercaya begitu saja: harus ada pada daftar versi yang
+     * sudah dibatasi OPD dan periodenya. Dengan begitu tidak ada jalan membaca
+     * arsip OPD lain lewat id yang dikarang.
+     *
+     * @param array<int,array<string,mixed>> $tersedia
+     */
+    private function versiRenstraDipilih($nilai, array $tersedia): ?array
+    {
+        $id = (int) $nilai;
+
+        if ($id <= 0) {
+            return null;
+        }
+
+        foreach ($tersedia as $v) {
+            if ((int) $v['id'] === $id) {
+                return $v;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -320,56 +569,66 @@ class IkuController extends BaseController
     /* =========================================================
      * UPDATE
      * =======================================================*/
+    /**
+     * Simpan KETERANGAN indikator saja.
+     *
+     * =====================================================================
+     * PEMBATASANNYA DI SERVER, BUKAN DI LAYAR
+     *
+     * Sebelumnya method ini membaca seluruh form lewat `bacaFormIku()` dan
+     * memanggil `updateComplete()` — yang menulis ulang sasaran, indikator,
+     * satuan, dan SELURUH targetnya dari apa pun yang dikirim. Menyembunyikan
+     * medannya di layar tidak menutup jalan itu: POST yang dikarang tetap bisa
+     * menghapus target dan indikator, tanpa satu pun galat.
+     *
+     * Karena itu yang dibaca sekarang hanya `keterangan[<id indikator>][...]`,
+     * dan yang ditulis hanya empat kolom. Perubahan substantif berjalan lewat
+     * revisi IKU, tempat ia tercatat dan disahkan.
+     */
     public function update()
     {
         $opdId = $this->opdIdSesi();
+
         if ($opdId === false) {
             return redirect()->to('/login')->with('error', 'Silakan login terlebih dahulu');
         }
 
-        if (!user_can('iku_opd.update')) {
+        if (! user_can('iku_opd.update')) {
             return redirect()->to(base_url('adminopd/iku'))
                 ->with('error', 'Anda tidak memiliki akses untuk mengubah IKU.');
         }
 
         $sasaranId = (int) ($this->request->getPost('iku_sasaran_id') ?? 0);
+
         if ($sasaranId <= 0) {
             return redirect()->to(base_url('adminopd/iku'))->with('error', 'ID IKU tidak ditemukan.');
         }
 
-        if (!$this->bolehAksesSasaran($sasaranId)) {
+        if (! $this->bolehAksesSasaran($sasaranId)) {
             return redirect()->to(base_url('adminopd/iku'))
                 ->with('error', 'Anda tidak memiliki akses ke IKU OPD lain.');
         }
 
-        $data = $this->bacaFormIku($this->request->getPost() ?? []);
+        $keterangan = (array) ($this->request->getPost('keterangan') ?? []);
 
-        if ($error = $this->validasiFormIku($data)) {
-            return redirect()->back()->withInput()->with('error', $error);
-        }
-
-        // Pemindahan IKU antar-OPD hanya untuk super admin lintas-OPD.
-        if ($opdId === null) {
-            $pilihanOpd = (int) ($this->request->getPost('opd_id') ?? 0);
-            if ($pilihanOpd > 0) {
-                $data['opd_id'] = $pilihanOpd;
-            }
+        if ($keterangan === []) {
+            return redirect()->back()->with('error', 'Tidak ada keterangan yang dikirim.');
         }
 
         try {
-            $this->ikuModel->updateComplete($sasaranId, $data);
+            $jumlah = $this->ikuModel->perbaruiKeterangan($sasaranId, $keterangan);
         } catch (\Throwable $e) {
-            log_message('error', '[IKU UPDATE OPD] ' . $e->getMessage());
+            log_message('error', '[IKU KETERANGAN OPD] ' . $e->getMessage());
 
-            return redirect()->back()->withInput()->with('error', 'Gagal mengubah IKU: ' . $e->getMessage());
+            return redirect()->back()->withInput()
+                ->with('error', 'Gagal menyimpan keterangan: ' . $e->getMessage());
         }
 
-        return redirect()->to(base_url('adminopd/iku'))->with('success', 'Data IKU berhasil diperbarui.');
+        return redirect()->to(base_url('adminopd/iku'))
+            ->with('success', 'Keterangan ' . $jumlah . ' indikator disimpan. '
+                . 'Sasaran, indikator, satuan, dan target tidak tersentuh.');
     }
 
-    /* =========================================================
-     * HAPUS
-     * =======================================================*/
     public function delete($sasaranId = null)
     {
         if (!user_can('iku_opd.delete')) {

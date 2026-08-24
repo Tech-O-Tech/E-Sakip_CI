@@ -60,6 +60,32 @@
   </style>
 </head>
 
+<?php
+/*
+ * Form ini dipakai BERSAMA oleh dua alur:
+ *
+ *   1. Tambah Renstra          -> menulis ke tabel Renstra berjalan
+ *   2. Tambah/Sunting Tujuan   -> menulis ke ARSIP sebuah versi Renstra
+ *      pada sebuah Versi
+ *
+ * Dipakai ulang, bukan disalin, supaya keduanya TIDAK PERNAH menyimpang
+ * bentuknya. Yang berbeda hanya alamat tujuan simpan, judul, dan beberapa
+ * nilai awal — seluruhnya lewat variabel opsional di bawah.
+ */
+$formAction   = $formAction   ?? base_url('adminopd/renstra/save');
+$judulForm    = $judulForm    ?? 'Tambah Renstra';
+$kembaliUrl   = $kembaliUrl   ?? base_url('adminopd/renstra');
+$hiddenExtra  = $hiddenExtra  ?? [];
+$catatanForm  = $catatanForm  ?? null;
+
+// Periode dikunci saat menyunting versi: periodenya sudah ditentukan dokumen,
+// bukan lagi pilihan pengisi form.
+$periodeKunci = $periodeKunci ?? null;
+
+// Isi awal saat menyunting. Bentuknya sama persis dengan POST form ini, supaya
+// menyunting dan menambah memakai satu jalur data yang sama.
+$isiAwal = $isiAwal ?? null;
+?>
 <body class="bg-light min-vh-100 d-flex flex-column position-relative">
     <div id="main-content" class="content-wrapper d-flex flex-column" style="transition: margin-left .3s ease;">
 
@@ -68,7 +94,11 @@
 
   <main class="flex-fill d-flex justify-content-center p-4 mt-4">
     <div class="bg-white rounded shadow-sm p-4" style="width: 100%; max-width: 1200px;">
-      <h2 class="h3 fw-bold text-center mb-4" style="color: #00743e;">Tambah Renstra</h2>
+      <h2 class="h3 fw-bold text-center mb-4" style="color: #00743e;"><?= esc($judulForm) ?></h2>
+
+      <?php if ($catatanForm !== null): ?>
+        <div class="alert alert-info small"><?= $catatanForm ?></div>
+      <?php endif; ?>
 
       <div id="alert-container">
         <?php if (session()->getFlashdata('error')): ?>
@@ -76,8 +106,11 @@
         <?php endif; ?>
       </div>
 
-      <form id="renstra-form" method="POST" action="<?= base_url('adminopd/renstra/save') ?>">
+      <form id="renstra-form" method="POST" action="<?= $formAction ?>">
         <?= csrf_field() ?>
+        <?php foreach ($hiddenExtra as $namaHidden => $nilaiHidden): ?>
+          <input type="hidden" name="<?= esc($namaHidden) ?>" value="<?= esc($nilaiHidden) ?>">
+        <?php endforeach; ?>
 
         <!-- ================= INFORMASI UMUM ================= -->
         <section class="mb-4">
@@ -119,11 +152,14 @@
             <div class="col-md-2 mt-2">
               <label class="form-label">Tahun Mulai</label>
               <input type="number" name="tahun_mulai" id="tahun_mulai" class="form-control mb-3"
-                placeholder="Contoh: 2025" required>
+                placeholder="Contoh: 2025" required
+                value="<?= esc($periodeKunci['mulai'] ?? '') ?>"
+                <?= $periodeKunci !== null ? 'readonly' : '' ?>>
             </div>
             <div class="col-md-2 mt-2">
               <label class="form-label">Tahun Akhir</label>
-              <input type="number" name="tahun_akhir" id="tahun_akhir" class="form-control mb-3" readonly required>
+              <input type="number" name="tahun_akhir" id="tahun_akhir" class="form-control mb-3" readonly required
+                value="<?= esc($periodeKunci['akhir'] ?? '') ?>">
             </div>
           </div>
         </section>
@@ -304,7 +340,7 @@
 
         <!-- ================= TOMBOL AKSI ================= -->
         <div class="d-flex justify-content-between mt-4">
-          <a href="<?= base_url('adminopd/renstra') ?>" class="btn btn-secondary">
+          <a href="<?= $kembaliUrl ?>" class="btn btn-secondary">
             <i class="fas fa-arrow-left me-1"></i> Kembali
           </a>
           <button type="submit" class="btn btn-success">
@@ -349,6 +385,11 @@
 
       const sasaranContainer = document.getElementById('sasaran-renstra-container');
       const addSasaranBtn = document.getElementById('add-sasaran-renstra');
+
+      /* Catatan: saat periode ditentukan dokumen (form versi), tahunnya terisi
+         dari server dan kolomnya readonly, sehingga event 'input' tidak pernah
+         menyala. Kolom tahun target tetap terisi karena updateTahunTarget()
+         memang sudah dipanggil sekali di akhir blok "OTOMATIS TAHUN AKHIR". */
 
       // ============================
       // FUNGSI: UPDATE TAHUN TARGET
@@ -672,6 +713,97 @@
     });
 
   </script>
+
+<?php if ($isiAwal !== null): ?>
+  <script>
+    /*
+     * PENGISIAN AWAL (mode sunting)
+     *
+     * Kerangka form sengaja tidak dijadikan perulangan PHP. Tombol "Tambah"
+     * di atas sudah tahu cara melahirkan blok baru berikut penamaan medannya;
+     * mengulang pengetahuan itu di PHP berarti dua tempat yang harus selalu
+     * sama. Jadi di sini kita menekan tombol yang sama seperti pengguna, lalu
+     * mengisi medannya berdasarkan nama.
+     */
+    document.addEventListener('DOMContentLoaded', function () {
+      const isi  = <?= json_encode($isiAwal, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+      const form = document.getElementById('renstra-form');
+
+      if (!form || !isi) return;
+
+      const mulai = parseInt(document.getElementById('tahun_mulai')?.value) || 0;
+
+      // Isi sebuah medan berdasarkan atribut name. Select2 menyembunyikan
+      // <select> aslinya, jadi perubahannya harus diberitahukan lewat jQuery.
+      function isiMedan(nama, nilai) {
+        const el = form.querySelector('[name="' + nama + '"]');
+
+        if (!el || nilai === null || nilai === undefined) return;
+
+        el.value = nilai;
+
+        if (el.tagName === 'SELECT' && window.jQuery) {
+          window.jQuery(el).trigger('change');
+        }
+      }
+
+      function isiTarget(prefix, daftar) {
+        (daftar || []).forEach(function (t) {
+          const kolom = parseInt(t.tahun) - mulai;
+
+          if (kolom >= 0 && kolom <= 4) {
+            isiMedan(prefix + '[target_tahunan][' + kolom + '][target]', t.target);
+          }
+        });
+      }
+
+      isiMedan('rpjmd_sasaran_id', isi.rpjmd_sasaran_id);
+      isiMedan('tujuan_renstra', isi.tujuan_renstra);
+
+      // --- indikator tujuan ---
+      const it = isi.indikator_tujuan || [];
+
+      for (let n = 1; n < it.length; n++) {
+        document.getElementById('add-indikator-tujuan')?.click();
+      }
+
+      it.forEach(function (baris, n) {
+        isiMedan('indikator_tujuan[' + n + '][indikator_tujuan]', baris.indikator_tujuan);
+        isiTarget('indikator_tujuan[' + n + ']', baris.target_tahunan);
+      });
+
+      // --- sasaran + indikatornya ---
+      const sr = isi.sasaran_renstra || [];
+
+      for (let n = 1; n < sr.length; n++) {
+        document.getElementById('add-sasaran-renstra')?.click();
+      }
+
+      sr.forEach(function (s, n) {
+        isiMedan('sasaran_renstra[' + n + '][sasaran]', s.sasaran);
+
+        const blok = form.querySelectorAll('.sasaran-renstra-item')[n];
+        const ind  = s.indikator_sasaran || [];
+
+        for (let m = 1; m < ind.length; m++) {
+          blok?.querySelector('.add-indikator-sasaran')?.click();
+        }
+
+        ind.forEach(function (i, m) {
+          const pre = 'sasaran_renstra[' + n + '][indikator_sasaran][' + m + ']';
+          isiMedan(pre + '[indikator_sasaran]', i.indikator_sasaran);
+          isiMedan(pre + '[satuan]', i.satuan);
+          isiMedan(pre + '[jenis_indikator]', i.jenis_indikator);
+          isiMedan(pre + '[baseline]', i.baseline);
+          isiTarget(pre, i.target_tahunan);
+        });
+      });
+
+      // Blok yang baru lahir belum punya tahun; isi ulang setelah semuanya ada.
+      document.getElementById('tahun_akhir')?.dispatchEvent(new Event('input'));
+    });
+  </script>
+<?php endif; ?>
     </div>
 </body>
 

@@ -50,9 +50,40 @@ class LakipBenchmarkModel extends Model
     }
 
     /** Kolom penambat sesuai mode halaman LAKIP. */
-    public static function kolomIndikator(string $mode): string
+    /**
+     * Kolom kunci indikator untuk satu lingkup.
+     *
+     * @param string|null $sumber sumber dokumen ('iku'|'renstra'|'rpjmd').
+     *                            Wajib diperhatikan sejak layar LAKIP OPD bisa
+     *                            menampilkan IKU: mode 'opd' berlaku untuk
+     *                            Renstra DAN IKU, sedangkan id keduanya hidup
+     *                            di ruang angka yang sama.
+     */
+    public static function kolomIndikator(string $mode, ?string $sumber = null): string
     {
-        return $mode === 'kabupaten' ? 'rpjmd_indikator_id' : 'renstra_indikator_id';
+        if ($mode === 'kabupaten') {
+            return 'rpjmd_indikator_id';
+        }
+
+        return $sumber === 'iku' ? 'iku_indikator_id' : 'renstra_indikator_id';
+    }
+
+    /** Sumber baris yang sah untuk satu mode. */
+    public static function sumberSah(string $mode, $diminta): string
+    {
+        if ($mode === 'kabupaten') {
+            return 'rpjmd';
+        }
+
+        $sumber = trim((string) ($diminta ?? ''));
+
+        return in_array($sumber, ['iku', 'renstra'], true) ? $sumber : 'renstra';
+    }
+
+    /** Apakah kolom sumber sudah terpasang (migrasi 2026-08-26). */
+    public function punyaKolomSumber(): bool
+    {
+        return $this->siap() && $this->db->fieldExists('source_type', $this->table);
     }
 
     /**
@@ -63,13 +94,17 @@ class LakipBenchmarkModel extends Model
      *
      * @return array<int, array<string, mixed>> [indikator_id => baris benchmark]
      */
-    public function getByTahunKeyedByIndikator(string $tahun, string $mode, ?int $opdId = null): array
-    {
+    public function getByTahunKeyedByIndikator(
+        string $tahun,
+        string $mode,
+        ?int $opdId = null,
+        ?string $sumber = null
+    ): array {
         if ($tahun === '' || !$this->siap()) {
             return [];
         }
 
-        $kolom = self::kolomIndikator($mode);
+        $kolom = self::kolomIndikator($mode, self::sumberSah($mode, $sumber));
 
         $b = $this->db->table($this->table)
             ->where('tahun', $tahun)
@@ -92,14 +127,14 @@ class LakipBenchmarkModel extends Model
     }
 
     /** Satu baris benchmark milik indikator + tahun tertentu. */
-    public function cariByIndikator(int $indikatorId, string $tahun, string $mode): ?array
+    public function cariByIndikator(int $indikatorId, string $tahun, string $mode, ?string $sumber = null): ?array
     {
         if ($indikatorId <= 0 || $tahun === '' || !$this->siap()) {
             return null;
         }
 
         return $this->db->table($this->table)
-            ->where(self::kolomIndikator($mode), $indikatorId)
+            ->where(self::kolomIndikator($mode, self::sumberSah($mode, $sumber)), $indikatorId)
             ->where('tahun', $tahun)
             ->get()
             ->getRowArray() ?: null;
@@ -121,10 +156,36 @@ class LakipBenchmarkModel extends Model
      *
      * @return array<string, mixed>|null [indikator_id, indikator_sasaran, satuan, opd_id]
      */
-    public function indikatorSah(int $indikatorId, string $mode, string $tahun, ?int $opdScope): ?array
-    {
+    public function indikatorSah(
+        int $indikatorId,
+        string $mode,
+        string $tahun,
+        ?int $opdScope,
+        ?string $sumber = null
+    ): ?array {
         if ($indikatorId <= 0 || $tahun === '') {
             return null;
+        }
+
+        // Sumber IKU: id yang dikirim adalah id INDIKATOR IKU BERJALAN. Tanpa
+        // cabang ini, mengisi angka pembanding untuk baris IKU selalu ditolak
+        // sebagai "tidak ditemukan" — layar menampilkan indikatornya, tetapi
+        // server mencarinya di tabel Renstra.
+        if ($mode !== 'kabupaten' && self::sumberSah($mode, $sumber) === 'iku') {
+            $b = $this->db->table('iku_indikator ii')
+                ->select('ii.id AS indikator_id, ii.indikator AS indikator_sasaran, ii.satuan, isa.opd_id')
+                ->join('iku_sasaran isa', 'isa.id = ii.iku_sasaran_id', 'left')
+                ->where('ii.id', $indikatorId);
+
+            if ($this->db->fieldExists('dihentikan_pada', 'iku_indikator')) {
+                $b->where('ii.dihentikan_pada IS NULL', null, false);
+            }
+
+            if (!empty($opdScope)) {
+                $b->where('isa.opd_id', (int) $opdScope);
+            }
+
+            return $b->get()->getRowArray() ?: null;
         }
 
         if ($mode === 'kabupaten') {

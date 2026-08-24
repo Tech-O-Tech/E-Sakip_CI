@@ -3,6 +3,8 @@
 namespace App\Controllers\Concerns;
 
 use App\Models\Opd\IkuRevisiModel;
+use App\Services\Version\IzinSuntingService;
+use App\Services\Version\VersionScope;
 use Throwable;
 
 /**
@@ -39,6 +41,8 @@ trait IkuRevisiTrait
 {
     protected ?IkuRevisiModel $revisiModel = null;
 
+    private ?IzinSuntingService $izinService = null;
+
     protected function revisi(): IkuRevisiModel
     {
         return $this->revisiModel ??= new IkuRevisiModel();
@@ -70,6 +74,282 @@ trait IkuRevisiTrait
      * Pastikan sebuah revisi memang milik lingkup pengguna ini.
      * Pencegah IDOR: id revisi dari URL tidak pernah dipercaya.
      */
+    /* =========================================================
+     * IZIN SUNTING REVISI YANG SUDAH BERLAKU
+     *
+     * Alurnya sengaja SAMA PERSIS dengan Renstra, dan memakai mesin yang sama
+     * (`dokumen_izin_sunting` + IzinSuntingService) — tabelnya memang sudah
+     * generik lewat kolom `modul`, dan VersionScope sudah mengenal MODUL_IKU.
+     * Tidak ada tabel, service, atau antrean baru; yang ditambahkan hanya
+     * pemetaan dari sebuah revisi IKU ke lingkupnya.
+     *
+     * MENGAPA REVISI BERLAKU TERKUNCI
+     *
+     * Revisi yang sudah disahkan adalah arsip: isinya sudah diterapkan ke IKU
+     * berjalan, dan LAKIP tahun berjalan menilai dengan angka itu. Membukanya
+     * tanpa jejak berarti angka penilaian bisa berubah setelah dinilai.
+     * Karena itu kuncinya hanya boleh dibuka lewat keputusan tercatat —
+     * siapa meminta, alasannya apa, siapa yang menyetujui.
+     *
+     * YANG TIDAK IKUT TERBUKA
+     *
+     * Revisi `superseded` tetap terkunci walau ada izin. Ia sudah digantikan
+     * revisi yang lebih baru; menyuntingnya berarti mengoreksi dokumen yang
+     * bukan lagi acuan siapa pun, sementara yang sedang dipakai dibiarkan
+     * salah. Laporan LAKIP yang sudah difinalkan juga tidak ikut berubah —
+     * angkanya sudah disalin ke snapshot, bukan dibaca ulang dari sini.
+     * =======================================================*/
+
+    /** Lingkup versi untuk satu revisi IKU; null bila revisinya tidak sah. */
+    private function revisiScope(?array $revisi): ?VersionScope
+    {
+        if ($revisi === null) {
+            return null;
+        }
+
+        $opdId = $revisi['opd_id'] === null ? null : (int) $revisi['opd_id'];
+
+        try {
+            return new VersionScope(
+                VersionScope::MODUL_IKU,
+                $opdId === null ? VersionScope::SCOPE_KABUPATEN : VersionScope::SCOPE_OPD,
+                $opdId,
+                (int) $revisi['tahun_mulai'],
+                (int) $revisi['tahun_akhir']
+            );
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    private function izin(): IzinSuntingService
+    {
+        return $this->izinService ??= new IzinSuntingService();
+    }
+
+    private function bolehMintaIzin(): bool
+    {
+        return function_exists('user_can') && user_can('iku.izin_sunting.request');
+    }
+
+    /**
+     * Keadaan kunci satu revisi: terkunci atau tidak, dan apa langkah
+     * berikutnya yang masuk akal.
+     *
+     * @return array{terkunci:bool, izin:?array, boleh_minta:bool,
+     *               boleh_tarik:bool, sedang_disunting:bool, alasan:?string}
+     */
+    private function revisiKeadaanIzin(?array $revisi): array
+    {
+        $kosong = [
+            'terkunci'         => false,
+            'izin'             => null,
+            'boleh_minta'      => false,
+            'boleh_tarik'      => false,
+            'sedang_disunting' => false,
+            'alasan'           => null,
+        ];
+
+        if ($revisi === null) {
+            return $kosong;
+        }
+
+        $status = (string) $revisi['status'];
+
+        // Draft & menunggu punya jalurnya sendiri (sunting langsung / tarik
+        // pengajuan); izin sunting tidak berlaku di sana.
+        if ($status !== IkuRevisiModel::STATUS_BERLAKU
+            && $status !== IkuRevisiModel::STATUS_SUPERSEDED) {
+            return $kosong;
+        }
+
+        if ($status === IkuRevisiModel::STATUS_SUPERSEDED) {
+            return array_merge($kosong, [
+                'terkunci' => true,
+                'alasan'   => 'Revisi ini sudah digantikan revisi yang lebih baru, sehingga '
+                    . 'terkunci permanen. Perbaikan dilakukan pada revisi yang sedang berlaku.',
+            ]);
+        }
+
+        $scope = $this->revisiScope($revisi);
+
+        if ($scope === null || ! $this->izin()->siap()) {
+            return array_merge($kosong, [
+                'terkunci' => true,
+                'alasan'   => 'Revisi yang sudah berlaku adalah arsip dan tidak bisa disunting.',
+            ]);
+        }
+
+        $izin = $this->izin()->berjalan($scope);
+
+        // Izin melekat pada REVISI tertentu, bukan sekadar pada periodenya.
+        // Tanpa pemeriksaan ini, satu izin untuk revisi 2 ikut membuka revisi
+        // 1 yang kebetulan seperiode — dua dokumen berbeda, satu keputusan.
+        $untukRevisiIni = $izin !== null
+            && (int) ($izin['version_id'] ?? 0) === (int) $revisi['id'];
+
+        if ($untukRevisiIni && $izin['status'] === IzinSuntingService::STATUS_DISETUJUI) {
+            return array_merge($kosong, [
+                'terkunci'         => false,
+                'izin'             => $izin,
+                'sedang_disunting' => true,
+                'alasan'           => 'Izin sunting sudah disetujui Admin Kabupaten. Perbaiki '
+                    . 'seperlunya, lalu sahkan ulang agar IKU berjalan ikut diperbarui.',
+            ]);
+        }
+
+        if ($untukRevisiIni && $izin['status'] === IzinSuntingService::STATUS_PENDING) {
+            return array_merge($kosong, [
+                'terkunci'    => true,
+                'izin'        => $izin,
+                'boleh_tarik' => $this->bolehMintaIzin(),
+                'alasan'      => 'Permohonan izin sunting sedang menunggu keputusan Admin '
+                    . 'Kabupaten. Selama itu revisi ini masih terkunci.',
+            ]);
+        }
+
+        return array_merge($kosong, [
+            'terkunci'    => true,
+            'izin'        => $izin !== null && ! $untukRevisiIni ? null : $izin,
+            'boleh_minta' => $this->bolehMintaIzin() && $izin === null,
+            'alasan'      => $izin !== null && ! $untukRevisiIni
+                ? 'Sudah ada permohonan izin sunting berjalan untuk periode ini pada revisi '
+                  . 'yang lain. Selesaikan dulu permohonan itu.'
+                : 'Revisi ini sudah berlaku, sehingga terkunci. Ajukan izin sunting bila ada '
+                  . 'yang perlu diperbaiki; setelah disetujui Admin Kabupaten, revisi ini bisa '
+                  . 'disunting seperti biasa.',
+        ]);
+    }
+
+    /** Bolehkah isi revisi ini diubah sekarang. */
+    private function revisiBolehDisunting(array $revisi): bool
+    {
+        if ($revisi['status'] === IkuRevisiModel::STATUS_DRAFT) {
+            return true;
+        }
+
+        return ! empty($this->revisiKeadaanIzin($revisi)['sedang_disunting']);
+    }
+
+    /** POST: OPD memohon kunci revisi berlaku dibuka. */
+    public function revisiMintaIzin($id = null)
+    {
+        if (! $this->bolehMintaIzin()) {
+            return redirect()->to($this->urlRevisi())
+                ->with('error', 'Anda tidak berwenang mengajukan izin sunting IKU.');
+        }
+
+        $revisi = $this->revisi()->ambil((int) $id);
+
+        if (! $this->revisiMilikLingkup($revisi)) {
+            return redirect()->to($this->urlRevisi())->with('error', 'Revisi tidak ditemukan.');
+        }
+
+        $keadaan = $this->revisiKeadaanIzin($revisi);
+
+        // Memohon izin atas revisi yang memang sudah bisa disunting hanya
+        // melahirkan permohonan yang tak pernah dipakai, dan mengotori antrean
+        // Admin Kabupaten.
+        if (empty($keadaan['boleh_minta'])) {
+            return redirect()->to($this->urlRevisi('/lihat/' . (int) $id))
+                ->with('error', $keadaan['alasan']
+                    ?? 'Revisi ini tidak dalam keadaan memerlukan izin sunting.');
+        }
+
+        $alasan = trim((string) $this->request->getPost('alasan'));
+
+        try {
+            $this->izin()->ajukan(
+                $this->revisiScope($revisi),
+                $alasan,
+                $this->penggunaRevisi(),
+                (int) $revisi['id']
+            );
+        } catch (Throwable $e) {
+            return redirect()->to($this->urlRevisi('/lihat/' . (int) $id))->with('error', $e->getMessage());
+        }
+
+        return redirect()->to($this->urlRevisi('/lihat/' . (int) $id))->with('success',
+            'Permohonan izin sunting dikirim. Setelah disetujui Admin Kabupaten, revisi ini '
+            . 'bisa disunting seperti biasa.');
+    }
+
+    /** POST: menarik kembali permohonan yang belum diputus. */
+    public function revisiTarikIzin($id = null)
+    {
+        if (! $this->bolehMintaIzin()) {
+            return redirect()->to($this->urlRevisi())
+                ->with('error', 'Anda tidak berwenang menarik permohonan izin sunting.');
+        }
+
+        $izin = $this->izin()->ambil((int) $id);
+
+        // Lingkup diperiksa dari SESI, bukan dari permintaan: tanpa ini, id
+        // permohonan OPD lain bisa ditarik hanya dengan mengarang angkanya.
+        $opdSesi = $this->revisiOpdId();
+
+        if ($izin === null
+            || $izin['modul'] !== VersionScope::MODUL_IKU
+            || (int) $izin['opd_key'] !== (int) $opdSesi) {
+            return redirect()->to($this->urlRevisi())
+                ->with('error', 'Permohonan tidak ditemukan pada lingkup Anda.');
+        }
+
+        $kembali = $this->urlRevisi('/lihat/' . (int) ($izin['version_id'] ?? 0));
+
+        try {
+            $this->izin()->tarik((int) $id, $this->penggunaRevisi());
+        } catch (Throwable $e) {
+            return redirect()->to($kembali)->with('error', $e->getMessage());
+        }
+
+        return redirect()->to($kembali)->with('success', 'Permohonan izin sunting ditarik.');
+    }
+
+    /** POST: terapkan hasil penyuntingan ke IKU berjalan, lalu tutup izinnya. */
+    public function revisiSelesaikanIzin($id = null)
+    {
+        if (! $this->bolehMintaIzin()) {
+            return redirect()->to($this->urlRevisi())
+                ->with('error', 'Anda tidak berwenang menyelesaikan izin sunting.');
+        }
+
+        $revisi = $this->revisi()->ambil((int) $id);
+
+        if (! $this->revisiMilikLingkup($revisi)) {
+            return redirect()->to($this->urlRevisi())->with('error', 'Revisi tidak ditemukan.');
+        }
+
+        $kembali = $this->urlRevisi('/lihat/' . (int) $id);
+
+        if (empty($this->revisiKeadaanIzin($revisi)['sedang_disunting'])) {
+            return redirect()->to($kembali)
+                ->with('error', 'Tidak ada izin sunting berjalan untuk revisi ini.');
+        }
+
+        try {
+            // Urutannya penting: terapkan DULU, tutup izin belakangan. Kalau
+            // terbalik dan penerapan gagal, izinnya sudah tertutup sementara
+            // arsip dan IKU berjalan berbeda isi — dan tidak ada lagi jalan
+            // membetulkannya tanpa memohon izin baru.
+            $this->revisi()->terapkanUlang((int) $id);
+            $this->izin()->selesaikan($this->revisiScope($revisi));
+        } catch (Throwable $e) {
+            return redirect()->to($kembali)->with('error', $e->getMessage());
+        }
+
+        return redirect()->to($kembali)->with('success',
+            'Perbaikan diterapkan ke IKU berjalan dan izin sunting ditutup. Laporan LAKIP '
+            . 'yang sudah difinalkan tidak ikut berubah.');
+    }
+
+    private function penggunaRevisi(): ?int
+    {
+        $id = session()->get('user_id') ?? session()->get('id');
+
+        return $id === null ? null : (int) $id;
+    }
+
     private function revisiMilikLingkup(?array $revisi): bool
     {
         if (! $revisi) {
@@ -124,6 +404,7 @@ trait IkuRevisiTrait
             'konflik'        => $konflik,
             'bolehRevisi'    => $this->bolehRevisi(),
             'bolehSahkan'    => $this->bolehSahkanRevisi(),
+            'perluVerifikasi' => $this->revisiPerluVerifikasi(),
             'baseUrl'        => $this->revisiBaseUrl(),
             'tahunSekarang'  => (int) date('Y'),
         ]);
@@ -241,6 +522,7 @@ trait IkuRevisiTrait
             'isi'     => $this->revisi()->isiRevisi((int) $id, true),
             'years'   => range((int) $revisi['tahun_mulai'], (int) $revisi['tahun_akhir']),
             'baseUrl' => $this->revisiBaseUrl(),
+            'keadaanIzin'    => $this->revisiKeadaanIzin($revisi),
         ]);
     }
 
@@ -256,10 +538,14 @@ trait IkuRevisiTrait
             return redirect()->to($this->urlRevisi())->with('error', 'Revisi tidak ditemukan.');
         }
 
-        if ($revisi['status'] !== IkuRevisiModel::STATUS_DRAFT) {
+        $keadaanIzin = $this->revisiKeadaanIzin($revisi);
+
+        if (! $this->revisiBolehDisunting($revisi)) {
             return redirect()->to($this->urlRevisi('/lihat/' . (int) $id))->with(
                 'error',
-                'Hanya draft yang bisa disunting. Revisi yang sudah berlaku adalah arsip dan tidak boleh diubah.'
+                $keadaanIzin['alasan']
+                    ?? 'Hanya draft yang bisa disunting. Revisi yang sudah berlaku adalah arsip '
+                       . 'dan tidak boleh diubah.'
             );
         }
 
@@ -272,7 +558,9 @@ trait IkuRevisiTrait
             'satuan_options' => $this->ikuModel->getSatuanOptions(),
             'indikatorLive'  => $this->indikatorLiveUntukLineage($revisi),
             'bolehSahkan'    => $this->bolehSahkanRevisi(),
+            'perluVerifikasi' => $this->revisiPerluVerifikasi(),
             'baseUrl'        => $this->revisiBaseUrl(),
+            'keadaanIzin'    => $keadaanIzin,
         ]);
     }
 
@@ -319,18 +607,43 @@ trait IkuRevisiTrait
             return redirect()->to($this->urlRevisi())->with('error', 'Revisi tidak ditemukan.');
         }
 
-        if ($revisi['status'] !== IkuRevisiModel::STATUS_DRAFT) {
+        $keadaanIzin = $this->revisiKeadaanIzin($revisi);
+        $bawahIzin   = ! empty($keadaanIzin['sedang_disunting']);
+
+        if (! $this->revisiBolehDisunting($revisi)) {
             return redirect()->to($this->urlRevisi('/lihat/' . $revisiId))
-                ->with('error', 'Hanya draft yang bisa disunting.');
+                ->with('error', $keadaanIzin['alasan'] ?? 'Hanya draft yang bisa disunting.');
         }
 
         $baris = (array) ($this->request->getPost('baris') ?? []);
 
         try {
-            $this->revisi()->simpanSuntinganDraft($revisiId, $baris, $this->request->getPost('baru') ?? []);
+            $this->revisi()->simpanSuntinganDraft(
+                $revisiId,
+                $baris,
+                $this->request->getPost('baru') ?? [],
+                $bawahIzin
+            );
 
-            return redirect()->to($this->urlRevisi('/sunting/' . $revisiId))
-                ->with('success', 'Draft revisi disimpan. IKU berjalan belum berubah.');
+            // Menyunting di bawah izin TIDAK langsung mengubah IKU berjalan.
+            // Penerapannya dijadikan langkah tersendiri supaya penyuntingan
+            // bisa dilakukan beberapa kali, dan supaya saat yang tepat untuk
+            // menutup izin ditentukan pemakai — bukan oleh klik "simpan"
+            // pertama yang kebetulan terjadi.
+            if ($bawahIzin) {
+                return redirect()->to($this->urlRevisi('/lihat/' . $revisiId))->with(
+                    'success',
+                    'Perbaikan tersimpan pada arsip revisi. IKU berjalan BELUM berubah — '
+                    . 'tekan "Selesai & Terapkan" bila perbaikannya sudah lengkap.'
+                );
+            }
+
+            // Pulang ke DAFTAR revisi, bukan kembali ke form. Dari daftar,
+            // langkah berikutnya (Ajukan / Pratinjau / sunting lagi) terlihat
+            // semua — kembali ke form hanya menyisakan pertanyaan "lalu apa".
+            return redirect()->to($this->urlRevisi())
+                ->with('success', 'Draft revisi disimpan. IKU berjalan belum berubah — '
+                    . 'ajukan revisinya dari daftar bila sudah selesai.');
         } catch (Throwable $e) {
             return redirect()->back()->withInput()->with('error', $e->getMessage());
         }
@@ -340,8 +653,86 @@ trait IkuRevisiTrait
      * SAHKAN & BATALKAN
      * =======================================================*/
 
+
+    /* =========================================================
+     * PENGAJUAN REVISI (sisi penyusun)
+     *
+     * IKU tingkat Kabupaten tetap disahkan penyusunnya sendiri — dokumennya
+     * memang milik mereka. IKU OPD melewati Admin Kabupaten, sebagaimana
+     * Renstra: dokumen yang mengikat sebuah OPD sebaiknya diperiksa pihak di
+     * luarnya.
+     * =======================================================*/
+
+    /** Apakah lingkup ini wajib lewat verifikasi Admin Kabupaten. */
+    protected function revisiPerluVerifikasi(): bool
+    {
+        return $this->revisiPermPrefix() === 'iku_opd';
+    }
+
+    public function revisiAjukan($id = null)
+    {
+        if (! $this->bolehRevisi()) {
+            return redirect()->to($this->urlRevisi())
+                ->with('error', 'Anda tidak berwenang mengajukan revisi IKU.');
+        }
+
+        $revisi = $this->revisi()->ambil((int) $id);
+
+        if (! $this->revisiMilikLingkup($revisi)) {
+            return redirect()->to($this->urlRevisi())->with('error', 'Revisi tidak ditemukan.');
+        }
+
+        if (! $this->revisiPerluVerifikasi()) {
+            return redirect()->to($this->urlRevisi())
+                ->with('error', 'Revisi pada lingkup ini disahkan langsung, tidak lewat pengajuan.');
+        }
+
+        try {
+            $this->revisi()->ajukan((int) $id, (int) session()->get('user_id') ?: null);
+        } catch (Throwable $e) {
+            return redirect()->to($this->urlRevisi())->with('error', $e->getMessage());
+        }
+
+        return redirect()->to($this->urlRevisi())->with('success',
+            'Revisi diajukan untuk disahkan Admin Kabupaten. Selama menunggu, isinya '
+            . 'tidak bisa disunting — tarik pengajuan bila perlu diperbaiki.');
+    }
+
+    public function revisiTarik($id = null)
+    {
+        if (! $this->bolehRevisi()) {
+            return redirect()->to($this->urlRevisi())
+                ->with('error', 'Anda tidak berwenang menarik pengajuan revisi.');
+        }
+
+        $revisi = $this->revisi()->ambil((int) $id);
+
+        if (! $this->revisiMilikLingkup($revisi)) {
+            return redirect()->to($this->urlRevisi())->with('error', 'Revisi tidak ditemukan.');
+        }
+
+        try {
+            $this->revisi()->tarikPengajuan((int) $id);
+        } catch (Throwable $e) {
+            return redirect()->to($this->urlRevisi())->with('error', $e->getMessage());
+        }
+
+        return redirect()->to($this->urlRevisi())
+            ->with('success', 'Pengajuan ditarik. Revisi kembali menjadi draft dan bisa disunting.');
+    }
+
     public function revisiSahkan($id = null)
     {
+        // Lingkup yang wajib diverifikasi tidak boleh mengesahkan sendiri,
+        // sekalipun izinnya kelak diberikan kembali. Menyandarkan penguncian
+        // ini semata pada pemberian izin berarti satu baris di tabel
+        // role_permissions bisa membatalkan seluruh alur verifikasi.
+        if ($this->revisiPerluVerifikasi()) {
+            return redirect()->to($this->urlRevisi())->with('error',
+                'Revisi IKU OPD disahkan Admin Kabupaten. Ajukan revisinya, '
+                . 'lalu tunggu keputusan.');
+        }
+
         if (! $this->bolehSahkanRevisi()) {
             return redirect()->to($this->urlRevisi())
                 ->with('error', 'Anda tidak berwenang mengesahkan revisi IKU.');

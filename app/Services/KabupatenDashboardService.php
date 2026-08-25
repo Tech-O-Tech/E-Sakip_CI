@@ -32,6 +32,22 @@ class KabupatenDashboardService
     /** Porsi indikator belum valid yang membuat status OPD dinyatakan Belum Valid. */
     private const AMBANG_BELUM_VALID = 0.5;
 
+    /**
+     * Kegentingan panel prioritas - makin kecil makin atas.
+     *
+     * Urutannya SENGAJA menaruh isu KINERJA di atas gap KELENGKAPAN DATA.
+     * Sebelumnya kebalikannya (gap PK Bupati = 25, OPD kritis = 30), sehingga
+     * lima belas indikator PK Bupati yang belum punya Rencana Aksi mendorong
+     * seluruh Perangkat Daerah bermasalah keluar dari lima besar.
+     */
+    private const SEV_PK_BUPATI_KRITIS  = 10;
+    private const SEV_OPD_KRITIS        = 20;
+    private const SEV_SERAP_TINGGI      = 30;
+    private const SEV_PK_BUPATI_FORMULA = 40;
+    private const SEV_PK_BUPATI_DATA    = 45;
+    private const SEV_OPD_BELUM_UPDATE  = 50;
+    private const SEV_VERIFIKASI        = 60;
+
     /** Penyerapan anggaran (%) yang dianggap tinggi pada rule "serap tinggi, capaian rendah". */
     private const PENYERAPAN_TINGGI = 60.0;
 
@@ -110,14 +126,33 @@ class KabupatenDashboardService
         ];
     }
 
-    /** @return array<int, array<string, mixed>> */
+    /**
+     * Perangkat Daerah yang masuk agregat dashboard eksekutif.
+     *
+     * Kecamatan, kelurahan, dan UPT DIKELUARKAN: jalur pembinaan dan dokumen
+     * PK-nya berbeda (PK Camat, jenjang Pelaksana), sehingga bila dicampur ke
+     * agregat lintas Perangkat Daerah angka "Capaian Perangkat Daerah",
+     * "OPD Belum Update", dan Prioritas Pimpinan menjadi tidak sebanding.
+     * Klasifikasinya dibaca dari kolom `opd.jenis` — DATA yang bisa dikoreksi
+     * Super Admin lewat Master OPD, bukan tebakan dari `pk.jenis` atau pola
+     * nama (lihat OpdModel::EXCLUDED_EXECUTIVE_JENIS).
+     *
+     * Bila kolom `jenis` belum ada (basis data yang belum dimigrasi), daftar
+     * dikembalikan apa adanya — dashboard tetap jalan, hanya belum tersaring.
+     *
+     * @return array<int, array<string, mixed>>
+     */
     public function opdOptions(): array
     {
-        return $this->db->table('opd')
+        $b = $this->db->table('opd')
             ->select('id, nama_opd')
-            ->whereNotIn('id', OpdModel::EXCLUDED_OPD_IDS)
-            ->orderBy('nama_opd', 'ASC')
-            ->get()->getResultArray();
+            ->whereNotIn('id', OpdModel::EXCLUDED_OPD_IDS);
+
+        if ($this->db->fieldExists('jenis', 'opd')) {
+            $b->whereNotIn('jenis', OpdModel::EXCLUDED_EXECUTIVE_JENIS);
+        }
+
+        return $b->orderBy('nama_opd', 'ASC')->get()->getResultArray();
     }
 
     private function namaOpd(int $opdId): ?string
@@ -430,7 +465,14 @@ class KabupatenDashboardService
         $lastUpdate = $waktu === [] ? null : max($waktu);
         $hari       = $lastUpdate !== null ? (int) floor((time() - strtotime($lastUpdate)) / 86400) : null;
 
-        $update = $this->statusUpdate($total, $monevAda, $tanpaCapaianPeriode, $hari, $triwulan);
+        $update = $this->statusUpdate(
+            $total,
+            $monevAda,
+            $tanpaCapaianPeriode,
+            $hari,
+            $triwulan,
+            dash_triwulan_selesai($tahun, $triwulan)
+        );
 
         $ringkas = [
             'opd_id'          => $opdId,
@@ -466,8 +508,14 @@ class KabupatenDashboardService
      *
      * @return array{code: string, label: string, keterangan: string, belum_update: bool}
      */
-    private function statusUpdate(int $total, int $monevAda, int $tanpaPeriode, ?int $hari, int $triwulan): array
-    {
+    private function statusUpdate(
+        int $total,
+        int $monevAda,
+        int $tanpaPeriode,
+        ?int $hari,
+        int $triwulan,
+        bool $periodeSelesai = false
+    ): array {
         $tw = capaianRomawi($triwulan);
 
         if ($total === 0) {
@@ -482,11 +530,26 @@ class KabupatenDashboardService
         if ($tanpaPeriode > 0) {
             return ['code' => 'belum_lengkap', 'label' => 'Belum lengkap', 'keterangan' => $tanpaPeriode . ' indikator belum diisi pada Triwulan ' . $tw . '.', 'belum_update' => true];
         }
-        if ($hari !== null && $hari > self::HARI_TERLAMBAT) {
-            return ['code' => 'terlambat', 'label' => 'Lama tidak diperbarui', 'keterangan' => 'Pembaruan terakhir ' . $hari . ' hari lalu.', 'belum_update' => true];
+        // Sampai di sini seluruh indikator periode ini SUDAH terisi.
+        //
+        // Ambang "lama tidak diperbarui" hanya bermakna selama triwulannya
+        // masih BERJALAN — di situ masih mungkin ada capaian baru yang belum
+        // dilaporkan. Untuk triwulan yang sudah tutup dan datanya lengkap,
+        // tidak ada apa pun yang perlu diperbarui; menandainya "belum update"
+        // membuat 20 Perangkat Daerah menyala oranye selamanya hanya karena
+        // berkasnya tidak disentuh lagi setelah pelaporan selesai.
+        if (!$periodeSelesai && $hari !== null && $hari > self::HARI_TERLAMBAT) {
+            return ['code' => 'terlambat', 'label' => 'Lama tidak diperbarui', 'keterangan' => 'Triwulan ' . $tw . ' masih berjalan dan pembaruan terakhir ' . $hari . ' hari lalu.', 'belum_update' => true];
         }
 
-        return ['code' => 'terkini', 'label' => 'Terkini', 'keterangan' => 'Data periode ini sudah terisi.', 'belum_update' => false];
+        return [
+            'code'         => 'terkini',
+            'label'        => $periodeSelesai ? 'Lengkap' : 'Terkini',
+            'keterangan'   => $periodeSelesai
+                ? 'Capaian Triwulan ' . $tw . ' sudah lengkap dan periodenya telah ditutup.'
+                : 'Capaian Triwulan ' . $tw . ' sudah terisi.',
+            'belum_update' => false,
+        ];
     }
 
     /**
@@ -513,9 +576,13 @@ class KabupatenDashboardService
         $kritis  = (int) $ringkas['kritis'];
         $belumUpdate = (bool) ($ringkas['update']['belum_update'] ?? false);
 
-        $bungkus = static function (array $status, string $alasan) use ($kritis, $invalid, $ringkas): array {
+        $bungkus = static function (array $status, string $alasan, bool $karenaData = false) use ($kritis, $invalid, $ringkas): array {
             return $status + [
                 'reason'                   => $alasan,
+                // Membedakan "kritis karena kinerja" (persentase memang rendah)
+                // dari "kritis karena data" (ada indikator kritis TAPI datanya
+                // belum diperbarui, jadi persentase OPD-nya belum ada).
+                'critical_by_data'         => $karenaData,
                 'critical_indicator_count' => $kritis,
                 'invalid_indicator_count'  => $invalid,
                 'late_update_count'        => (int) ($ringkas['indikator_belum_input'] ?? 0),
@@ -527,25 +594,40 @@ class KabupatenDashboardService
         }
 
         if ($kritis > 0 && $belumUpdate) {
+            // Dulu memakai getAchievementStatus(0.0) — memalsukan capaian 0%
+            // untuk memancing status Kritis. Sekarang ambang "critical" dibaca
+            // langsung dari tabel, dan ditandai critical_by_data supaya tidak
+            // tercampur dengan OPD yang capaiannya memang rendah.
             return $bungkus(
-                getAchievementStatus(0.0),
-                $kritis . ' indikator kritis dan data belum diperbarui (' . $ringkas['update']['keterangan'] . ')'
+                $this->statusAmbang('critical'),
+                $kritis . ' indikator kritis dan data belum diperbarui (' . $ringkas['update']['keterangan'] . ')',
+                true
             );
         }
 
         if ($kritis > 0) {
             // "Minimal Perlu Perhatian": indikator kritis tidak boleh tertutup
             // oleh rata-rata yang terlihat baik.
-            $status = $this->statusMinimalPerhatian();
-
-            return $bungkus($status, $kritis . ' indikator berstatus kritis.');
+            return $bungkus(
+                $this->statusAmbang('attention'),
+                $kritis . ' dari ' . $total . ' indikator berstatus kritis.'
+            );
         }
 
         if ($invalid > 0) {
-            $porsi = $invalid / $total;
-            $alasan = $porsi >= self::AMBANG_BELUM_VALID
-                ? 'Sebagian besar indikator (' . $invalid . ' dari ' . $total . ') belum dapat dihitung.'
-                : $invalid . ' dari ' . $total . ' indikator belum dapat dihitung.';
+            // "Sebagian besar" hanya masuk akal bila memang ada sebagian yang
+            // lain. Saat SELURUH indikator tidak valid — kasus paling umum —
+            // kalimatnya harus menyebut seluruhnya, bukan "sebagian besar
+            // (1 dari 1)".
+            if ($invalid === $total) {
+                $alasan = $total === 1
+                    ? 'Satu-satunya indikator belum dapat dihitung.'
+                    : 'Seluruh ' . $total . ' indikator belum dapat dihitung.';
+            } elseif ($invalid / $total >= self::AMBANG_BELUM_VALID) {
+                $alasan = 'Sebagian besar indikator (' . $invalid . ' dari ' . $total . ') belum dapat dihitung.';
+            } else {
+                $alasan = $invalid . ' dari ' . $total . ' indikator belum dapat dihitung.';
+            }
 
             return $bungkus(dash_status_nonnumeric('belum_valid'), $alasan);
         }
@@ -556,20 +638,30 @@ class KabupatenDashboardService
         );
     }
 
-    /** Status ambang "Perlu Perhatian" (dibaca dari tabel, bukan hardcode). */
-    private function statusMinimalPerhatian(): array
+    /**
+     * Status ambang bernama, dibaca dari tabel `dashboard_status_thresholds`
+     * (bukan hardcode, dan bukan hasil memalsukan persentase).
+     *
+     * Bila Super Admin menonaktifkan ambang yang diminta, jatuh ke ambang
+     * terendah yang masih aktif agar tetap ada penanda kewaspadaan.
+     */
+    private function statusAmbang(string $code): array
     {
-        foreach (dash_threshold_rows() as $t) {
-            if ($t['code'] === 'attention') {
+        $aktif = dash_threshold_rows();
+
+        foreach ($aktif as $t) {
+            if ($t['code'] === $code) {
                 return dash_status_from_row($t);
             }
         }
 
-        // Bila Super Admin menonaktifkan status itu, pakai ambang terendah kedua
-        // yang masih aktif agar tetap ada penanda kewaspadaan.
-        $aktif = dash_threshold_rows();
+        if ($aktif === []) {
+            return dash_status_nonnumeric('belum_valid');
+        }
 
-        return dash_status_from_row($aktif[min(1, count($aktif) - 1)] ?? $aktif[0]);
+        return dash_status_from_row($code === 'critical'
+            ? $aktif[0]
+            : ($aktif[min(1, count($aktif) - 1)] ?? $aktif[0]));
     }
 
     /**
@@ -588,6 +680,8 @@ class KabupatenDashboardService
             'per_status'   => [],
         ];
 
+        $out['kritis_data'] = 0;
+
         foreach ($statuses as $s) {
             if ($s['can_compute']) {
                 $out['dapat_dinilai']++;
@@ -596,9 +690,16 @@ class KabupatenDashboardService
             }
             $code = $s['status']['code'];
             $out['per_status'][$code] = ($out['per_status'][$code] ?? 0) + 1;
+            // OPD yang berstatus kritis PADAHAL capaiannya belum bisa dihitung
+            // (kritis karena data belum diperbarui) dilaporkan terpisah supaya
+            // tidak terbaca sebagai kinerja yang benar-benar rendah.
+            if ($code === 'critical' && !empty($s['status']['critical_by_data'])) {
+                $out['kritis_data']++;
+            }
         }
 
-        $out['kritis']     = $out['per_status']['critical'] ?? 0;
+        $out['kritis']         = $out['per_status']['critical'] ?? 0;
+        $out['kritis_kinerja'] = $out['kritis'] - $out['kritis_data'];
         $out['perhatian']  = $out['per_status']['attention'] ?? 0;
         $out['terkendali'] = ($out['per_status']['near_target'] ?? 0)
             + ($out['per_status']['achieved'] ?? 0)
@@ -619,6 +720,7 @@ class KabupatenDashboardService
     {
         $daftar = [];
         $belumPeriode = 0;
+        $belumLengkap = 0;
         $terlambat = 0;
         $belumPernah = 0;
         $indikatorBelum = 0;
@@ -629,11 +731,15 @@ class KabupatenDashboardService
                 continue;
             }
             $daftar[] = $s;
+            // Empat kondisi ini butuh tindak lanjut yang BERBEDA, jadi tidak
+            // boleh dilebur ke satu angka: belum pernah input sama sekali,
+            // belum menyentuh periode ini, baru sebagian, atau sudah lengkap
+            // tapi lama tidak disentuh.
             switch ($s['update']['code']) {
-                case 'belum_pernah':  $belumPernah++; break;
-                case 'belum_periode':
-                case 'belum_lengkap': $belumPeriode++; break;
-                case 'terlambat':     $terlambat++;   break;
+                case 'belum_pernah':  $belumPernah++;  break;
+                case 'belum_periode': $belumPeriode++; break;
+                case 'belum_lengkap': $belumLengkap++; break;
+                case 'terlambat':     $terlambat++;    break;
             }
         }
 
@@ -644,6 +750,7 @@ class KabupatenDashboardService
             'total'             => count($daftar),
             'belum_pernah'      => $belumPernah,
             'belum_periode'     => $belumPeriode,
+            'belum_lengkap'     => $belumLengkap,
             'terlambat'         => $terlambat,
             'indikator_belum'   => $indikatorBelum,
             'batas_hari'        => self::HARI_TERLAMBAT,
@@ -687,10 +794,28 @@ class KabupatenDashboardService
             $segmen[$code]['count']++;
         }
 
+        // "Dinilai" hanya sah untuk OPD yang punya indikator PK; yang tidak
+        // punya dokumen PK sama sekali dilaporkan terpisah, bukan diklaim
+        // ikut dinilai.
+        $tanpaPk = 0;
+        foreach ($statuses as $s) {
+            if ((int) $s['indikator'] === 0) {
+                $tanpaPk++;
+            }
+        }
+        $dinilai = count($statuses) - $tanpaPk;
+
+        $caption = $dinilai . ' dari ' . count($statuses) . ' Perangkat Daerah punya indikator PK pada periode ini';
+        $caption .= $tanpaPk > 0
+            ? ' — ' . $tanpaPk . ' belum memiliki dokumen PK.'
+            : '.';
+
         return [
-            'segments' => array_values(array_filter($segmen, static fn ($s) => $s['count'] > 0)),
-            'total'    => count($statuses),
-            'caption'  => count($statuses) . ' Perangkat Daerah dinilai pada periode ini.',
+            'segments'  => array_values(array_filter($segmen, static fn ($s) => $s['count'] > 0)),
+            'total'     => count($statuses),
+            'dinilai'   => $dinilai,
+            'tanpa_pk'  => $tanpaPk,
+            'caption'   => $caption,
         ];
     }
 
@@ -762,68 +887,32 @@ class KabupatenDashboardService
         // role bupati tidak pernah diarahkan ke halaman administratif.
         $urlBupatiMonev = base_url($this->linkArea . '/monev?tahun=' . $tahun);
         $urlBupatiRen   = base_url($this->linkArea . '/target_renaksi?tahun=' . $tahun);
+        $tw             = capaianRomawi($triwulan);
 
-        // 1. Indikator PK Bupati kritis
+        // 1. Indikator PK Bupati kritis (isu KINERJA - paling atas)
         foreach ($pkBupati['indikator'] as $i) {
             if (!$i['is_valid'] || $i['status']['code'] !== 'critical') {
                 continue;
             }
-            $out[] = $this->insight(10, 'pk_bupati_kritis', $i['indikator'],
+            $out[] = $this->insight(self::SEV_PK_BUPATI_KRITIS, 'pk_bupati_kritis', $i['indikator'],
                 'Realisasi PK berada di bawah target periode (' . $i['percentage_teks'] . ').',
                 $i['status']['name'], $i['status']['color'],
                 $i['pengampu'] === [] ? 'OPD pengampu belum ditetapkan' : count($i['pengampu']) . ' OPD pengampu',
                 $urlBupatiMonev, 'Lihat indikator', ['indikator_id' => $i['indikator_id']]);
         }
 
-        // 2. Formula / metode PK Bupati belum tersedia
-        foreach ($pkBupati['indikator'] as $i) {
-            if ($i['is_valid'] || !in_array((string) $i['reason_code'], ['missing_method', 'missing_formula', 'missing_predicate_scale'], true)) {
-                continue;
-            }
-            $out[] = $this->insight(20, 'pk_bupati_formula', $i['indikator'],
-                (string) $i['reason'], 'Formula belum tersedia', 'abu',
-                'Monitoring Rencana Aksi pendukung tetap dapat dibuka.',
-                $urlBupatiMonev, 'Lihat formula', ['indikator_id' => $i['indikator_id']]);
-        }
-
-        // 3. Indikator PK Bupati belum lengkap datanya
-        foreach ($pkBupati['indikator'] as $i) {
-            if ($i['is_valid'] || in_array((string) $i['reason_code'], ['missing_method', 'missing_formula', 'missing_predicate_scale'], true)) {
-                continue;
-            }
-            $out[] = $this->insight(25, 'pk_bupati_belum_valid', $i['indikator'],
-                (string) $i['reason'], 'Belum dapat dihitung', 'abu',
-                $i['renaksi_count'] === 0 ? 'Rencana Aksi PK Bupati belum disusun.' : 'Rencana Aksi sudah ada, capaian belum lengkap.',
-                $i['renaksi_count'] === 0 ? $urlBupatiRen : $urlBupatiMonev,
-                $i['renaksi_count'] === 0
-                    ? ($this->linkArea === 'bupati' ? 'Lihat Rencana Aksi' : 'Kelola Rencana Aksi')
-                    : 'Buka MONEV',
-                ['indikator_id' => $i['indikator_id']]);
-        }
-
-        // 4. OPD kritis
+        // 2. OPD kritis (isu KINERJA)
         foreach ($statuses as $s) {
             if ($s['status']['code'] !== 'critical') {
                 continue;
             }
-            $out[] = $this->insight(30, 'opd_kritis', $s['nama_opd'],
+            $out[] = $this->insight(self::SEV_OPD_KRITIS, 'opd_kritis', $s['nama_opd'],
                 (string) $s['status']['reason'], $s['status']['name'], $s['status']['color'],
                 $s['kritis'] . ' indikator kritis dari ' . $s['indikator'] . ' indikator.',
                 $this->urlFokus($s['opd_id'], $tahun, $triwulan), 'Fokus OPD', ['opd_id' => $s['opd_id']]);
         }
 
-        // 5. OPD belum update
-        foreach ($statuses as $s) {
-            if (!$s['update']['belum_update'] || $s['status']['code'] === 'critical') {
-                continue;
-            }
-            $out[] = $this->insight(40, 'opd_belum_update', $s['nama_opd'],
-                (string) $s['update']['keterangan'], $s['update']['label'], 'oranye',
-                $s['indikator_belum_input'] . ' indikator belum diperbarui.',
-                $this->urlFokus($s['opd_id'], $tahun, $triwulan), 'Fokus OPD', ['opd_id' => $s['opd_id']]);
-        }
-
-        // 6. Penyerapan tinggi tetapi capaian rendah
+        // 3. Penyerapan tinggi tetapi capaian rendah (KINERJA vs ANGGARAN)
         foreach ($statuses as $s) {
             if (!$s['can_compute'] || $s['penyerapan'] === null) {
                 continue;
@@ -834,7 +923,7 @@ class KabupatenDashboardService
             if (!in_array($s['status']['code'], ['critical', 'attention'], true)) {
                 continue;
             }
-            $out[] = $this->insight(50, 'serap_tinggi_capaian_rendah', $s['nama_opd'],
+            $out[] = $this->insight(self::SEV_SERAP_TINGGI, 'serap_tinggi_capaian_rendah', $s['nama_opd'],
                 'Penyerapan anggaran ' . capaianFormatPersen($s['penyerapan'])
                     . ' sementara capaian kinerja ' . capaianFormatPersen($s['percentage']) . '.',
                 'Perlu ditinjau', 'biru',
@@ -842,10 +931,53 @@ class KabupatenDashboardService
                 $this->urlFokus($s['opd_id'], $tahun, $triwulan), 'Fokus OPD', ['opd_id' => $s['opd_id']]);
         }
 
+        // 4 & 5. Kelengkapan dokumen PK Bupati - DIRINGKAS.
+        //
+        // Satu sebab sistemik (mis. seluruh indikator PK Bupati belum punya
+        // Rencana Aksi) dulu melahirkan satu kartu per indikator, sehingga
+        // panel "Lima Prioritas" terisi lima baris berkalimat persis sama dan
+        // tidak menyisakan ruang untuk isu OPD. Sekarang digabung menjadi SATU
+        // baris bila lebih dari satu indikator mengalaminya.
+        $gapFormula = [];
+        $gapData    = [];
+        foreach ($pkBupati['indikator'] as $i) {
+            if ($i['is_valid']) {
+                continue;
+            }
+            if (in_array((string) $i['reason_code'], ['missing_method', 'missing_formula', 'missing_predicate_scale'], true)) {
+                $gapFormula[] = $i;
+            } else {
+                $gapData[] = $i;
+            }
+        }
+
+        foreach ($this->insightGapPkBupati($gapFormula, 'pk_bupati_formula', self::SEV_PK_BUPATI_FORMULA,
+            'Formula belum tersedia', 'metode/rumus perhitungan belum tersedia',
+            $urlBupatiMonev, 'Lihat formula') as $ins) {
+            $out[] = $ins;
+        }
+
+        foreach ($this->insightGapPkBupati($gapData, 'pk_bupati_belum_valid', self::SEV_PK_BUPATI_DATA,
+            'Belum dapat dihitung', 'Rencana Aksi / capaian belum lengkap',
+            $urlBupatiRen, $this->linkArea === 'bupati' ? 'Lihat Rencana Aksi' : 'Kelola Rencana Aksi') as $ins) {
+            $out[] = $ins;
+        }
+
+        // 6. OPD belum update - keterangannya mengikuti KONDISI SEBENARNYA.
+        foreach ($statuses as $s) {
+            if (!$s['update']['belum_update'] || $s['status']['code'] === 'critical') {
+                continue;
+            }
+            $out[] = $this->insight(self::SEV_OPD_BELUM_UPDATE, 'opd_belum_update', $s['nama_opd'],
+                (string) $s['update']['keterangan'], $s['update']['label'], 'oranye',
+                $this->objekBelumUpdate($s, $tw),
+                $this->urlFokus($s['opd_id'], $tahun, $triwulan), 'Fokus OPD', ['opd_id' => $s['opd_id']]);
+        }
+
         // 7. Status verifikasi (dilaporkan apa adanya)
         $verifikasi = $this->opd->verificationInfo();
         if (!$verifikasi['available'] && $pkBupati['valid'] > 0) {
-            $out[] = $this->insight(60, 'verifikasi', 'Status verifikasi capaian',
+            $out[] = $this->insight(self::SEV_VERIFIKASI, 'verifikasi', 'Status verifikasi capaian',
                 $verifikasi['note'], 'Sementara', 'abu',
                 $pkBupati['valid'] . ' nilai PK Bupati masih berstatus sementara.',
                 $urlBupatiMonev, 'Buka MONEV', []);
@@ -854,6 +986,103 @@ class KabupatenDashboardService
         usort($out, static fn ($a, $b) => $a['severity'] <=> $b['severity'] ?: strcmp($a['judul'], $b['judul']));
 
         return $out;
+    }
+
+    /**
+     * Baris prioritas untuk gap kelengkapan PK Bupati.
+     *
+     * Satu indikator -> satu baris seperti biasa. Lebih dari satu -> SATU baris
+     * ringkas, karena lima baris berkalimat identik tidak menambah informasi
+     * apa pun bagi pimpinan dan menutupi isu Perangkat Daerah.
+     *
+     * @param array<int, array<string, mixed>> $daftar
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function insightGapPkBupati(
+        array $daftar,
+        string $code,
+        int $severity,
+        string $status,
+        string $ringkasan,
+        string $url,
+        string $tombol
+    ): array {
+        if ($daftar === []) {
+            return [];
+        }
+
+        if (count($daftar) === 1) {
+            $i = $daftar[0];
+
+            return [$this->insight($severity, $code, $i['indikator'],
+                (string) $i['reason'], $status, 'abu',
+                $i['renaksi_count'] === 0
+                    ? 'Rencana Aksi PK Bupati belum disusun.'
+                    : 'Rencana Aksi sudah ada, capaian belum lengkap.',
+                $url, $tombol, ['indikator_id' => $i['indikator_id']])];
+        }
+
+        // Alasan yang paling sering muncul dipakai sebagai kalimat utama;
+        // sisanya cukup disebut jumlahnya, bukan diulang satu per satu.
+        $alasan       = [];
+        $tanpaRenaksi = 0;
+        foreach ($daftar as $i) {
+            $teks          = (string) ($i['reason'] ?? '');
+            $alasan[$teks] = ($alasan[$teks] ?? 0) + 1;
+            if ($i['renaksi_count'] === 0) {
+                $tanpaRenaksi++;
+            }
+        }
+        arsort($alasan);
+        $utama = (string) array_key_first($alasan);
+        if (count($alasan) > 1) {
+            $utama .= ' (' . (count($alasan) - 1) . ' alasan lain pada indikator sisanya)';
+        }
+
+        $objek = $tanpaRenaksi === count($daftar)
+            ? 'Seluruhnya belum memiliki Rencana Aksi PK Bupati.'
+            : $tanpaRenaksi . ' dari ' . count($daftar) . ' belum memiliki Rencana Aksi PK Bupati.';
+
+        return [$this->insight($severity, $code,
+            count($daftar) . ' indikator PK Bupati: ' . $ringkasan,
+            $utama, $status, 'abu', $objek, $url, $tombol,
+            ['indikator_id' => array_column($daftar, 'indikator_id')])];
+    }
+
+    /**
+     * Kalimat objek untuk prioritas "OPD belum update".
+     *
+     * DULU selalu memakai `indikator_belum_input`, padahal untuk status
+     * `terlambat` angka itu SELALU 0 - justru artinya periode ini sudah
+     * terisi lengkap, hanya sudah lama tidak disentuh. Akibatnya panel
+     * menulis "0 indikator belum diperbarui".
+     *
+     * @param array<string, mixed> $s
+     */
+    private function objekBelumUpdate(array $s, string $tw): string
+    {
+        $belum = (int) $s['indikator_belum_input'];
+        $total = (int) $s['indikator'];
+
+        switch ((string) $s['update']['code']) {
+            case 'belum_pernah':
+                return $total . ' indikator belum pernah diinput MONEV.';
+
+            case 'belum_periode':
+                return 'Seluruh ' . $total . ' indikator belum diisi pada Triwulan ' . $tw . '.';
+
+            case 'belum_lengkap':
+                return $belum . ' dari ' . $total . ' indikator belum diisi pada Triwulan ' . $tw . '.';
+
+            case 'terlambat':
+                $hari = $s['hari_sejak_update'];
+
+                return 'Triwulan ' . $tw . ' sudah terisi lengkap, tetapi tidak ada pembaruan '
+                    . ($hari === null ? 'sejak lama' : 'selama ' . (int) $hari . ' hari') . '.';
+        }
+
+        return $belum . ' indikator belum diperbarui.';
     }
 
     /** @return array<string, mixed> */
@@ -916,13 +1145,20 @@ class KabupatenDashboardService
                 'indikator_opd'    => 0,
                 'kritis'           => 0,
                 'belum_update'     => 0,
+                // Kontribusi yang keterkaitannya hanya bisa DITAKSIR (Renstra
+                // OPD menyentuh beberapa misi sekaligus). Dipisah supaya angka
+                // utama tidak pernah melebihi jumlah indikator yang nyata ada.
+                'opd_taksir'       => 0,
+                'indikator_taksir' => 0,
                 'sumber'           => [],
             ];
         }
 
         // Indikator PK Bupati per misi (lewat pk_misi dokumen PK Bupati).
+        // `misi` bisa absen bila pemanggil mengirim bentuk indikator yang sudah
+        // diringkas untuk kartu; itu bukan alasan untuk melempar error.
         foreach ($indikatorBupati as $i) {
-            foreach ($i['misi'] as $m) {
+            foreach ($i['misi'] ?? [] as $m) {
                 $id = (int) $m['misi_id'];
                 if (!isset($items[$id])) {
                     continue;
@@ -949,11 +1185,23 @@ class KabupatenDashboardService
                     'indikator' => $data['jumlah'],
                     'kritis'    => $data['kritis'],
                     'valid'     => $data['valid'],
+                    'taksiran'  => $data['ambigu'],
                     'status'    => $s['status'],
                     'update'    => $s['update'],
                 ];
-                $items[$misiId]['indikator_opd'] += $data['jumlah'];
-                $items[$misiId]['kritis']        += $data['kritis'];
+                // OPD-nya tetap dicatat sebagai pengampu misi ini (itu memang
+                // benar), tetapi JUMLAH indikator & indikator kritisnya hanya
+                // masuk angka utama bila pemetaannya tegas. Bila tidak, satu
+                // indikator yang sama akan terhitung di beberapa misi sekaligus
+                // - dulu itulah sebabnya total per misi (156) melampaui jumlah
+                // indikator yang sebenarnya ada (140).
+                if ($data['ambigu']) {
+                    $items[$misiId]['opd_taksir']++;
+                    $items[$misiId]['indikator_taksir'] += $data['jumlah'];
+                } else {
+                    $items[$misiId]['indikator_opd'] += $data['jumlah'];
+                    $items[$misiId]['kritis']        += $data['kritis'];
+                }
                 $items[$misiId]['sumber'][$data['sumber']] = true;
                 if ($s['update']['belum_update']) {
                     $items[$misiId]['belum_update']++;
@@ -966,11 +1214,19 @@ class KabupatenDashboardService
             $items[$id]['sumber']    = array_keys($it['sumber']);
         }
 
+        $taksir = array_sum(array_column($items, 'indikator_taksir'));
+
         return [
             'items' => array_values($items),
             // Gap yang tidak disembunyikan: dokumen PK Bupati belum dipetakan
             // ke Misi RPJMD lewat pk_misi.
             'gap_pk_bupati' => array_sum(array_column($items, 'indikator_bupati')) === 0 && $indikatorBupati !== [],
+            // Gap kedua: PK OPD yang keterkaitan misinya hanya bisa ditaksir.
+            'indikator_taksir' => $taksir,
+            'catatan_taksir'   => $taksir === 0 ? '' : $taksir . ' indikator berasal dari Perangkat Daerah yang '
+                . 'Renstra-nya menyentuh lebih dari satu Misi, sehingga keterkaitannya belum dapat ditetapkan '
+                . 'ke satu misi tertentu. Angka itu tidak ikut dijumlahkan agar total per misi tidak melebihi '
+                . 'jumlah indikator yang sebenarnya ada. Lengkapi relasi pk_misi pada dokumen PK untuk memastikannya.',
         ];
     }
 
@@ -1019,7 +1275,16 @@ class KabupatenDashboardService
                 foreach ($i['misi'] as $m) {
                     $id = (int) $m['misi_id'];
                     if (!isset($out[$opdId][$id])) {
-                        $out[$opdId][$id] = ['jumlah' => 0, 'kritis' => 0, 'valid' => 0, 'sumber' => $m['sumber']];
+                        $out[$opdId][$id] = [
+                            'jumlah' => 0,
+                            'kritis' => 0,
+                            'valid'  => 0,
+                            'sumber' => $m['sumber'],
+                            'ambigu' => !empty($m['ambigu']),
+                        ];
+                    }
+                    if (empty($m['ambigu'])) {
+                        $out[$opdId][$id]['ambigu'] = false;
                     }
                     $out[$opdId][$id]['jumlah']++;
                     if ($i['validity']['is_valid']) {

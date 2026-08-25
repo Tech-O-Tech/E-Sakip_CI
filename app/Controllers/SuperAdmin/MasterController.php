@@ -323,9 +323,18 @@ class MasterController extends BaseController
             return $this->back('opd', 'error', 'Nama OPD mengandung input berbahaya.');
         }
 
+        // Jenis entitas menentukan apakah baris ini ikut agregat Dashboard
+        // Eksekutif (lihat OpdModel::EXCLUDED_EXECUTIVE_JENIS). Nilai di luar
+        // daftar sah tidak pernah dipercaya — jatuh ke 'opd'.
+        $jenis = (string) $this->request->getPost('jenis');
+        if (!array_key_exists($jenis, OpdModel::JENIS_LABEL)) {
+            $jenis = OpdModel::JENIS_OPD;
+        }
+
         $payload = [
             'nama_opd'   => $nama,
             'singkatan'  => trim((string) $this->request->getPost('singkatan')) ?: null,
+            'jenis'      => $jenis,
             'alamat_opd' => trim((string) $this->request->getPost('alamat_opd')) ?: null,
             'updated_at' => date('Y-m-d H:i:s'),
         ];

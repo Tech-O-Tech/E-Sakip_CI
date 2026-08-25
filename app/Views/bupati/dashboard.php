@@ -289,10 +289,18 @@ $sorot = static function (string $ikon, string $warna, string $teks): string {
                     <?php if ($fWasp['renaksi_belum'] > 0): ?><?= $sorot('fa-list-check', '#d9a520', (int) $fWasp['renaksi_belum'] . ' Rencana Aksi belum disusun') ?><?php endif; ?>
                     <?php if ($fWasp['belum_valid'] > 0): ?><?= $sorot('fa-calculator', '#8a968f', (int) $fWasp['belum_valid'] . ' indikator belum dapat dihitung') ?><?php endif; ?>
                     <?php if (!empty($fUpdate)): ?>
-                      <?php $hari = (int) floor((time() - strtotime((string) $fUpdate)) / 86400); ?>
-                      <?php if ($hari > 14): ?>
+                      <?php
+                        // Sama seperti aturan dashboard kabupaten: peringatan
+                        // "lama tidak diperbarui" hanya berlaku bila triwulan
+                        // yang dipilih masih berjalan.
+                        $hari = (int) floor((time() - strtotime((string) $fUpdate)) / 86400);
+                      ?>
+                      <?php if ($hari > 14 && !dash_triwulan_selesai((int) $tahun, (int) $triwulan)): ?>
                         <?= $sorot('fa-clock-rotate-left', '#d9a520', 'Tidak diperbarui ' . $hari . ' hari') ?>
                       <?php endif; ?>
+                    <?php endif; ?>
+                    <?php if ((int) ($fWasp['lainnya'] ?? 0) > 0): ?>
+                      <?= $sorot('fa-ellipsis', '#6b7a70', (int) $fWasp['lainnya'] . ' catatan lain (realisasi anggaran & pelaporan)') ?>
                     <?php endif; ?>
                     <?php if ($fWasp['total'] === 0): ?><?= $sorot('fa-circle-check', '#0a8f50', 'Tidak ada catatan pada periode ini') ?><?php endif; ?>
                   </div>
@@ -492,7 +500,10 @@ $sorot = static function (string $ikon, string $warna, string $teks): string {
               <div>
                 <div class="kpi-num"><?= (int) $opdR['total'] ?> <span style="font-size:.9rem;font-weight:700;color:#6b7a70;">Perangkat Daerah</span></div>
                 <div class="kpi-sub mt-2">
-                  <?= $sorot('fa-circle-exclamation', '#d64545', (int) $opdR['kritis'] . ' kritis') ?>
+                  <?= $sorot('fa-circle-exclamation', '#d64545', (int) $opdR['kritis'] . ' kritis'
+                        . ((int) ($opdR['kritis_data'] ?? 0) > 0
+                            ? ' (' . (int) $opdR['kritis_data'] . ' karena data belum diperbarui)'
+                            : '')) ?>
                   <?= $sorot('fa-triangle-exclamation', '#e07b39', (int) $opdR['perhatian'] . ' perlu perhatian') ?>
                   <?= $sorot('fa-circle-check', '#0a8f50', (int) $opdR['terkendali'] . ' terkendali') ?>
                   <?= $sorot('fa-calculator', '#8a968f', (int) $opdR['belum_lengkap'] . ' belum dapat dinilai') ?>
@@ -513,8 +524,9 @@ $sorot = static function (string $ikon, string $warna, string $teks): string {
                 <div class="kpi-num"><?= (int) $telat['total'] ?> <span style="font-size:.9rem;font-weight:700;color:#6b7a70;">Perangkat Daerah</span></div>
                 <div class="kpi-sub mt-2">
                   <?php if ($telat['belum_pernah'] > 0): ?><?= $sorot('fa-ban', '#d64545', (int) $telat['belum_pernah'] . ' belum pernah input MONEV') ?><?php endif; ?>
-                  <?php if ($telat['belum_periode'] > 0): ?><?= $sorot('fa-hourglass-half', '#e07b39', (int) $telat['belum_periode'] . ' belum lengkap TW ' . esc($romawi[$triwulan])) ?><?php endif; ?>
-                  <?php if ($telat['terlambat'] > 0): ?><?= $sorot('fa-clock', '#d9a520', (int) $telat['terlambat'] . ' lebih dari ' . (int) $telat['batas_hari'] . ' hari tidak diperbarui') ?><?php endif; ?>
+                  <?php if ($telat['belum_periode'] > 0): ?><?= $sorot('fa-hourglass-half', '#e07b39', (int) $telat['belum_periode'] . ' belum menyentuh TW ' . esc($romawi[$triwulan])) ?><?php endif; ?>
+                  <?php if (($telat['belum_lengkap'] ?? 0) > 0): ?><?= $sorot('fa-hourglass-end', '#d9a520', (int) $telat['belum_lengkap'] . ' baru sebagian di TW ' . esc($romawi[$triwulan])) ?><?php endif; ?>
+                  <?php if ($telat['terlambat'] > 0): ?><?= $sorot('fa-clock', '#8a968f', (int) $telat['terlambat'] . ' lengkap tapi > ' . (int) $telat['batas_hari'] . ' hari tidak diperbarui') ?><?php endif; ?>
                   <?= $sorot('fa-list-ol', '#6b7a70', (int) $telat['indikator_belum'] . ' indikator belum diinput periode ini') ?>
                 </div>
               </div>
@@ -533,12 +545,18 @@ $sorot = static function (string $ikon, string $warna, string $teks): string {
                 <div class="kpi-num"><?= count($prio) ?> <span style="font-size:.9rem;font-weight:700;color:#6b7a70;">Prioritas</span></div>
                 <div class="kpi-sub mt-2">
                   <?php
+                    // Gap PK Bupati sekarang DIRINGKAS menjadi satu baris pada
+                    // daftar prioritas, jadi jumlahnya diambil dari kartu PK
+                    // Bupati — bukan dari mencacah baris prioritas, yang akan
+                    // selalu menghasilkan angka 1.
+                    $pkGapData = (int) $pkB['belum_valid'] - (int) $pkB['formula_gap'];
                     $baris = array_values(array_filter([
-                        $hitung($prio, 'pk_bupati_kritis') > 0 ? ['fa-circle-exclamation', '#d64545', $hitung($prio, 'pk_bupati_kritis') . ' indikator PK Bupati kritis'] : null,
-                        $hitung($prio, 'opd_kritis') > 0 ? ['fa-building-circle-exclamation', '#d64545', $hitung($prio, 'opd_kritis') . ' OPD kritis'] : null,
-                        $hitung($prio, 'opd_belum_update') > 0 ? ['fa-clock-rotate-left', '#e07b39', $hitung($prio, 'opd_belum_update') . ' OPD belum update'] : null,
+                        (int) $pkB['kritis'] > 0 ? ['fa-circle-exclamation', '#d64545', (int) $pkB['kritis'] . ' indikator PK Bupati kritis'] : null,
+                        $hitung($prio, 'opd_kritis') > 0 ? ['fa-building-circle-exclamation', '#d64545', $hitung($prio, 'opd_kritis') . ' Perangkat Daerah kritis'] : null,
                         $hitung($prio, 'serap_tinggi_capaian_rendah') > 0 ? ['fa-scale-unbalanced', '#3f6296', $hitung($prio, 'serap_tinggi_capaian_rendah') . ' OPD serap tinggi, capaian rendah'] : null,
-                        $hitung($prio, 'pk_bupati_formula') > 0 ? ['fa-calculator', '#8a968f', $hitung($prio, 'pk_bupati_formula') . ' formula belum tersedia'] : null,
+                        $hitung($prio, 'opd_belum_update') > 0 ? ['fa-clock-rotate-left', '#e07b39', $hitung($prio, 'opd_belum_update') . ' Perangkat Daerah belum update'] : null,
+                        (int) $pkB['formula_gap'] > 0 ? ['fa-calculator', '#8a968f', (int) $pkB['formula_gap'] . ' indikator PK Bupati tanpa formula'] : null,
+                        $pkGapData > 0 ? ['fa-file-circle-question', '#8a968f', $pkGapData . ' indikator PK Bupati belum lengkap datanya'] : null,
                     ]));
                   ?>
                   <?php foreach (array_slice($baris, 0, 4) as $b): ?>
@@ -645,6 +663,12 @@ $sorot = static function (string $ikon, string $warna, string $teks): string {
                   <i class="fas fa-circle-info text-success me-1"></i>
                   Dokumen PK Bupati belum dipetakan ke Misi RPJMD, sehingga jumlah indikator PK Bupati per misi masih 0.
                   Kontribusi di bawah dihitung dari PK pimpinan Perangkat Daerah.
+                </div>
+              <?php endif; ?>
+
+              <?php if (!empty($misiK['catatan_taksir'])): ?>
+                <div class="alert alert-light border py-2 px-3 mb-3" style="font-size:.77rem;">
+                  <i class="fas fa-triangle-exclamation text-warning me-1"></i><?= esc($misiK['catatan_taksir']) ?>
                 </div>
               <?php endif; ?>
 

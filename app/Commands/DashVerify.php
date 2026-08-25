@@ -36,9 +36,19 @@ class DashVerify extends BaseCommand
         helper(['capaian', 'dashboard_status', 'format']);
         $this->db = db_connect();
 
+        // OPD uji WAJIB yang benar-benar ikut agregat Dashboard Eksekutif.
+        // Sebelumnya baris pertama tabel `opd` dipakai apa adanya, padahal itu
+        // "BAGIAN ADMIN" (id 1) yang justru ada di OpdModel::EXCLUDED_OPD_IDS —
+        // sehingga blok uji Kabupaten selalu gagal lalu berhenti di tengah dan
+        // seluruh skenario sesudahnya tidak pernah dijalankan.
         $opdId = (int) ($params[0] ?? 0);
         if ($opdId <= 0) {
-            $row   = $this->db->table('opd')->select('id')->orderBy('id', 'ASC')->get()->getRowArray();
+            $b = $this->db->table('opd')->select('id')
+                ->whereNotIn('id', \App\Models\OpdModel::EXCLUDED_OPD_IDS);
+            if ($this->db->fieldExists('jenis', 'opd')) {
+                $b->whereNotIn('jenis', \App\Models\OpdModel::EXCLUDED_EXECUTIVE_JENIS);
+            }
+            $row   = $b->orderBy('id', 'ASC')->get()->getRowArray();
             $opdId = (int) ($row['id'] ?? 0);
         }
         if ($opdId <= 0) {
@@ -350,8 +360,73 @@ class DashVerify extends BaseCommand
         CLI::write('== Kabupaten: OPD belum update (uji 9) ==', 'yellow');
         $telat = $svc->getUnupdatedOpds($statuses);
         $this->cek('OPD uji masuk daftar belum update', in_array($opdId, array_column($telat['daftar'], 'opd_id'), true));
-        $this->cek('jenis keterlambatan dibedakan',
-            ($telat['belum_pernah'] + $telat['belum_periode'] + $telat['terlambat']) === $telat['total']);
+        $this->cek('jenis keterlambatan dibedakan (4 kondisi, tidak dilebur)',
+            ($telat['belum_pernah'] + $telat['belum_periode'] + $telat['belum_lengkap'] + $telat['terlambat'])
+                === $telat['total']);
+
+        CLI::write('== Kabupaten: ruang lingkup entitas (kecamatan/kelurahan/UPT) ==', 'yellow');
+        if ($this->db->fieldExists('jenis', 'opd')) {
+            $terlarang = $this->db->table('opd')->select('id')
+                ->whereIn('jenis', \App\Models\OpdModel::EXCLUDED_EXECUTIVE_JENIS)
+                ->get()->getResultArray();
+            $idTerlarang = array_map('intval', array_column($terlarang, 'id'));
+            $adaTerlarang = array_intersect($idTerlarang, array_keys($statuses));
+            $this->cek('kecamatan/kelurahan/UPT tidak masuk daftar status',
+                $adaTerlarang === [], implode(',', $adaTerlarang));
+            $this->cek('kecamatan/kelurahan/UPT tidak masuk dropdown OPD',
+                array_intersect($idTerlarang, array_map('intval', array_column($svc->opdOptions(), 'id'))) === []);
+        } else {
+            CLI::write('  (dilewati: kolom opd.jenis belum ada)', 'dark_gray');
+        }
+
+        CLI::write('== Kabupaten: kalimat status & keterlambatan ==', 'yellow');
+        $adaSebagianBesarPalsu = false;
+        $adaNolIndikator       = false;
+        foreach ($statuses as $st) {
+            $alasan = (string) ($st['status']['reason'] ?? '');
+            if (str_contains($alasan, 'Sebagian besar') && (int) $st['indikator'] === (int) $st['belum_valid']) {
+                $adaSebagianBesarPalsu = true;
+            }
+        }
+        $this->cek('tidak ada kalimat "sebagian besar" saat SELURUH indikator tidak valid',
+            $adaSebagianBesarPalsu === false);
+
+        foreach ($svc->getLeadershipPriorities($d3['pk_bupati'], $statuses, $tahun, 4) as $ins) {
+            if ($ins['code'] === 'opd_belum_update' && str_starts_with((string) $ins['objek'], '0 indikator')) {
+                $adaNolIndikator = true;
+            }
+        }
+        $this->cek('tidak ada prioritas berbunyi "0 indikator belum diperbarui"', $adaNolIndikator === false);
+
+        CLI::write('== Kabupaten: gap PK Bupati diringkas (bukan satu baris per indikator) ==', 'yellow');
+        $prioB = $svc->getLeadershipPriorities($d3['pk_bupati'], $statuses, $tahun, 4);
+        $gapBaris = count(array_filter($prioB, static fn ($x) => $x['code'] === 'pk_bupati_belum_valid'));
+        $gapIndikator = (int) $d3['pk_bupati']['belum_valid'] - (int) $d3['pk_bupati']['formula_gap'];
+        $this->cek('gap kelengkapan PK Bupati diringkas jadi paling banyak 1 baris',
+            $gapBaris <= 1, $gapBaris . ' baris untuk ' . $gapIndikator . ' indikator');
+        $kodeKinerja = ['pk_bupati_kritis', 'opd_kritis', 'serap_tinggi_capaian_rendah'];
+        $posKinerja  = null;
+        $posGap      = null;
+        foreach ($prioB as $n => $x) {
+            if ($posKinerja === null && in_array($x['code'], $kodeKinerja, true)) {
+                $posKinerja = $n;
+            }
+            if ($posGap === null && str_starts_with($x['code'], 'pk_bupati_') && !in_array($x['code'], $kodeKinerja, true)) {
+                $posGap = $n;
+            }
+        }
+        $this->cek('isu kinerja selalu di atas gap kelengkapan data',
+            $posKinerja === null || $posGap === null || $posKinerja < $posGap);
+
+        CLI::write('== Kabupaten: kontribusi misi tidak dihitung ganda ==', 'yellow');
+        $misi = $svc->getKabupatenSummary($tahun, 4, null)['misi'];
+        $totalIndikatorOpd = 0;
+        foreach ($statuses as $st) {
+            $totalIndikatorOpd += (int) $st['indikator'];
+        }
+        $jumlahPerMisi = array_sum(array_column($misi['items'], 'indikator_opd'));
+        $this->cek('jumlah indikator per misi tidak melebihi indikator yang ada',
+            $jumlahPerMisi <= $totalIndikatorOpd, $jumlahPerMisi . ' vs ' . $totalIndikatorOpd);
 
         CLI::write('== Kabupaten: prioritas pimpinan (uji 10) ==', 'yellow');
         $prio = $svc->getLeadershipPriorities($d3['pk_bupati'], $statuses, $tahun, 4);
@@ -585,7 +660,13 @@ class DashVerify extends BaseCommand
 
     private function opdLain(int $opdId): ?int
     {
-        $row = $this->db->table('opd')->select('id')->where('id !=', $opdId)->get()->getRowArray();
+        $b = $this->db->table('opd')->select('id')
+            ->where('id !=', $opdId)
+            ->whereNotIn('id', \App\Models\OpdModel::EXCLUDED_OPD_IDS);
+        if ($this->db->fieldExists('jenis', 'opd')) {
+            $b->whereNotIn('jenis', \App\Models\OpdModel::EXCLUDED_EXECUTIVE_JENIS);
+        }
+        $row = $b->get()->getRowArray();
 
         return $row ? (int) $row['id'] : null;
     }

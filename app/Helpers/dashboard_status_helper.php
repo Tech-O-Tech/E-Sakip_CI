@@ -352,12 +352,55 @@ if (!function_exists('dash_map_error_code')) {
     }
 }
 
+if (!function_exists('dash_triwulan_selesai')) {
+    /**
+     * Apakah sebuah triwulan SUDAH TUTUP menurut tanggal sistem?
+     *
+     * Dipakai untuk membedakan dua hal yang tampak mirip tetapi tindak
+     * lanjutnya berlawanan:
+     *   - triwulan BERJALAN & data lengkap tetapi lama tidak disentuh
+     *     -> memang perlu diingatkan (mungkin ada capaian baru yang belum
+     *        dilaporkan);
+     *   - triwulan SUDAH TUTUP & data lengkap
+     *     -> tidak ada apa pun yang perlu diperbarui; menandainya "belum
+     *        update" hanya karena berkasnya tidak disentuh 30 hari adalah
+     *        peringatan palsu yang akan menyala selamanya.
+     */
+    function dash_triwulan_selesai(int $tahun, int $triwulan): bool
+    {
+        $triwulan = max(1, min(4, $triwulan));
+        $sekarang = (int) date('Y');
+
+        if ($tahun < $sekarang) {
+            return true;
+        }
+        if ($tahun > $sekarang) {
+            return false;
+        }
+
+        return $triwulan < (int) ceil((int) date('n') / 3);
+    }
+}
+
 if (!function_exists('dash_triwulan_berjalan')) {
     /**
-     * Triwulan bawaan untuk sebuah tahun:
-     *  - tahun berjalan  -> triwulan sesuai tanggal sistem
+     * Triwulan BAWAAN dashboard untuk sebuah tahun:
      *  - tahun lampau    -> Triwulan IV (setahun penuh)
      *  - tahun mendatang -> Triwulan I
+     *  - tahun berjalan  -> triwulan TERAKHIR YANG SUDAH SELESAI
+     *
+     * Yang terakhir itu bukan detail kecil. Selama dashboard memilih triwulan
+     * yang masih BERJALAN, dash_row_validity() menuntut capaian pada periode
+     * yang memang belum waktunya dilaporkan, sehingga seluruh indikator jatuh
+     * ke 'missing_achievement' -> "Belum Valid", capaian kabupaten tidak dapat
+     * dihitung, dan puluhan Perangkat Daerah tercap "Belum isi TW ini" di
+     * tengah triwulan. Dengan memakai triwulan terakhir yang sudah tutup,
+     * angka yang tampil adalah periode yang laporannya memang sudah jatuh
+     * tempo. Triwulan berjalan tetap bisa dipilih manual lewat filter.
+     *
+     * Pada Triwulan I tahun berjalan belum ada triwulan yang selesai; nilainya
+     * dikunci ke 1 supaya filter tetap sah (1..4) dan tidak melompat ke tahun
+     * sebelumnya yang datanya milik dokumen PK lain.
      */
     function dash_triwulan_berjalan(int $tahun): int
     {
@@ -369,6 +412,6 @@ if (!function_exists('dash_triwulan_berjalan')) {
             return 1;
         }
 
-        return (int) ceil((int) date('n') / 3);
+        return max(1, (int) ceil((int) date('n') / 3) - 1);
     }
 }

@@ -173,16 +173,22 @@
                         </div>
                         <div class="table-responsive tab-table-wrap">
                             <table class="table table-bordered table-striped small master-table">
-                                <thead class="table-success text-center"><tr><th>No</th><th>Nama OPD</th><th>Singkatan</th><th>Alamat</th><th>Aksi</th></tr></thead>
+                                <thead class="table-success text-center"><tr><th>No</th><th>Nama OPD</th><th>Singkatan</th><th>Jenis</th><th>Alamat</th><th>Aksi</th></tr></thead>
                                 <tbody>
                                 <?php $n = 1; foreach ($opd as $o): ?>
                                     <tr>
                                         <td class="text-center"><?= $n++ ?></td>
                                         <td><?= esc($o['nama_opd']) ?></td>
                                         <td><?= esc($o['singkatan'] ?? '-') ?></td>
+                                        <td class="text-center">
+                                            <?php $jn = (string) ($o['jenis'] ?? 'opd'); ?>
+                                            <span class="badge <?= in_array($jn, \App\Models\OpdModel::EXCLUDED_EXECUTIVE_JENIS, true) ? 'bg-secondary' : 'bg-success' ?>">
+                                                <?= esc(\App\Models\OpdModel::JENIS_LABEL[$jn] ?? $jn) ?>
+                                            </span>
+                                        </td>
                                         <td><?= esc($o['alamat_opd'] ?? '-') ?></td>
                                         <td class="text-center text-nowrap">
-                                            <button class="btn btn-warning btn-sm" data-edit="modal-opd" data-json='<?= $j(['id'=>$o['id'],'nama_opd'=>$o['nama_opd'],'singkatan'=>$o['singkatan'],'alamat_opd'=>$o['alamat_opd']]) ?>'><i class="fas fa-edit"></i></button>
+                                            <button class="btn btn-warning btn-sm" data-edit="modal-opd" data-json='<?= $j(['id'=>$o['id'],'nama_opd'=>$o['nama_opd'],'singkatan'=>$o['singkatan'],'jenis'=>$o['jenis'] ?? 'opd','alamat_opd'=>$o['alamat_opd']]) ?>'><i class="fas fa-edit"></i></button>
                                             <a href="<?= base_url('adminkab/master/opd/delete/' . (int)$o['id']) ?>" <?= $delConfirm ?> class="btn btn-danger btn-sm"><i class="fas fa-trash"></i></a>
                                         </td>
                                     </tr>
@@ -445,6 +451,15 @@
             <div class="modal-body">
                 <div class="mb-2"><label class="form-label">Nama OPD</label><input type="text" name="nama_opd" class="form-control" required></div>
                 <div class="mb-2"><label class="form-label">Singkatan</label><input type="text" name="singkatan" class="form-control"></div>
+                <div class="mb-2">
+                    <label class="form-label">Jenis entitas</label>
+                    <select name="jenis" class="form-select" data-no-select2>
+                        <?php foreach (\App\Models\OpdModel::JENIS_LABEL as $kode => $label): ?>
+                            <option value="<?= esc($kode, 'attr') ?>"><?= esc($label) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="form-text">Kecamatan, Kelurahan, dan UPT tidak ikut dihitung pada Dashboard Eksekutif Bupati &amp; Kabupaten.</div>
+                </div>
                 <div class="mb-2"><label class="form-label">Alamat</label><input type="text" name="alamat_opd" class="form-control" maxlength="50"></div>
             </div>
             <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button><button type="submit" class="btn btn-success">Simpan</button></div>

@@ -511,7 +511,7 @@ class OpdDashboardService
         $subMap      = $this->loadSubRencana($targetIds);
         $monevMap    = $this->loadMonev($targetIds, $opdIds);
         $anggaranMap = $this->loadRealisasiAnggaran($targetIds);
-        $programMap  = $this->loadProgram($indikatorIds);
+        $programMap  = $this->loadProgram($indikatorIds, (int) ($rows[0]['pk_tahun'] ?? 0));
         $misiMap     = $this->loadMisi($pkOpd);
         $this->preloadSkala(array_column($rows, 'satuan_id'));
 
@@ -764,19 +764,28 @@ class OpdDashboardService
      *
      * @return array<int, array<int, array<string, mixed>>>
      */
-    private function loadProgram(array $indikatorIds): array
+    private function loadProgram(array $indikatorIds, int $tahun = 0): array
     {
         $indikatorIds = $this->bersihkanIds($indikatorIds);
         if ($indikatorIds === []) {
             return [];
         }
 
-        $rows = $this->db->table('pk_program pp')
+        $b = $this->db->table('pk_program pp')
             ->select('pp.pk_indikator_id, pr.id AS program_id, pr.kode_program, pr.program_kegiatan,
                       pr.anggaran, pr.tahun_anggaran, pr.jenis_anggaran, pr.opd_id AS program_opd_id')
             ->join('program_pk pr', 'pr.id = pp.program_id', 'inner')
-            ->whereIn('pp.pk_indikator_id', $indikatorIds)
-            ->orderBy('pr.kode_program', 'ASC')
+            ->whereIn('pp.pk_indikator_id', $indikatorIds);
+
+        // Pagu HARUS setahun dengan dokumen PK-nya. Tanpa syarat ini, tautan
+        // pk_program yang menunjuk program tahun lain (ada 3 tautan PK 2025 ke
+        // program tahun anggaran 2026 senilai Rp 83,8 M pada data ini) membuat
+        // dashboard tahun lampau menampilkan pagu tahun berjalan.
+        if ($tahun > 0) {
+            $b->where('pr.tahun_anggaran', $tahun);
+        }
+
+        $rows = $b->orderBy('pr.kode_program', 'ASC')
             ->orderBy('pr.id', 'ASC')
             ->get()->getResultArray();
 
@@ -839,6 +848,9 @@ class OpdDashboardService
                 'misi_id' => (int) $r['misi_id'],
                 'misi'    => (string) $r['misi'],
                 'sumber'  => 'pk_misi',
+                // Pemetaan eksplisit: indikator PK ini memang dinyatakan
+                // mendukung misi tersebut, jadi boleh dihitung penuh.
+                'ambigu'  => false,
             ];
         }
 
@@ -848,8 +860,17 @@ class OpdDashboardService
             if ($opdId <= 0) {
                 continue;
             }
-            foreach ($this->misiViaRenstra($opdId) as $m) {
-                $map[$pkId][$m['misi_id']] = $m;
+            $viaRenstra = $this->misiViaRenstra($opdId);
+
+            // Bila Renstra OPD menyentuh LEBIH DARI SATU misi, jalur cadangan
+            // ini tidak bisa memberi tahu indikator PK mana menopang misi yang
+            // mana. Dulu SELURUH indikator OPD itu dihitung penuh ke SETIAP
+            // misi, sehingga total per misi melampaui jumlah indikator yang
+            // sebenarnya ada. Sekarang ditandai `ambigu` supaya pemakainya
+            // melaporkannya sebagai taksiran, bukan angka pasti.
+            $ambigu = count($viaRenstra) > 1;
+            foreach ($viaRenstra as $m) {
+                $map[$pkId][$m['misi_id']] = $m + ['ambigu' => $ambigu];
             }
         }
 
@@ -1538,7 +1559,13 @@ class OpdDashboardService
             if ($kode === 'missing_target') {
                 // Dibedakan: rencana aksinya memang belum dibuat, atau sudah ada
                 // tapi target triwulanannya masih kosong. Tindak lanjutnya sama.
-                $out[] = $this->insight(50, 'renaksi_belum', $judul, $alasan,
+                //
+                // Kegentingannya 30 (bukan 50 seperti dulu): "Rencana Aksi belum
+                // ada" adalah AKAR dari 'monev_belum' (40) dan
+                // 'indikator_belum_valid' (45), jadi tidak masuk akal berada di
+                // bawah keduanya pada daftar yang katanya urut dari risiko
+                // tertinggi.
+                $out[] = $this->insight(30, 'renaksi_belum', $judul, $alasan,
                     $i['renaksi_count'] === 0 ? 'Rencana Aksi belum ada' : 'Target triwulan belum diisi',
                     'oranye', $urlRen, 'Kelola Rencana Aksi', $i['indikator_id']);
                 continue;
@@ -1549,7 +1576,7 @@ class OpdDashboardService
                 continue;
             }
 
-            $out[] = $this->insight(30, 'indikator_belum_valid', $judul, $alasan,
+            $out[] = $this->insight(45, 'indikator_belum_valid', $judul, $alasan,
                 'Belum Valid', 'abu', $urlMon, 'Lengkapi MONEV', $i['indikator_id']);
         }
 
@@ -1617,8 +1644,7 @@ class OpdDashboardService
             return count(array_filter($insights, static fn ($i) => $i['code'] === $code));
         };
 
-        return [
-            'total'           => count($insights),
+        $rinci = [
             'kritis'          => $hitung($insights, 'indikator_kritis'),
             'perlu_perhatian' => $hitung($insights, 'indikator_perhatian'),
             'belum_valid'     => $hitung($insights, 'indikator_belum_valid'),
@@ -1626,6 +1652,16 @@ class OpdDashboardService
             'renaksi_belum'   => $hitung($insights, 'renaksi_belum'),
             'anggaran_belum'  => $hitung($insights, 'anggaran_belum'),
             'verifikasi'      => $hitung($insights, 'verifikasi'),
+        ];
+
+        // `total` = jumlah SELURUH catatan (itu yang dibuka drawer), sedangkan
+        // `total_rinci` = yang benar-benar dirinci di kartu. Keduanya dikirim
+        // terpisah supaya kartu tidak lagi menampilkan angka besar yang tidak
+        // pernah cocok dengan baris-baris di bawahnya.
+        return $rinci + [
+            'total'       => count($insights),
+            'total_rinci' => array_sum($rinci),
+            'lainnya'     => count($insights) - array_sum($rinci),
         ];
     }
 
@@ -1653,6 +1689,11 @@ class OpdDashboardService
                         'misi_id'    => $id,
                         'misi'       => $m['misi'],
                         'sumber'     => $m['sumber'],
+                        // Angka di misi ini merupakan taksiran: keterkaitannya
+                        // ditelusuri lewat Renstra yang menyentuh beberapa misi
+                        // sekaligus, sehingga indikator yang sama ikut terhitung
+                        // di lebih dari satu misi.
+                        'ambigu'     => true,
                         'indikator'  => 0,
                         'valid'      => 0,
                         'belum'      => 0,
@@ -1662,6 +1703,9 @@ class OpdDashboardService
                 $misi[$id]['indikator']++;
                 $misi[$id][$i['validity']['is_valid'] ? 'valid' : 'belum']++;
                 $misi[$id]['daftar'][] = $this->ringkasIndikator($i);
+                if (empty($m['ambigu'])) {
+                    $misi[$id]['ambigu'] = false;
+                }
                 if ($m['sumber'] === 'pk_misi') {
                     $misi[$id]['sumber'] = 'pk_misi';
                 }

@@ -405,7 +405,8 @@ $js = static fn ($v) => json_encode(
                 <div class="kpi-sub mt-2">
                   <div><?= (int) $opdR['dapat_dinilai'] ?> dapat dinilai &middot; <?= (int) $opdR['belum_lengkap'] ?> belum lengkap</div>
                   <div>
-                    <span class="dot" style="background:#d64545"></span><?= (int) $opdR['kritis'] ?> kritis
+                    <span class="dot" style="background:#d64545"></span><?= (int) $opdR['kritis'] ?> kritis<?php
+                      if ((int) ($opdR['kritis_data'] ?? 0) > 0): ?> <span class="text-muted">(<?= (int) $opdR['kritis_data'] ?> karena data belum diperbarui)</span><?php endif; ?>
                     &nbsp;<span class="dot" style="background:#e07b39"></span><?= (int) $opdR['perhatian'] ?> perlu perhatian
                     &nbsp;<span class="dot" style="background:#0a8f50"></span><?= (int) $opdR['terkendali'] ?> terkendali
                   </div>
@@ -426,8 +427,9 @@ $js = static fn ($v) => json_encode(
                 <div class="kpi-num"><?= (int) $telat['total'] ?> <span style="font-size:.9rem;font-weight:700;color:#6b7a70;">Perangkat Daerah</span></div>
                 <div class="kpi-sub mt-2">
                   <?php if ($telat['belum_pernah'] > 0): ?><div><span class="dot" style="background:#d64545"></span><?= (int) $telat['belum_pernah'] ?> belum pernah input MONEV</div><?php endif; ?>
-                  <?php if ($telat['belum_periode'] > 0): ?><div><span class="dot" style="background:#e07b39"></span><?= (int) $telat['belum_periode'] ?> belum lengkap Triwulan <?= esc($romawi[$triwulan]) ?></div><?php endif; ?>
-                  <?php if ($telat['terlambat'] > 0): ?><div><span class="dot" style="background:#d9a520"></span><?= (int) $telat['terlambat'] ?> lebih dari <?= (int) $telat['batas_hari'] ?> hari tidak diperbarui</div><?php endif; ?>
+                  <?php if ($telat['belum_periode'] > 0): ?><div><span class="dot" style="background:#e07b39"></span><?= (int) $telat['belum_periode'] ?> belum menyentuh Triwulan <?= esc($romawi[$triwulan]) ?></div><?php endif; ?>
+                  <?php if (($telat['belum_lengkap'] ?? 0) > 0): ?><div><span class="dot" style="background:#d9a520"></span><?= (int) $telat['belum_lengkap'] ?> baru sebagian di Triwulan <?= esc($romawi[$triwulan]) ?></div><?php endif; ?>
+                  <?php if ($telat['terlambat'] > 0): ?><div><span class="dot" style="background:#8a968f"></span><?= (int) $telat['terlambat'] ?> lengkap tapi &gt; <?= (int) $telat['batas_hari'] ?> hari tidak diperbarui</div><?php endif; ?>
                   <div><?= (int) $telat['indikator_belum'] ?> indikator belum diinput pada periode ini</div>
                 </div>
               </div>
@@ -446,13 +448,19 @@ $js = static fn ($v) => json_encode(
                 <div class="kpi-num"><?= count($prio) ?> <span style="font-size:.9rem;font-weight:700;color:#6b7a70;">Prioritas</span></div>
                 <div class="kpi-sub mt-2">
                   <?php
-                    $hitung = static fn (array $p, string $c) => count(array_filter($p, static fn ($x) => $x['code'] === $c));
+                    // Gap PK Bupati sekarang DIRINGKAS menjadi satu baris pada
+                    // daftar prioritas, jadi jumlahnya diambil dari kartu PK
+                    // Bupati — bukan dari mencacah baris prioritas, yang akan
+                    // selalu menghasilkan angka 1.
+                    $hitung   = static fn (array $p, string $c) => count(array_filter($p, static fn ($x) => $x['code'] === $c));
+                    $pkGapData = (int) $pkB['belum_valid'] - (int) $pkB['formula_gap'];
                     $baris = array_values(array_filter([
-                        $hitung($prio, 'pk_bupati_kritis') > 0 ? ['#d64545', $hitung($prio, 'pk_bupati_kritis') . ' indikator PK Bupati kritis'] : null,
-                        $hitung($prio, 'opd_kritis') > 0 ? ['#d64545', $hitung($prio, 'opd_kritis') . ' OPD kritis'] : null,
-                        $hitung($prio, 'opd_belum_update') > 0 ? ['#e07b39', $hitung($prio, 'opd_belum_update') . ' OPD belum update'] : null,
+                        (int) $pkB['kritis'] > 0 ? ['#d64545', (int) $pkB['kritis'] . ' indikator PK Bupati kritis'] : null,
+                        $hitung($prio, 'opd_kritis') > 0 ? ['#d64545', $hitung($prio, 'opd_kritis') . ' Perangkat Daerah kritis'] : null,
                         $hitung($prio, 'serap_tinggi_capaian_rendah') > 0 ? ['#3f6296', $hitung($prio, 'serap_tinggi_capaian_rendah') . ' OPD penyerapan tinggi, capaian rendah'] : null,
-                        $hitung($prio, 'pk_bupati_formula') > 0 ? ['#8a968f', $hitung($prio, 'pk_bupati_formula') . ' formula belum tersedia'] : null,
+                        $hitung($prio, 'opd_belum_update') > 0 ? ['#e07b39', $hitung($prio, 'opd_belum_update') . ' Perangkat Daerah belum update'] : null,
+                        (int) $pkB['formula_gap'] > 0 ? ['#8a968f', (int) $pkB['formula_gap'] . ' indikator PK Bupati tanpa formula'] : null,
+                        $pkGapData > 0 ? ['#8a968f', $pkGapData . ' indikator PK Bupati belum lengkap datanya'] : null,
                     ]));
                   ?>
                   <?php foreach (array_slice($baris, 0, 4) as $b): ?>
@@ -540,6 +548,12 @@ $js = static fn ($v) => json_encode(
                   <i class="fas fa-circle-info text-success me-1"></i>
                   Dokumen PK Bupati belum dipetakan ke Misi RPJMD (tabel <code>pk_misi</code>), sehingga jumlah indikator PK Bupati per misi masih 0.
                   Kontribusi di bawah dihitung dari PK pimpinan Perangkat Daerah.
+                </div>
+              <?php endif; ?>
+
+              <?php if (!empty($misiK['catatan_taksir'])): ?>
+                <div class="alert alert-light border py-2 px-3 mb-3" style="font-size:.77rem;">
+                  <i class="fas fa-triangle-exclamation text-warning me-1"></i><?= esc($misiK['catatan_taksir']) ?>
                 </div>
               <?php endif; ?>
 

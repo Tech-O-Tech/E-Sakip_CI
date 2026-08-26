@@ -71,11 +71,83 @@ $eselonLabel = function ($pkJenis, $jabatanEselon = null, $jabatanNama = null) {
     return '-';
 };
 
-// Jumlah kolom (untuk baris kosong)
-// non-bupati: No, Sasaran, Indikator, Tahun, Satuan, Target, Unit (Program/
-//             Kegiatan/Sub Kegiatan), Anggaran, Rencana Aksi, Sub Rencana Aksi,
-//             4x Triwulan, Penanggung Jawab, Aksi
-$cols = $isBupati ? 8 : (16 + ($showPejabat ? 1 : 0) + ($showOpd ? 1 : 0));
+// ---------------------------------------------------------------------------
+// PETA KOLOM TABEL
+// Lebar ditetapkan eksplisit (px) lalu dipasang lewat <colgroup> +
+// table-layout:fixed. Tanpa ini browser membagi sendiri lebar 16-18 kolom
+// sehingga kolom teks panjang (nama program) tergencet jadi satu kata per
+// baris. Peta ini juga jadi sumber hitungan:
+//   - min-width tabel        (jumlah seluruh lebar)
+//   - offset kolom beku kiri (posisi sticky)
+//   - colspan baris kosong   (count)
+// non-bupati: No, [OPD], [Pejabat], Sasaran, Indikator, Tahun, Satuan, Target,
+//             Unit (Program/Kegiatan/Sub Kegiatan), Anggaran, Rencana Aksi,
+//             Sub Rencana Aksi, 4x Triwulan, Penanggung Jawab, Aksi
+// ---------------------------------------------------------------------------
+if ($isBupati) {
+    // Tabel PK Bupati hanya 8 kolom -> lebarnya sengaja dijaga ~1.180px
+    // supaya MUAT di layar 1366 tanpa geser mendatar sama sekali (kalau
+    // tabel cuma sedikit lebih lebar dari layar, kolom Aksi yang membeku
+    // justru menutupi ujung kolom Perangkat Daerah).
+    $kolom = [
+        ['key' => 'no',        'w' => 50],
+        ['key' => 'sasaran',   'w' => 235],
+        ['key' => 'indikator', 'w' => 235],
+        ['key' => 'tahun',     'w' => 65],
+        ['key' => 'satuan',    'w' => 82],
+        ['key' => 'target',    'w' => 78],
+        ['key' => 'pd',        'w' => 355],
+        ['key' => 'aksi',      'w' => 80],
+    ];
+} else {
+    $kolom = array_merge(
+        [['key' => 'no', 'w' => 52]],
+        $showOpd     ? [['key' => 'opd', 'w' => 175]] : [],
+        $showPejabat ? [['key' => 'pejabat', 'w' => 195]] : [],
+        [
+            ['key' => 'sasaran',   'w' => 220],
+            ['key' => 'indikator', 'w' => 220],
+            ['key' => 'tahun',     'w' => 68],
+            ['key' => 'satuan',    'w' => 92],
+            ['key' => 'target',    'w' => 80],
+            ['key' => 'unit',      'w' => 250],
+            ['key' => 'anggaran',  'w' => 140],
+            ['key' => 'renaksi',   'w' => 240],
+            ['key' => 'sub',       'w' => 230],
+            ['key' => 'tw1',       'w' => 60],
+            ['key' => 'tw2',       'w' => 60],
+            ['key' => 'tw3',       'w' => 60],
+            ['key' => 'tw4',       'w' => 60],
+            ['key' => 'pj',        'w' => 170],
+            ['key' => 'aksi',      'w' => 78],
+        ]
+    );
+}
+$kolomKeys     = array_column($kolom, 'key');
+$tabelMinWidth = array_sum(array_column($kolom, 'w'));
+$cols          = count($kolom); // colspan untuk baris "belum ada data"
+
+// Kolom beku (sticky) kiri: No + SATU kolom identitas berikutnya, supaya baris
+// tetap bisa dilacak saat tabel digeser jauh ke kanan. Offsetnya kumulatif.
+$bekuKiri = ['no'];
+foreach (['opd', 'pejabat', 'sasaran'] as $kandidat) {
+    if (in_array($kandidat, $kolomKeys, true)) {
+        $bekuKiri[] = $kandidat;
+        break;
+    }
+}
+$offsetKiri = [];
+$lebarBeku  = 0;
+foreach ($kolom as $k) {
+    if (!in_array($k['key'], $bekuKiri, true)) {
+        break; // hanya kolom beruntun dari tepi kiri yang bisa dibekukan
+    }
+    $offsetKiri[$k['key']] = $lebarBeku;
+    $lebarBeku += $k['w'];
+}
+
+// Kolom sekunder yang disembunyikan pada "Mode ringkas" (layar sempit).
+$kolomRingkas = array_values(array_intersect(['tahun', 'satuan', 'anggaran', 'pj'], $kolomKeys));
 
 // Query string filter aktif (untuk tautan MONEV)
 $filterQs = http_build_query(array_filter([
@@ -93,34 +165,152 @@ $filterQs = http_build_query(array_filter([
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title><?= esc($judul) ?> - e-SAKIP</title>
     <?= $this->include('adminOpd/templates/style.php'); ?>
+    <?php
+    // Kolom sticky = kolom beku kiri + kolom Aksi (kanan).
+    $kolomSticky = array_merge(array_keys($offsetKiri), ['aksi']);
+    $bekuAkhir   = array_key_last($offsetKiri);
+    $ringkasMin  = $tabelMinWidth;
+    foreach ($kolom as $k) {
+        if (in_array($k['key'], $kolomRingkas, true)) {
+            $ringkasMin -= $k['w'];
+        }
+    }
+    $selSticky = implode(",\n        ", array_map(
+        fn($k) => "main .renaksi-table tbody tr > td.c-{$k}",
+        $kolomSticky
+    ));
+    ?>
     <style>
-        /* Lebar minimum supaya kolom tidak saling gencet; sisanya digeser
-           horizontal oleh .table-responsive. */
+        /* ==================================================================
+           TABEL TARGET & RENCANA AKSI
+           Tabelnya memang lebar (16-18 kolom) — memaksanya muat justru
+           membuat teks pecah satu kata per baris. Jadi tabel diberi:
+             1. lebar kolom PASTI  (colgroup + table-layout:fixed)
+             2. area gulir sendiri (kepala tabel & kolom identitas membeku)
+             3. penanda tepi       (bayangan: masih ada kolom di kanan/kiri)
+             4. mode ringkas       (sembunyikan kolom sekunder di layar sempit)
+           ================================================================== */
+
+        /* Ringkasan angka ikut lebar layar supaya tidak jebol di HP. */
+        .rk-stat-num {
+            font-size: clamp(1.15rem, 4.5vw, 1.5rem);
+            line-height: 1.2;
+            margin-bottom: 0;
+        }
+
+        .rk-box {
+            position: relative;
+            background: #fff;
+            border: 1px solid #e3e8e4;
+            border-radius: 14px;
+            box-shadow: 0 6px 20px rgba(16, 40, 24, .05);
+        }
+
+        .rk-scroll {
+            overflow: auto;
+            -webkit-overflow-scrolling: touch;
+            /* Tabel punya jendela gulirnya sendiri supaya kepala tabel bisa
+               membeku dan halaman tidak ikut memanjang ratusan baris. */
+            max-height: clamp(360px, calc(100vh - 250px), 900px);
+            border-radius: 14px;
+        }
+
         .renaksi-table {
-            min-width: 1500px;
+            min-width: <?= (int) $tabelMinWidth ?>px;
+            table-layout: fixed;
+            /* WAJIB separate: dengan border-collapse bawaan, garis sel yang
+               sticky ikut hilang saat digulir. */
+            border-collapse: separate;
+            border-spacing: 0;
+            margin-bottom: 0;
         }
 
-        /* Sel gabungan (indikator, sasaran, program, rencana aksi) dibaca dari
-           ATAS — supaya jelas isi mana milik kelompok mana. */
-        .renaksi-table td.va-top {
-            vertical-align: top;
+        /* Lebar tiap kolom (dipasang ke <colgroup>) */
+<?php foreach ($kolom as $k): ?>
+        .renaksi-table col.c-<?= $k['key'] ?> { width: <?= (int) $k['w'] ?>px; }
+<?php endforeach; ?>
+
+        /* Garis sel dibuat sendiri (bukan .table-bordered) supaya tidak dobel
+           saat border-spacing 0, dan supaya sel gabungan hanya bergaris di
+           ujung rentangnya — itu yang memberi kesan berkelompok. */
+        .renaksi-table > :not(caption) > * > * {
+            border: 0;
+            border-right: 1px solid #e6ece8;
+            border-bottom: 1px solid #e6ece8;
+            box-shadow: none;
+            background-color: #fff;
+            overflow-wrap: break-word;
         }
 
-        /* Unit & anggaran: 1 unit = 1 BARIS tabel sungguhan, jadi
-           sejajarnya dijamin struktur tabel dan tingginya ikut isi (tidak ada
-           teks yang tumpang tindih walau nama programnya panjang). */
+        /* ---- Kepala tabel membeku (2 baris) ---- */
+        .renaksi-table thead th {
+            position: sticky;
+            top: 0;
+            z-index: 4;
+        }
+
+        .renaksi-table thead tr:first-child th {
+            height: 46px;
+        }
+
+        /* Baris ke-2 (I-IV) menempel tepat di bawah baris ke-1.
+           --rk-h1 diukur ulang oleh JS agar tidak ada celah/tumpang tindih. */
+        .renaksi-table thead tr + tr th {
+            top: var(--rk-h1, 46px);
+            z-index: 3;
+        }
+
+        .renaksi-table thead tr:last-child th {
+            box-shadow: 0 6px 10px -8px rgba(16, 40, 24, .55);
+        }
+
+        /* ---- Kolom identitas membeku di kiri, kolom Aksi di kanan ---- */
+<?php foreach ($offsetKiri as $key => $off): ?>
+        .renaksi-table th.c-<?= $key ?>,
+        .renaksi-table td.c-<?= $key ?> { position: sticky; left: <?= (int) $off ?>px; z-index: 2; }
+<?php endforeach; ?>
+        .renaksi-table th.c-aksi,
+        .renaksi-table td.c-aksi { position: sticky; right: 0; z-index: 2; }
+
+<?php foreach ($kolomSticky as $key): ?>
+        .renaksi-table thead th.c-<?= $key ?> { z-index: 6; }
+<?php endforeach; ?>
+
+        /* Sel beku HARUS buram — kalau tembus, teks kolom lain lewat di
+           belakangnya. !important untuk menimpa aturan "baris seragam" global. */
+        <?= $selSticky ?> {
+            background-color: #fff !important;
+        }
+
+        /* Bayangan pemisah: muncul hanya saat memang ada kolom tersembunyi. */
+<?php if ($bekuAkhir !== null): ?>
+        .rk-box.is-geser-kiri .renaksi-table th.c-<?= $bekuAkhir ?>,
+        .rk-box.is-geser-kiri .renaksi-table td.c-<?= $bekuAkhir ?> {
+            box-shadow: 10px 0 12px -9px rgba(16, 40, 24, .45);
+        }
+<?php endif; ?>
+
+        .rk-box.is-ada-kanan .renaksi-table th.c-aksi,
+        .rk-box.is-ada-kanan .renaksi-table td.c-aksi {
+            box-shadow: -10px 0 12px -9px rgba(16, 40, 24, .45);
+        }
+
+        /* ---- Watak isi sel ---- */
+        /* Sel gabungan dibaca dari ATAS — jelas isi mana milik kelompok mana. */
+        .renaksi-table td.va-top,
         .renaksi-table td.prog-cell,
         .renaksi-table td.prog-cell-money {
             vertical-align: top;
         }
 
-        .renaksi-table td.prog-cell-money {
+        .renaksi-table td.prog-cell-money,
+        .renaksi-table td.tw-cell {
             white-space: nowrap;
-            text-align: right;
+            font-variant-numeric: tabular-nums;
         }
 
-        .renaksi-table col.col-program {
-            width: 18%;
+        .renaksi-table td.prog-cell-money {
+            text-align: right;
         }
 
         /* Sub rencana aksi tampil menjorok, menandakan miliknya rencana aksi di kirinya. */
@@ -128,8 +318,46 @@ $filterQs = http_build_query(array_filter([
             border-left: 2px solid #cfe0d5;
         }
 
-        .renaksi-table td.tw-cell {
-            white-space: nowrap;
+        /* Batas antar kelompok: tebal per OPD, sedang per Sasaran. */
+        .renaksi-table tbody tr.rk-grp > td { border-top: 2px solid #c3dccd; }
+        .renaksi-table tbody tr.rk-grp-opd > td { border-top: 2px solid #7fae95; }
+
+        /* ---- Mode ringkas: kolom sekunder dilipat ---- */
+<?php foreach ($kolomRingkas as $rk): ?>
+        .rk-box.ringkas .renaksi-table col.c-<?= $rk ?> { width: 0; }
+        .rk-box.ringkas .renaksi-table th.c-<?= $rk ?>,
+        .rk-box.ringkas .renaksi-table td.c-<?= $rk ?> { display: none; }
+<?php endforeach; ?>
+        .rk-box.ringkas .renaksi-table { min-width: <?= (int) $ringkasMin ?>px; }
+
+        /* ---- Tablet ke bawah ---- */
+        @media (max-width: 991.98px) {
+            .rk-scroll {
+                max-height: clamp(320px, calc(100vh - 190px), 900px);
+            }
+        }
+
+        /* ---- Ponsel ----
+           Kolom beku dimatikan: di layar sesempit ini ia memakan lebih dari
+           separuh ruang baca. Kepala tabel TETAP membeku ke atas, hanya
+           kuncian mendatarnya yang dilepas (left/right: auto) — kalau
+           dibiarkan, kepala kolom Aksi akan melayang di atas kolom lain. */
+        @media (max-width: 767.98px) {
+            .renaksi-table th[class*="c-"],
+            .renaksi-table td[class*="c-"] {
+                left: auto;
+                right: auto;
+            }
+
+            .renaksi-table tbody td[class*="c-"] {
+                position: static;
+                box-shadow: none;
+            }
+        }
+
+        @media (max-width: 575.98px) {
+            .renaksi-table { font-size: .75rem; }
+            main .renaksi-table > :not(caption) > * > * { padding: .45rem .5rem; }
         }
     </style>
 </head>
@@ -147,20 +375,20 @@ $filterQs = http_build_query(array_filter([
                 <?php if (!empty($summary)): ?>
                     <div class="row g-2 mb-4">
                         <div class="col-4">
-                            <div class="border rounded p-3 text-center h-100">
-                                <div class="h4 mb-0 fw-bold text-dark"><?= (int) $summary['indikator'] ?></div>
+                            <div class="border rounded p-2 p-sm-3 text-center h-100">
+                                <div class="rk-stat-num fw-bold text-dark"><?= (int) $summary['indikator'] ?></div>
                                 <small class="text-muted">Indikator PK</small>
                             </div>
                         </div>
                         <div class="col-4">
-                            <div class="border rounded p-3 text-center h-100">
-                                <div class="h4 mb-0 fw-bold text-success"><?= (int) $summary['with_renaksi'] ?></div>
+                            <div class="border rounded p-2 p-sm-3 text-center h-100">
+                                <div class="rk-stat-num fw-bold text-success"><?= (int) $summary['with_renaksi'] ?></div>
                                 <small class="text-muted">Sudah ada Rencana Aksi</small>
                             </div>
                         </div>
                         <div class="col-4">
-                            <div class="border rounded p-3 text-center h-100">
-                                <div class="h4 mb-0 fw-bold text-warning"><?= (int) $summary['belum'] ?></div>
+                            <div class="border rounded p-2 p-sm-3 text-center h-100">
+                                <div class="rk-stat-num fw-bold text-warning"><?= (int) $summary['belum'] ?></div>
                                 <small class="text-muted">Belum ada Rencana Aksi</small>
                             </div>
                         </div>
@@ -174,17 +402,17 @@ $filterQs = http_build_query(array_filter([
                     <div class="alert alert-success"><?= session()->getFlashdata('success') ?></div>
                 <?php endif; ?>
 
-                <form method="get" class="row g-2 mb-4 align-items-center">
+                <form method="get" class="row g-2 mb-3 align-items-center">
                     <?php if ($isKab): ?>
-                        <div class="col-md-3">
-                            <select class="form-select fw-semibold" onchange="if(this.value){window.location.href=this.value;}">
+                        <div class="col-12 col-md-6 col-lg-3">
+                            <select class="form-select fw-semibold" aria-label="Mode tampilan" onchange="if(this.value){window.location.href=this.value;}">
                                 <option value="<?= base_url($base . '/target_renaksi') ?>" <?= $isBupati ? 'selected' : '' ?>>Mode: PK Bupati (Kabupaten)</option>
                                 <option value="<?= base_url($base . '/renaksi_pk/es3') ?>" <?= $isOpd ? 'selected' : '' ?>>Mode: PK OPD/Kecamatan</option>
                             </select>
                         </div>
                     <?php endif; ?>
-                    <div class="col-md-2">
-                        <select name="tahun" class="form-select" onchange="this.form.submit()">
+                    <div class="col-6 col-md-3 col-lg-2">
+                        <select name="tahun" class="form-select" aria-label="Filter tahun" onchange="this.form.submit()">
                             <option value="all">Semua Tahun</option>
                             <?php foreach ($tahunList as $t): ?>
                                 <option value="<?= esc($t['tahun']) ?>" <?= ((string) $tahun === (string) $t['tahun']) ? 'selected' : '' ?>>
@@ -194,8 +422,8 @@ $filterQs = http_build_query(array_filter([
                         </select>
                     </div>
                     <?php if ($showOpd): ?>
-                        <div class="col-md-3">
-                            <select name="opd_id" class="form-select select2-opd" onchange="this.form.submit()">
+                        <div class="col-12 col-md-6 col-lg-3">
+                            <select name="opd_id" class="form-select select2-opd" aria-label="Filter perangkat daerah" onchange="this.form.submit()">
                                 <option value="">Semua OPD</option>
                                 <?php foreach (($opdList ?? []) as $opd): ?>
                                     <option value="<?= (int) $opd['id'] ?>" <?= ((int) ($opdFilter ?? 0) === (int) $opd['id']) ? 'selected' : '' ?>>
@@ -206,8 +434,8 @@ $filterQs = http_build_query(array_filter([
                         </div>
                     <?php endif; ?>
                     <?php if ($isOpd): ?>
-                        <div class="col-md-2">
-                            <select name="eselon" class="form-select" onchange="this.form.submit()">
+                        <div class="col-6 col-md-3 col-lg-2">
+                            <select name="eselon" class="form-select" aria-label="Filter eselon" onchange="this.form.submit()">
                                 <option value="">Semua Eselon</option>
                                 <?php foreach ($pkFilterOptions as $pkKey => $pkLabel): ?>
                                     <option value="<?= esc($pkKey) ?>" <?= (($eselon ?? '') === $pkKey) ? 'selected' : '' ?>>
@@ -217,8 +445,8 @@ $filterQs = http_build_query(array_filter([
                             </select>
                         </div>
                         <?php if (!empty($pejabatList)): ?>
-                            <div class="col-md-3">
-                                <select name="pejabat_id" class="form-select select2-pejabat" onchange="this.form.submit()">
+                            <div class="col-12 col-md-6 col-lg-3">
+                                <select name="pejabat_id" class="form-select select2-pejabat" aria-label="Filter pejabat" onchange="this.form.submit()">
                                     <option value="">Semua Pejabat</option>
                                     <?php foreach ($pejabatList as $pj): ?>
                                         <option value="<?= (int) $pj['id'] ?>" <?= ((int) ($pejabatId ?? 0) === (int) $pj['id']) ? 'selected' : '' ?>>
@@ -229,7 +457,7 @@ $filterQs = http_build_query(array_filter([
                             </div>
                         <?php endif; ?>
                     <?php endif; ?>
-                    <div class="col text-end">
+                    <div class="col-12 col-lg d-flex flex-wrap gap-1 justify-content-start justify-content-lg-end">
                         <a href="<?= base_url($renaksiPath . '/cetak') . ($filterQs ? '?' . $filterQs : '') ?>" target="_blank" class="btn btn-outline-danger btn-sm">
                             <i class="fas fa-file-pdf me-1"></i> Cetak PDF
                         </a>
@@ -239,43 +467,65 @@ $filterQs = http_build_query(array_filter([
                     </div>
                 </form>
 
-                <div class="table-responsive">
-                    <table class="table table-bordered text-center align-middle small renaksi-table">
+                <!-- Palang alat tabel: petunjuk gulir + saklar mode ringkas -->
+                <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+                    <div class="text-muted small rk-hint d-none">
+                        <i class="fas fa-arrows-left-right me-1"></i>
+                        Geser tabel ke samping untuk kolom lainnya<span class="d-none d-md-inline">
+                            &mdash; kolom <?= $isBupati ? 'Sasaran' : 'identitas' ?> dan Aksi tetap terkunci</span>.
+                    </div>
+                    <div class="ms-auto d-flex align-items-center gap-3">
+                        <?php if (!$isBupati && !empty($kolomRingkas)): ?>
+                            <div class="form-check form-switch mb-0">
+                                <input class="form-check-input" type="checkbox" role="switch" id="rkRingkas">
+                                <label class="form-check-label small text-muted" for="rkRingkas"
+                                    title="Sembunyikan kolom Tahun, Satuan, Anggaran &amp; Penanggung Jawab">Mode ringkas</label>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <div class="rk-box">
+                    <div class="rk-scroll" tabindex="0" role="region" aria-label="Tabel <?= esc($judul) ?>">
+                        <table class="table text-center align-middle small renaksi-table">
+                            <colgroup>
+                                <?php foreach ($kolom as $k): ?><col class="c-<?= $k['key'] ?>"><?php endforeach; ?>
+                            </colgroup>
                         <thead class="table-success fw-bold text-dark">
                             <?php if ($isBupati): ?>
                                 <tr>
-                                    <th>No</th>
-                                    <th>Sasaran</th>
-                                    <th>Indikator</th>
-                                    <th>Tahun</th>
-                                    <th>Satuan</th>
-                                    <th>Target</th>
-                                    <th>Perangkat Daerah Pendukung PK BUPATI</th>
-                                    <th>Aksi</th>
+                                    <th class="c-no">No</th>
+                                    <th class="c-sasaran">Sasaran</th>
+                                    <th class="c-indikator">Indikator</th>
+                                    <th class="c-tahun">Tahun</th>
+                                    <th class="c-satuan">Satuan</th>
+                                    <th class="c-target">Target</th>
+                                    <th class="c-pd">Perangkat Daerah Pendukung PK BUPATI</th>
+                                    <th class="c-aksi">Aksi</th>
                                 </tr>
                             <?php else: ?>
                                 <tr>
-                                    <th rowspan="2">No</th>
-                                    <?php if ($showOpd): ?><th rowspan="2">OPD</th><?php endif; ?>
-                                    <?php if ($showPejabat): ?><th rowspan="2">Pejabat (Eselon)</th><?php endif; ?>
-                                    <th rowspan="2">Sasaran</th>
-                                    <th rowspan="2">Indikator</th>
-                                    <th rowspan="2">Tahun</th>
-                                    <th rowspan="2">Satuan</th>
-                                    <th rowspan="2">Target</th>
-                                    <th rowspan="2"><?= esc($labelUnitHeader ?? 'Program') ?></th>
-                                    <th rowspan="2">Anggaran</th>
-                                    <th rowspan="2">Rencana Aksi</th>
-                                    <th rowspan="2">Sub Rencana Aksi</th>
+                                    <th rowspan="2" class="c-no">No</th>
+                                    <?php if ($showOpd): ?><th rowspan="2" class="c-opd">OPD</th><?php endif; ?>
+                                    <?php if ($showPejabat): ?><th rowspan="2" class="c-pejabat">Pejabat (Eselon)</th><?php endif; ?>
+                                    <th rowspan="2" class="c-sasaran">Sasaran</th>
+                                    <th rowspan="2" class="c-indikator">Indikator</th>
+                                    <th rowspan="2" class="c-tahun">Tahun</th>
+                                    <th rowspan="2" class="c-satuan">Satuan</th>
+                                    <th rowspan="2" class="c-target">Target</th>
+                                    <th rowspan="2" class="c-unit"><?= esc($labelUnitHeader ?? 'Program') ?></th>
+                                    <th rowspan="2" class="c-anggaran">Anggaran</th>
+                                    <th rowspan="2" class="c-renaksi">Rencana Aksi</th>
+                                    <th rowspan="2" class="c-sub">Sub Rencana Aksi</th>
                                     <th colspan="4">Target Triwulan</th>
-                                    <th rowspan="2">Penanggung Jawab</th>
-                                    <th rowspan="2">Aksi</th>
+                                    <th rowspan="2" class="c-pj">Penanggung Jawab</th>
+                                    <th rowspan="2" class="c-aksi">Aksi</th>
                                 </tr>
                                 <tr>
-                                    <th>I</th>
-                                    <th>II</th>
-                                    <th>III</th>
-                                    <th>IV</th>
+                                    <th class="c-tw1">I</th>
+                                    <th class="c-tw2">II</th>
+                                    <th class="c-tw3">III</th>
+                                    <th class="c-tw4">IV</th>
                                 </tr>
                             <?php endif; ?>
                         </thead>
@@ -369,21 +619,21 @@ $filterQs = http_build_query(array_filter([
                                         $noPrinted  = false;
                                         ?>
                                         <?php foreach ($rows as $row): ?>
-                                            <tr>
+                                            <tr<?= $noPrinted ? '' : ' class="rk-grp"' ?>>
                                                 <?php if (!$noPrinted): ?>
-                                                    <td rowspan="<?= $sasTotal ?>"><?= $no ?></td>
+                                                    <td rowspan="<?= $sasTotal ?>" class="c-no"><?= $no ?></td>
                                                     <?php $noPrinted = true; ?>
                                                 <?php endif; ?>
                                                 <?php if (!$sasPrinted): ?>
-                                                    <td rowspan="<?= $sasTotal ?>" class="text-start"><?= esc($sasaran) ?></td>
+                                                    <td rowspan="<?= $sasTotal ?>" class="text-start va-top c-sasaran"><?= esc($sasaran) ?></td>
                                                     <?php $sasPrinted = true; ?>
                                                 <?php endif; ?>
-                                                <td class="text-start"><?= esc($row['indikator_sasaran'] ?? '-') ?></td>
-                                                <td><?= esc($row['indikator_tahun'] ?? '-') ?></td>
-                                                <td><?= esc($row['satuan'] ?? '-') ?></td>
-                                                <td><?= esc($row['indikator_target'] ?? '-') ?></td>
+                                                <td class="text-start c-indikator"><?= esc($row['indikator_sasaran'] ?? '-') ?></td>
+                                                <td class="c-tahun"><?= esc($row['indikator_tahun'] ?? '-') ?></td>
+                                                <td class="c-satuan"><?= esc($row['satuan'] ?? '-') ?></td>
+                                                <td class="c-target"><?= esc($row['indikator_target'] ?? '-') ?></td>
                                                 <?php if (!$pdPrinted): ?>
-                                                    <td rowspan="<?= $sasTotal ?>" class="text-start">
+                                                    <td rowspan="<?= $sasTotal ?>" class="text-start va-top c-pd">
                                                         <?php if ($isManual): ?>
                                                             <div class="mb-2"><span class="badge bg-warning-subtle text-warning border border-warning-subtle"><i class="fas fa-hand-pointer me-1"></i>Diatur manual</span></div>
                                                         <?php endif; ?>
@@ -412,7 +662,7 @@ $filterQs = http_build_query(array_filter([
                                                             <?php endforeach; ?>
                                                         <?php endif; ?>
                                                     </td>
-                                                    <td rowspan="<?= $sasTotal ?>" class="text-center">
+                                                    <td rowspan="<?= $sasTotal ?>" class="text-center va-top c-aksi">
                                                         <?php if ($canWrite ?? false): ?>
                                                             <?php $hasPd = !empty($displayOpds); // ada PD (manual ATAU otomatis) -> Edit; kosong -> Tambah 
                                                             ?>
@@ -469,32 +719,37 @@ $filterQs = http_build_query(array_filter([
                                             [$spanUnit, $mulaiUnit] = pk_bagi_baris($units, $n);
                                             ?>
                                             <?php for ($k = 0; $k < $n; $k++): ?>
-                                                <?php [$butirIdx, $subIdx] = $barisRender[$k] ?? [null, null]; ?>
-                                                <tr>
+                                                <?php
+                                                [$butirIdx, $subIdx] = $barisRender[$k] ?? [null, null];
+                                                // Penanda awal kelompok -> garis pemisah lebih tegas.
+                                                $awalOpd  = ($showOpd && $newOpd);
+                                                $trClass  = $awalOpd ? 'rk-grp rk-grp-opd' : (!$noPrinted ? 'rk-grp' : '');
+                                                ?>
+                                                <tr<?= $trClass !== '' ? ' class="' . $trClass . '"' : '' ?>>
                                                     <?php if (!$noPrinted): ?>
-                                                        <td rowspan="<?= $sasTotal ?>"><?= $no ?></td>
+                                                        <td rowspan="<?= $sasTotal ?>" class="va-top c-no"><?= $no ?></td>
                                                         <?php $noPrinted = true; ?>
                                                     <?php endif; ?>
-                                                    <?php if ($showOpd && $newOpd): ?>
-                                                        <td rowspan="<?= $opdTotals[$opdKey] ?? $sasTotal ?>" class="text-start"><?= esc($row['nama_opd'] ?? '-') ?></td>
+                                                    <?php if ($awalOpd): ?>
+                                                        <td rowspan="<?= $opdTotals[$opdKey] ?? $sasTotal ?>" class="text-start va-top c-opd"><?= esc($row['nama_opd'] ?? '-') ?></td>
                                                         <?php $curOpdKey = $opdKey;
                                                         $newOpd = false; ?>
                                                     <?php endif; ?>
                                                     <?php if (!$sasPrinted): ?>
                                                         <?php if ($showPejabat): ?>
-                                                            <td rowspan="<?= $sasTotal ?>" class="text-start">
+                                                            <td rowspan="<?= $sasTotal ?>" class="text-start va-top c-pejabat">
                                                                 <div class="fw-semibold"><?= esc(!empty($rows[0]['pejabat_jabatan']) ? $rows[0]['pejabat_jabatan'] : ($rows[0]['pejabat_nama'] ?? '-')) ?></div>
-                                                                <span class="badge bg-success-subtle text-success border border-success-subtle"><?= esc($eselonLabel(!empty($eselon ?? null) ? $eselon : ($rows[0]['pk_jenis'] ?? ''), $rows[0]['pejabat_eselon'] ?? null, $rows[0]['pejabat_jabatan'] ?? '')) ?></span>
+                                                                <span class="badge bg-success-subtle text-success border border-success-subtle mt-1"><?= esc($eselonLabel(!empty($eselon ?? null) ? $eselon : ($rows[0]['pk_jenis'] ?? ''), $rows[0]['pejabat_eselon'] ?? null, $rows[0]['pejabat_jabatan'] ?? '')) ?></span>
                                                             </td>
                                                         <?php endif; ?>
-                                                        <td rowspan="<?= $sasTotal ?>" class="text-start"><?= esc($sasaran) ?></td>
+                                                        <td rowspan="<?= $sasTotal ?>" class="text-start va-top c-sasaran"><?= esc($sasaran) ?></td>
                                                         <?php $sasPrinted = true; ?>
                                                     <?php endif; ?>
                                                     <?php if ($k === 0): ?>
-                                                        <td rowspan="<?= $n ?>" class="text-start va-top"><?= esc($row['indikator_sasaran'] ?? '-') ?></td>
-                                                        <td rowspan="<?= $n ?>" class="va-top"><?= esc($row['indikator_tahun'] ?? '-') ?></td>
-                                                        <td rowspan="<?= $n ?>" class="va-top"><?= esc($row['satuan'] ?? '-') ?></td>
-                                                        <td rowspan="<?= $n ?>" class="va-top"><?= esc($row['indikator_target'] ?? '-') ?></td>
+                                                        <td rowspan="<?= $n ?>" class="text-start va-top c-indikator"><?= esc($row['indikator_sasaran'] ?? '-') ?></td>
+                                                        <td rowspan="<?= $n ?>" class="va-top c-tahun"><?= esc($row['indikator_tahun'] ?? '-') ?></td>
+                                                        <td rowspan="<?= $n ?>" class="va-top c-satuan"><?= esc($row['satuan'] ?? '-') ?></td>
+                                                        <td rowspan="<?= $n ?>" class="va-top c-target"><?= esc($row['indikator_target'] ?? '-') ?></td>
 
                                                     <?php endif; ?>
 
@@ -503,8 +758,8 @@ $filterQs = http_build_query(array_filter([
                                                     ?>
                                                     <?php if (empty($units)): ?>
                                                         <?php if ($k === 0): ?>
-                                                            <td rowspan="<?= $n ?>" class="text-muted va-top">-</td>
-                                                            <td rowspan="<?= $n ?>" class="text-muted va-top">-</td>
+                                                            <td rowspan="<?= $n ?>" class="text-muted va-top c-unit">-</td>
+                                                            <td rowspan="<?= $n ?>" class="text-muted va-top c-anggaran">-</td>
                                                         <?php endif; ?>
                                                     <?php elseif (isset($mulaiUnit[$k])): ?>
                                                         <?php
@@ -517,14 +772,14 @@ $filterQs = http_build_query(array_filter([
                                                         $unitFallback = !empty($unit['fallback']);
                                                         $tampilBadge  = ($unitHeaderGenerik ?? false) || $unitFallback;
                                                         ?>
-                                                        <td rowspan="<?= $span ?>" class="text-start prog-cell">
+                                                        <td rowspan="<?= $span ?>" class="text-start prog-cell c-unit">
                                                             <?= esc($unit['nama'] ?? ($unit['program'] ?? '-')) ?>
                                                             <?php if ($tampilBadge && !empty($unit['level_label'])): ?>
                                                                 <span class="badge <?= $unitFallback ? 'bg-warning-subtle text-warning border border-warning-subtle' : 'bg-success-subtle text-success border border-success-subtle' ?> fw-normal ms-1"
                                                                     <?= $unitFallback ? 'title="Tingkat aslinya kosong, ditampilkan dari tingkat di atasnya"' : '' ?>><?= esc($unit['level_label']) ?></span>
                                                             <?php endif; ?>
                                                         </td>
-                                                        <td rowspan="<?= $span ?>" class="prog-cell-money">
+                                                        <td rowspan="<?= $span ?>" class="prog-cell-money c-anggaran">
                                                             <?= esc($rupiah($unit['anggaran'] ?? 0)) ?>
                                                         </td>
                                                     <?php endif; ?>
@@ -539,7 +794,7 @@ $filterQs = http_build_query(array_filter([
                                                         <?php // Rencana Aksi membentang setinggi sub rencana aksinya 
                                                         ?>
                                                         <?php if ($subIdx === 0): ?>
-                                                            <td rowspan="<?= $barisButir[$butirIdx] ?? 1 ?>" class="text-start va-top">
+                                                            <td rowspan="<?= $barisButir[$butirIdx] ?? 1 ?>" class="text-start va-top c-renaksi">
                                                                 <?php
                                                                 $txt = $items[$butirIdx] ?? '';
                                                                 echo ($txt !== '') ? esc(($butirIdx + 1) . '. ' . $txt) : '<span class="text-muted">-</span>';
@@ -548,21 +803,21 @@ $filterQs = http_build_query(array_filter([
                                                         <?php endif; ?>
 
                                                         <?php $sub = $subsRow[$butirIdx][$subIdx] ?? null; ?>
-                                                        <td class="text-start sub-cell va-top">
+                                                        <td class="text-start sub-cell va-top c-sub">
                                                             <?= $sub !== null ? esc(($subIdx + 1) . '. ' . $sub['teks']) : '<span class="text-muted">-</span>' ?>
                                                         </td>
 
-                                                        <?php // Target Triwulan mengikuti SUB rencana aksi pada baris ini 
+                                                        <?php // Target Triwulan mengikuti SUB rencana aksi pada baris ini
                                                         ?>
                                                         <?php foreach ([1, 2, 3, 4] as $q): ?>
                                                             <?php $nilaiTw = $sub['tw'][$q] ?? null; ?>
-                                                            <td class="tw-cell"><?= ($nilaiTw !== null && $nilaiTw !== '') ? esc($nilaiTw) : '<span class="text-muted">-</span>' ?></td>
+                                                            <td class="tw-cell va-top c-tw<?= $q ?>"><?= ($nilaiTw !== null && $nilaiTw !== '') ? esc($nilaiTw) : '<span class="text-muted">-</span>' ?></td>
                                                         <?php endforeach; ?>
                                                     <?php endif; ?>
 
                                                     <?php if ($k === 0): ?>
-                                                        <td rowspan="<?= $n ?>" class="text-start"><?= esc($row['penanggung_jawab'] ?? '-') ?></td>
-                                                        <td rowspan="<?= $n ?>">
+                                                        <td rowspan="<?= $n ?>" class="text-start va-top c-pj"><?= esc($row['penanggung_jawab'] ?? '-') ?></td>
+                                                        <td rowspan="<?= $n ?>" class="va-top c-aksi">
                                                             <?php if ($canWrite ?? true): ?>
                                                                 <?php if (empty($row['target_id'])): ?>
                                                                     <a href="<?= $baseUrl . '/tambah?pi=' . (int) $row['pk_indikator_id'] ?>"
@@ -594,14 +849,16 @@ $filterQs = http_build_query(array_filter([
                                 ?>
                             <?php else: ?>
                                 <tr>
-                                    <td colspan="<?= $cols ?>" class="text-muted">
-                                        Belum ada indikator PK <?= $isBupati ? 'Bupati' : 'OPD/Kecamatan' ?> untuk filter ini.
+                                    <td colspan="<?= $cols ?>" class="text-muted py-5">
+                                        <i class="fas fa-table-list fa-2x mb-2 d-block opacity-50"></i>
+                                        Belum ada indikator PK <?= $isBupati ? 'Bupati' : 'OPD/Kecamatan' ?> untuk filter ini.<br>
                                         Pastikan dokumen PK sudah dibuat di menu Perjanjian Kinerja.
                                     </td>
                                 </tr>
                             <?php endif; ?>
                         </tbody>
-                    </table>
+                        </table>
+                    </div>
                 </div>
             </div>
         </main>
@@ -610,6 +867,83 @@ $filterQs = http_build_query(array_filter([
     </div>
 
     <script>
+        // ---------------------------------------------------------------
+        // Kerangka baca tabel lebar:
+        //   1. --rk-h1 : tinggi baris kepala ke-1, dipakai baris ke-2 agar
+        //                menempel persis (tanpa celah / tumpang tindih).
+        //   2. bayangan tepi: penanda bahwa masih ada kolom di kiri/kanan.
+        //   3. mode ringkas: pilihan pengguna, diingat per peramban.
+        // ---------------------------------------------------------------
+        (function() {
+            var box = document.querySelector('.rk-box');
+            if (!box) return;
+            var scroll  = box.querySelector('.rk-scroll');
+            var table   = box.querySelector('.renaksi-table');
+            var hint    = document.querySelector('.rk-hint');
+            var ringkas = document.getElementById('rkRingkas');
+            var KUNCI   = 'rk-ringkas';
+
+            function ukurKepala() {
+                var baris = table && table.querySelector('thead tr');
+                if (baris) {
+                    table.style.setProperty('--rk-h1', Math.round(baris.getBoundingClientRect().height) + 'px');
+                }
+            }
+
+            function tandaiTepi() {
+                var sisaKanan = scroll.scrollWidth - scroll.clientWidth - scroll.scrollLeft;
+                box.classList.toggle('is-geser-kiri', scroll.scrollLeft > 2);
+                box.classList.toggle('is-ada-kanan', sisaKanan > 2);
+                if (hint) {
+                    hint.classList.toggle('d-none', scroll.scrollWidth <= scroll.clientWidth + 2);
+                }
+            }
+
+            function segarkan() {
+                ukurKepala();
+                tandaiTepi();
+            }
+
+            scroll.addEventListener('scroll', tandaiTepi, { passive: true });
+            window.addEventListener('resize', segarkan);
+            // Pagination otomatis (templates/footer.php) menyembunyikan baris
+            // SETELAH skrip ini jalan -> ukur ulang saat DOM & aset siap.
+            document.addEventListener('DOMContentLoaded', segarkan);
+            window.addEventListener('load', segarkan);
+            if (document.fonts && document.fonts.ready) {
+                document.fonts.ready.then(segarkan).catch(function() {});
+            }
+
+            if (ringkas) {
+                var colgroup = table.querySelector('colgroup');
+                var semuaCol = colgroup ? Array.prototype.slice.call(colgroup.children) : [];
+                var kelasRingkas = <?= json_encode(array_map(fn($k) => 'c-' . $k, $kolomRingkas)) ?>;
+
+                // Menyembunyikan SEL saja tidak cukup: sel sesudahnya akan
+                // bergeser ke slot kolom sebelumnya sehingga tidak lagi cocok
+                // dengan lebar di <colgroup>. Jadi <col>-nya ikut dilepas.
+                function terapkanRingkas(aktif) {
+                    box.classList.toggle('ringkas', aktif);
+                    if (!colgroup) return;
+                    var dipakai = aktif ? semuaCol.filter(function(c) {
+                        return kelasRingkas.indexOf(c.className) === -1;
+                    }) : semuaCol;
+                    while (colgroup.firstChild) { colgroup.removeChild(colgroup.firstChild); }
+                    dipakai.forEach(function(c) { colgroup.appendChild(c); });
+                }
+
+                try { ringkas.checked = localStorage.getItem(KUNCI) === '1'; } catch (e) {}
+                terapkanRingkas(ringkas.checked);
+                ringkas.addEventListener('change', function() {
+                    terapkanRingkas(ringkas.checked);
+                    try { localStorage.setItem(KUNCI, ringkas.checked ? '1' : '0'); } catch (e) {}
+                    segarkan();
+                });
+            }
+
+            segarkan();
+        })();
+
         // Filter OPD & Pejabat pakai Select2 (dropdown pencarian)
         $(function() {
             if (!$.fn.select2) return;

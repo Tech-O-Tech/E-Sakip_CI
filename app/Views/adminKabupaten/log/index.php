@@ -48,11 +48,11 @@
 
                 <!-- FILTER -->
                 <form method="get" class="row g-2 mb-3">
-                    <div class="col-md-3">
+                    <div class="col-12 col-md-4 col-xl-2">
                         <input type="text" name="q" class="form-control form-control-sm" placeholder="Cari user / deskripsi / IP..."
                             value="<?= esc($filters['q'] ?? '') ?>">
                     </div>
-                    <div class="col-md-2">
+                    <div class="col-6 col-md-4 col-xl-2">
                         <select name="action" class="form-select form-select-sm">
                             <option value="">Semua Aksi</option>
                             <?php foreach (($actions ?? []) as $a): ?>
@@ -60,7 +60,7 @@
                             <?php endforeach; ?>
                         </select>
                     </div>
-                    <div class="col-md-2">
+                    <div class="col-6 col-md-4 col-xl-2">
                         <select name="module" class="form-select form-select-sm">
                             <option value="">Semua Modul</option>
                             <?php foreach (($modules ?? []) as $m): ?>
@@ -68,7 +68,7 @@
                             <?php endforeach; ?>
                         </select>
                     </div>
-                    <div class="col-md-2">
+                    <div class="col-6 col-md-4 col-xl-2">
                         <select name="user" class="form-select form-select-sm">
                             <option value="">Semua User</option>
                             <?php foreach (($users ?? []) as $u): ?>
@@ -76,20 +76,34 @@
                             <?php endforeach; ?>
                         </select>
                     </div>
-                    <div class="col-md-3 d-flex gap-1">
-                        <input type="date" name="from" class="form-control form-control-sm" value="<?= esc($filters['from'] ?? '') ?>" title="Dari tanggal">
-                        <input type="date" name="to" class="form-control form-control-sm" value="<?= esc($filters['to'] ?? '') ?>" title="Sampai tanggal">
+                    <?php /* Masukan tanggal punya lebar minimum bawaan peramban
+                       (~140px) dan tidak bisa menyusut; kalau dijejalkan berdua
+                       dalam satu kolom sempit, kolomnya jebol. Jadi dipisah. */ ?>
+                    <div class="col-6 col-md-4 col-xl-2">
+                        <input type="date" name="from" class="form-control form-control-sm" value="<?= esc($filters['from'] ?? '') ?>" title="Dari tanggal" aria-label="Dari tanggal">
                     </div>
-                    <div class="col-12 d-flex gap-2">
+                    <div class="col-6 col-md-4 col-xl-2">
+                        <input type="date" name="to" class="form-control form-control-sm" value="<?= esc($filters['to'] ?? '') ?>" title="Sampai tanggal" aria-label="Sampai tanggal">
+                    </div>
+                    <div class="col-12 d-flex flex-wrap gap-2">
                         <button class="btn btn-success btn-sm"><i class="fas fa-filter me-1"></i> Filter</button>
                         <a href="<?= base_url('adminkab/log-aktivitas') ?>" class="btn btn-outline-secondary btn-sm">Reset</a>
-                        <form action="<?= base_url('adminkab/log-aktivitas/clear') ?>" method="post" class="ms-auto"
-                            onsubmit="return confirm('Hapus log lebih lama dari 90 hari?');">
-                            <?= csrf_field() ?>
-                            <input type="hidden" name="days" value="90">
-                            <button class="btn btn-outline-danger btn-sm"><i class="fas fa-broom me-1"></i> Bersihkan log > 90 hari</button>
-                        </form>
+                        <?php /* Tombol ini milik form "bersihkan log" di bawah.
+                           Sebelumnya <form> ditulis BERSARANG di dalam form
+                           filter — peramban membuang form dalam, sehingga
+                           tombolnya justru mengirim ulang filter GET, bukan
+                           menghapus log. Atribut form= menautkannya tanpa
+                           perlu bersarang. */ ?>
+                        <button form="formBersihkanLog" class="btn btn-outline-danger btn-sm ms-sm-auto">
+                            <i class="fas fa-broom me-1"></i> Bersihkan log &gt; 90 hari
+                        </button>
                     </div>
+                </form>
+
+                <form id="formBersihkanLog" action="<?= base_url('adminkab/log-aktivitas/clear') ?>" method="post"
+                    onsubmit="return confirm('Hapus log lebih lama dari 90 hari?');">
+                    <?= csrf_field() ?>
+                    <input type="hidden" name="days" value="90">
                 </form>
 
                 <div class="table-responsive table-wrap">

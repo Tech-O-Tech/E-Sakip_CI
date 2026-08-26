@@ -12,6 +12,13 @@
 --   mysqldump -u USER -p NAMA_DB > backup_sebelum_versioning.sql
 --   mysql -u USER -p NAMA_DB < db/deploy_2026-08-24_server_pringsewu.sql
 --   mysql -u USER -p NAMA_DB -t < db/postdeploy_2026-08-20_versioning.sql
+--
+-- KALAU LEWAT phpMyAdmin: PILIH DULU DATABASE-nya di sidebar kiri, baru buka
+-- tab SQL dari dalam database itu (atau tempel `USE `nama_db`;` di baris
+-- pertama). Berkas ini memakai nama tabel tanpa kualifikasi — dijalankan di
+-- level server, `permissions` dicari di `information_schema` dan gagal dengan
+-- "#1109 - Unknown table 'PERMISSIONS' in information_schema", sementara
+-- DATABASE() ikut salah sehingga verifikasi melaporkan GAGAL palsu.
 -- =====================================================================
 
 

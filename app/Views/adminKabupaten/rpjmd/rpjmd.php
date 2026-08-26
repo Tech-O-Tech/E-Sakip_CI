@@ -56,9 +56,12 @@
                 <?php endif; ?>
 
                 <!-- Filter -->
-                <div class="d-flex justify-content-between align-items-center mb-4">
-                    <div class="d-flex align-items-center flex-fill me-3 gap-2">
-                        <select id="periodFilter" class="form-select" onchange="filterByPeriode()" style="flex: 2;">
+                <?php /* Pakai grid, bukan satu baris flex: di layar sempit
+                   filter & tombol harus turun baris, bukan mendorong halaman
+                   jadi melebar. */ ?>
+                <div class="row g-2 align-items-center mb-4">
+                    <div class="col-12 col-md-7 col-xl-5">
+                        <select id="periodFilter" class="form-select" onchange="filterByPeriode()">
                             <?php if (!empty($rpjmd_grouped)): ?>
                                 <?php $periodKeys = array_keys($rpjmd_grouped);
                                 $latestPeriod = end($periodKeys); ?>
@@ -69,14 +72,16 @@
                                 <?php endforeach; ?>
                             <?php endif; ?>
                         </select>
-                        <select id="statusFilter" class="form-select" onchange="filterByStatus()" style="flex: 1;">
+                    </div>
+                    <div class="col-12 col-md-5 col-xl-3">
+                        <select id="statusFilter" class="form-select" onchange="filterByStatus()">
                             <option value="all">Semua Status</option>
                             <option value="draft">Draft</option>
                             <option value="selesai">Selesai</option>
                         </select>
                     </div>
 
-                    <div class="d-flex gap-2">
+                    <div class="col-12 col-xl d-flex flex-wrap gap-2 justify-content-xl-end">
                         <button type="button" id="btnCetakRpjmd" onclick="cetakRpjmd()"
                             class="btn btn-outline-danger d-flex align-items-center">
                             <i class="fas fa-file-pdf me-1"></i> Cetak PDF

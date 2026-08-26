@@ -230,19 +230,31 @@
                     }
                 }
 
-                // qsBase untuk link tombol
-                $qsBase = '';
-                if (!empty($filters['tahun'])) {
-                    $qsBase .= (strpos($qsBase, '?') === false ? '?' : '&') . 'tahun=' . urlencode((string) $filters['tahun']);
-                }
-                if (!empty($filters['status'])) {
-                    $qsBase .= (strpos($qsBase, '?') === false ? '?' : '&') . 'status=' . urlencode((string) $filters['status']);
-                }
-                if (!empty($mode)) {
-                    $qsBase .= (strpos($qsBase, '?') === false ? '?' : '&') . 'mode=' . urlencode((string) $mode);
-                }
-                if (!empty($selectedOpdId)) {
-                    $qsBase .= (strpos($qsBase, '?') === false ? '?' : '&') . 'opd_id=' . urlencode((string) $selectedOpdId);
+                // qsBase untuk link tombol.
+                //
+                // JANGAN dirakit ulang di sini bila controller sudah
+                // mengirimkannya: LakipOpdController::buildQs() sengaja ikut
+                // membawa `sumber` + `sumber_versi`, dan rakitan lokal yang
+                // dulu menimpanya membuat tombol +/Edit pada baris bersumber
+                // IKU mendarat di formulir Renstra ("target belum diisi" atas
+                // indikator yang targetnya jelas terpampang — atau tertulis ke
+                // indikator lain yang kebetulan se-id). Rakitan di bawah
+                // tinggal cadangan untuk pemanggil lama yang belum mengirim
+                // qsBase sama sekali.
+                if (! isset($qsBase) || $qsBase === '') {
+                    $qsBase = '';
+                    if (!empty($filters['tahun'])) {
+                        $qsBase .= (strpos($qsBase, '?') === false ? '?' : '&') . 'tahun=' . urlencode((string) $filters['tahun']);
+                    }
+                    if (!empty($filters['status'])) {
+                        $qsBase .= (strpos($qsBase, '?') === false ? '?' : '&') . 'status=' . urlencode((string) $filters['status']);
+                    }
+                    if (!empty($mode)) {
+                        $qsBase .= (strpos($qsBase, '?') === false ? '?' : '&') . 'mode=' . urlencode((string) $mode);
+                    }
+                    if (!empty($selectedOpdId)) {
+                        $qsBase .= (strpos($qsBase, '?') === false ? '?' : '&') . 'opd_id=' . urlencode((string) $selectedOpdId);
+                    }
                 }
 
                 // lakipMap fallback dari lakip list

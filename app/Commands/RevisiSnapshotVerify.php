@@ -215,13 +215,34 @@ class RevisiSnapshotVerify extends BaseCommand
         CLI::newLine();
         CLI::write('CASE 11 — Konflik dua revisi aktif', 'yellow');
 
-        $r2 = $revisi->buatDraft([
+        // Sejak 2026-08-25, tabrakan tahun ditolak SEJAK DRAFT oleh
+        // tolakTahunBentrok() — kekeliruan ketahuan pada orang yang bisa
+        // langsung memperbaikinya, bukan pada Admin Kabupaten saat mengesahkan.
+        // Itu diuji sebagai perilaku, bukan dielakkan:
+        $this->cekMelempar(
+            'draft dengan tahun berlaku yang sudah dipakai DITOLAK sejak dibuat',
+            static fn () => $revisi->buatDraft([
+                'opd_id'              => null,
+                'tahun_mulai'         => self::MULAI,
+                'tahun_akhir'         => self::AKHIR,
+                'nama'                => self::TANDA . ' Revisi 2 (tabrakan)',
+                'berlaku_mulai_tahun' => 2092, // TAHUN YANG SAMA dengan revisi 1
+            ])
+        );
+
+        // Lapisan sahkan() tetap harus diuji tersendiri: draft tabrakan bisa
+        // saja lahir lewat jalur lain (data lama, tulisan langsung). Disisipkan
+        // langsung ke tabel — persis skenario yang dijaga sahkan().
+        $this->db->table('iku_revisi')->insert([
             'opd_id'              => null,
             'tahun_mulai'         => self::MULAI,
             'tahun_akhir'         => self::AKHIR,
+            'nomor'               => 99,
             'nama'                => self::TANDA . ' Revisi 2 (tabrakan)',
-            'berlaku_mulai_tahun' => 2092, // TAHUN YANG SAMA dengan revisi 1
+            'berlaku_mulai_tahun' => 2092,
+            'status'              => 'draft',
         ]);
+        $r2 = (int) $this->db->insertID();
 
         $this->cekMelempar(
             'sahkan revisi kedua utk tahun berlaku yang sama DITOLAK',

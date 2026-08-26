@@ -68,9 +68,14 @@
                         <?php if (empty($grouped_data)): ?>
                             <option value="">-- Belum ada data --</option>
                         <?php else: ?>
+                            <?php /* Periode RPJMD tetap ditawarkan walau IKU-nya
+                                     masih kosong — sama seperti layar IKU OPD
+                                     terhadap Renstra — dan diberi keterangan
+                                     supaya kosongnya terbaca wajar. */ ?>
                             <?php foreach ($grouped_data as $key => $periode): ?>
                                 <option value="<?= esc($key) ?>" <?= ($selected_periode === $key) ? 'selected' : '' ?>>
-                                    <?= esc($periode['period']) ?>
+                                    <?= esc($periode['period']) ?><?= isset($periode['punya_iku']) && ! $periode['punya_iku']
+                                        ? '  —  belum ada IKU' : '' ?>
                                 </option>
                             <?php endforeach; ?>
                         <?php endif; ?>
@@ -93,6 +98,104 @@
                 <?php endif; ?>
             </form>
 
+            <?php
+            /* Keadaan pengesahan IKU Kabupaten — panel yang sama dengan layar
+               IKU OPD supaya konsepnya tidak bercabang. Bedanya satu dan
+               disengaja: dokumen kabupaten disahkan penyusunnya sendiri, jadi
+               pengganti "menunggu Admin Kabupaten" adalah tombol Sahkan. */
+            $menunggu = $revisiMenunggu ?? null;
+            $berlaku  = $revisiBerlaku ?? null;
+            $adaIsi   = ! empty($iku_data);
+            [$tmIku, $taIku] = ! empty($selected_periode) && strpos((string) $selected_periode, '-') !== false
+                ? array_map('intval', explode('-', (string) $selected_periode))
+                : [0, 0];
+            ?>
+
+            <?php if ($mode === 'kabupaten' && $tmIku > 0): ?>
+                <div class="alert <?= $menunggu !== null ? 'alert-primary' : ($berlaku !== null ? 'alert-success' : 'alert-warning') ?> d-flex flex-wrap justify-content-between align-items-center gap-2">
+                    <div>
+                        <?php if ($menunggu !== null): ?>
+                            <i class="fas fa-hourglass-half me-1"></i>
+                            <strong>Dibekukan, menunggu disahkan</strong>
+                            <div class="small mt-1">
+                                Dibekukan
+                                <?= ! empty($menunggu['submitted_at'])
+                                    ? esc(date('d M Y H:i', strtotime($menunggu['submitted_at']))) : '' ?>.
+                                Perubahan yang Anda lakukan sesudah itu <strong>tidak ikut terbawa</strong> —
+                                tarik dulu bila isinya masih perlu diperbaiki.
+                            </div>
+                        <?php elseif ($berlaku !== null): ?>
+                            <i class="fas fa-circle-check me-1"></i>
+                            <strong>Sudah disahkan</strong> &mdash;
+                            <?= esc($berlaku['nomor'] ?? '') ?><?= ! empty($berlaku['nama']) ? ' ' . esc($berlaku['nama']) : '' ?>,
+                            berlaku mulai <?= (int) $berlaku['berlaku_mulai_tahun'] ?>.
+                            <div class="small mt-1">
+                                Perubahan berikutnya dibuat lewat <strong>Versi IKU</strong>:
+                                buat revisi, sunting yang berubah, lalu sahkan. Menu ini sendiri
+                                tidak lagi mengubah dokumen yang berlaku.
+                            </div>
+                        <?php else: ?>
+                            <i class="fas fa-pen-ruler me-1"></i>
+                            <strong>Belum pernah disahkan</strong>
+                            <div class="small mt-1">
+                                IKU Kabupaten periode ini masih bebas disusun. Bila sudah sesuai,
+                                bekukan lalu sahkan supaya LAKIP punya versi resmi untuk dirujuk.
+                            </div>
+                        <?php endif; ?>
+                    </div>
+
+                    <div class="d-flex flex-wrap gap-2">
+                        <?php if ($menunggu !== null): ?>
+                            <?php if (user_can('iku_kab.revisi_sahkan')): ?>
+                                <form method="post"
+                                      action="<?= base_url('adminkab/iku/revisi/sahkan/' . (int) $menunggu['id']) ?>"
+                                      onsubmit="return confirm('Sahkan IKU Kabupaten periode <?= esc($selected_periode) ?>? Versi ini menjadi rujukan resmi LAKIP.');">
+                                    <?= csrf_field() ?>
+                                    <button class="btn btn-success btn-sm">
+                                        <i class="fas fa-stamp me-1"></i>Sahkan Sekarang
+                                    </button>
+                                </form>
+                            <?php endif; ?>
+                            <?php if (user_can('iku_kab.revisi')): ?>
+                                <form method="post"
+                                      action="<?= base_url('adminkab/iku/revisi/tarik/' . (int) $menunggu['id']) ?>"
+                                      onsubmit="return confirm('Tarik pembekuan? Revisi kembali jadi draft dan bisa disunting.');">
+                                    <?= csrf_field() ?>
+                                    <button class="btn btn-outline-danger btn-sm">
+                                        <i class="fas fa-rotate-left me-1"></i>Tarik
+                                    </button>
+                                </form>
+                            <?php endif; ?>
+                        <?php elseif ($berlaku === null && $adaIsi && user_can('iku_kab.revisi')): ?>
+                            <form method="post" action="<?= base_url('adminkab/iku/ajukan-pengesahan') ?>"
+                                  onsubmit="return confirm('Bekukan IKU Kabupaten periode <?= esc($selected_periode) ?> untuk disahkan? Isinya dibekukan apa adanya saat ini.');">
+                                <?= csrf_field() ?>
+                                <input type="hidden" name="tahun_mulai" value="<?= $tmIku ?>">
+                                <input type="hidden" name="tahun_akhir" value="<?= $taIku ?>">
+                                <button class="btn btn-primary btn-sm">
+                                    <i class="fas fa-paper-plane me-1"></i>Ajukan Pengesahan
+                                </button>
+                            </form>
+                        <?php endif; ?>
+
+                        <a href="<?= base_url('adminkab/iku/revisi') ?>" class="btn btn-outline-secondary btn-sm">
+                            <i class="fas fa-code-branch me-1"></i>Versi IKU
+                        </a>
+                    </div>
+                </div>
+            <?php endif; ?>
+
+            <?php if ($mode === 'kabupaten' && $tmIku > 0 && ! $adaIsi): ?>
+                <div class="alert alert-info">
+                    <i class="fas fa-circle-info me-1"></i>
+                    <strong>IKU Kabupaten periode <?= esc($selected_periode) ?> belum berisi apa pun.</strong>
+                    <div class="small mt-1">
+                        Ambil sasaran &amp; indikatornya dari RPJMD lewat
+                        <strong>Sync dari RPJMD</strong>.
+                    </div>
+                </div>
+            <?php endif; ?>
+
             <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
                 <div class="text-muted small">
                     <?php if ($mode === 'kabupaten'): ?>
@@ -103,9 +206,11 @@
                 </div>
                 <div class="d-flex gap-2">
                     <?php if ($mode === 'kabupaten' && user_can('iku_kab.create')): ?>
-                        <a href="<?= base_url('adminkab/iku/tambah') ?>" class="btn btn-success">
-                            <i class="fas fa-plus me-1"></i> Tambah IKU
-                        </a>
+                        <?php /* Tidak ada tombol "Tambah IKU". IKU Kabupaten bersumber
+                                 dari RPJMD lewat sync; menambah sasaran manual di
+                                 sebelahnya mudah melahirkan sasaran kembar — sync
+                                 memakai ulang sasaran bernama sama, penambahan manual
+                                 selalu membuat baris baru. */ ?>
                         <a href="<?= base_url('adminkab/iku/sync') ?>" class="btn btn-outline-success"
                            title="Ambil sasaran, indikator, dan target dari RPJMD">
                             <i class="fas fa-sync-alt me-1"></i> Sync dari RPJMD

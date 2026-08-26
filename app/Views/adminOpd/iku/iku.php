@@ -170,13 +170,12 @@
                     </div>
                     <div class="d-flex gap-2">
                         <?php if (user_can('iku_opd.create')): ?>
-                            <?php /* Tombol "Tambah IKU" DISEMBUNYIKAN.
-                                     IKU kini bersumber dari Renstra lewat sync, dan menambah
-                                     sasaran manual di sebelahnya mudah melahirkan sasaran kembar
-                                     — sync memakai ulang sasaran bernama sama, penambahan manual
-                                     selalu membuat baris baru. Rutenya sengaja dibiarkan hidup
-                                     supaya tautan lama tidak mati; penjaga sasaran kembar di
-                                     IkuController::save() yang menahan kekeliruannya. */ ?>
+                            <?php /* Tidak ada tombol "Tambah IKU". IKU bersumber dari
+                                     Renstra lewat sync; menambah sasaran manual di
+                                     sebelahnya mudah melahirkan sasaran kembar — sync
+                                     memakai ulang sasaran bernama sama, penambahan manual
+                                     selalu membuat baris baru. Rutenya kini ikut ditutup
+                                     di controller, bukan sekadar disembunyikan. */ ?>
                             <?php if (empty($is_lintas_opd)): ?>
                                 <?php /* Periode ikut dibawa: tanpa itu layar sync memilih
                                          bawaannya sendiri, dan pemakai yang baru saja memilih

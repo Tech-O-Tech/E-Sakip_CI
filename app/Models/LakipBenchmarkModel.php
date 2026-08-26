@@ -27,6 +27,14 @@ class LakipBenchmarkModel extends Model
     protected $allowedFields = [
         'rpjmd_indikator_id',
         'renstra_indikator_id',
+        // Kolom sumber IKU (migrasi 2026-08-26). WAJIB terdaftar: dengan
+        // $protectFields aktif, kolom tak terdaftar dibuang diam-diam oleh
+        // insert()/update() — benchmark bersumber IKU pernah tersimpan tanpa
+        // satu pun kolom kunci sehingga tiap simpan ulang mencetak baris yatim
+        // baru. Instalasi lama tetap aman: jalur tulis menolak lebih dulu
+        // lewat punyaKolomSumber().
+        'iku_indikator_id',
+        'source_type',
         'opd_id',
         'tahun',
         'nilai_provinsi',
@@ -61,23 +69,31 @@ class LakipBenchmarkModel extends Model
      */
     public static function kolomIndikator(string $mode, ?string $sumber = null): string
     {
-        if ($mode === 'kabupaten') {
-            return 'rpjmd_indikator_id';
+        // Sumber IKU diperiksa SEBELUM mode: IKU Kabupaten (§24) juga lewat
+        // sini, dan memeriksa mode lebih dulu membuat id indikator IKU
+        // kabupaten tertulis ke rpjmd_indikator_id — kolom milik dokumen lain.
+        if ($sumber === 'iku') {
+            return 'iku_indikator_id';
         }
 
-        return $sumber === 'iku' ? 'iku_indikator_id' : 'renstra_indikator_id';
+        return $mode === 'kabupaten' ? 'rpjmd_indikator_id' : 'renstra_indikator_id';
     }
 
     /** Sumber baris yang sah untuk satu mode. */
     public static function sumberSah(string $mode, $diminta): string
     {
+        $sumber = trim((string) ($diminta ?? ''));
+
+        // IKU sah di KEDUA tingkat — Kabupaten memakai IKU Kabupaten (§24).
+        if ($sumber === 'iku') {
+            return 'iku';
+        }
+
         if ($mode === 'kabupaten') {
             return 'rpjmd';
         }
 
-        $sumber = trim((string) ($diminta ?? ''));
-
-        return in_array($sumber, ['iku', 'renstra'], true) ? $sumber : 'renstra';
+        return 'renstra';
     }
 
     /** Apakah kolom sumber sudah terpasang (migrasi 2026-08-26). */
@@ -171,7 +187,7 @@ class LakipBenchmarkModel extends Model
         // cabang ini, mengisi angka pembanding untuk baris IKU selalu ditolak
         // sebagai "tidak ditemukan" — layar menampilkan indikatornya, tetapi
         // server mencarinya di tabel Renstra.
-        if ($mode !== 'kabupaten' && self::sumberSah($mode, $sumber) === 'iku') {
+        if (self::sumberSah($mode, $sumber) === 'iku') {
             $b = $this->db->table('iku_indikator ii')
                 ->select('ii.id AS indikator_id, ii.indikator AS indikator_sasaran, ii.satuan, isa.opd_id')
                 ->join('iku_sasaran isa', 'isa.id = ii.iku_sasaran_id', 'left')
@@ -181,7 +197,12 @@ class LakipBenchmarkModel extends Model
                 $b->where('ii.dihentikan_pada IS NULL', null, false);
             }
 
-            if (!empty($opdScope)) {
+            // Lingkup: IKU Kabupaten hidup di iku_sasaran.opd_id NULL,
+            // IKU OPD di opd_id pemiliknya. Tanpa saringan kabupaten, id
+            // indikator IKU OPD mana pun lolos sebagai "milik kabupaten".
+            if ($mode === 'kabupaten') {
+                $b->where('isa.opd_id IS NULL', null, false);
+            } elseif (!empty($opdScope)) {
                 $b->where('isa.opd_id', (int) $opdScope);
             }
 

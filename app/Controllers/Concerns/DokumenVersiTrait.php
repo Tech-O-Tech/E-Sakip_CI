@@ -445,12 +445,29 @@ trait DokumenVersiTrait
 
     public function versiKoreksiBatal($id = null, $koreksiId = null)
     {
+        // Gerbang yang sama dengan mengajukan/menyimpan koreksi — membatalkan
+        // adalah bagian dari alur yang sama, bukan aksi bebas izin.
+        if (! function_exists('user_can') || ! user_can('version_correction.request')) {
+            return $this->versiTolakIzin();
+        }
+
         if ($this->versiMilikSaya((int) $id) === null) {
             return $this->versiTolak('Versi tidak ditemukan pada lingkup Anda.');
         }
 
+        $svc     = new VersionCorrectionService();
+        $koreksi = $svc->ambil((int) $koreksiId);
+
+        // Anti-IDOR: $koreksiId datang dari URL dan harus benar-benar milik
+        // versi yang lolos pemeriksaan lingkup di atas. Tanpa ikatan ini,
+        // koreksi pending milik OPD lain (atau modul lain) bisa dibatalkan
+        // hanya dengan mengarang angkanya.
+        if ($koreksi === null || (int) $koreksi['version_id'] !== (int) $id) {
+            return $this->versiTolak('Permintaan koreksi tidak ditemukan pada versi ini.');
+        }
+
         try {
-            (new VersionCorrectionService())->batalkan(
+            $svc->batalkan(
                 (int) $koreksiId,
                 session()->get('user_id') ?? session()->get('id')
             );

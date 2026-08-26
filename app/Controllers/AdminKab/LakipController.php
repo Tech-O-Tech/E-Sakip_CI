@@ -5,6 +5,7 @@ namespace App\Controllers\AdminKab;
 use App\Controllers\BaseController;
 use App\Controllers\Concerns\LakipAddendumTrait;
 use App\Controllers\Concerns\LakipBenchmarkTrait;
+use App\Controllers\Concerns\LakipSumberTrait;
 use App\Controllers\Concerns\LakipSnapshotTrait;
 use App\Models\LakipModel;
 use App\Models\OpdModel;
@@ -12,13 +13,22 @@ use App\Models\OpdModel;
 class LakipController extends BaseController
 {
     /** Analisis Faktor + Efisiensi Program (dua tabel di bawah tabel utama). */
-    use LakipAddendumTrait;
+    use LakipAddendumTrait {
+        // Dialiaskan supaya bawaannya masih terpanggil setelah ditimpa di
+        // kelas ini (pola yang sama dengan LakipOpdController).
+        LakipAddendumTrait::sumberDokumenLakip as private sumberDokumenBawaan;
+    }
+
+    /** Pemilih dokumen sumber (IKU Kabupaten / RPJMD + versinya). */
+    use LakipSumberTrait;
 
     /** Chart perbandingan Provinsi Lampung & Nasional (di atas Analisis Faktor). */
     use LakipBenchmarkTrait;
 
     /** Snapshot tahunan + kunci tahun + penyesuaian kebijakan. */
-    use LakipSnapshotTrait;
+    use LakipSnapshotTrait {
+        barisHidupUntukSnapshot as private barisHidupBawaan;
+    }
 
     protected $lakipModel;
     protected $opdModel;
@@ -56,6 +66,51 @@ class LakipController extends BaseController
         $this->db = \Config\Database::connect();
         helper(['form', 'url']);
     }
+    /**
+     * Sumber dokumen yang sedang dipilih di layar (menimpa bawaan trait,
+     * dialiaskan di blok `use`). Mode 'opd' pada layar ini adalah rekap
+     * Renstra lintas OPD — perilaku lamanya dipertahankan.
+     */
+    protected function sumberDokumenLakip(string $mode): ?string
+    {
+        if ($mode !== 'kabupaten') {
+            return $this->sumberDokumenBawaan($mode);
+        }
+
+        [$sumber] = $this->sumberDariPermintaan(
+            'kabupaten',
+            null,
+            (int) ($this->request->getGet('tahun') ?: $this->request->getPost('tahun') ?: date('Y'))
+        );
+
+        return $sumber !== '' ? $sumber : 'rpjmd';
+    }
+
+    /**
+     * Baris yang dibekukan snapshot mengikuti sumber di layar (menimpa
+     * bawaan trait, dialiaskan di blok `use`) — membekukan RPJMD dari layar
+     * yang menampilkan IKU menghasilkan arsip yang tidak pernah dilihat.
+     */
+    protected function barisHidupUntukSnapshot(string $mode, string $tahun, string $status, $opd): array
+    {
+        if ($mode !== 'kabupaten') {
+            return $this->barisHidupBawaan($mode, $tahun, $status, $opd);
+        }
+
+        [$sumber, $revisiId] = $this->sumberDariPermintaan('kabupaten', null, (int) $tahun);
+
+        if ($sumber !== \App\Services\Version\LakipSourceService::SUMBER_IKU || $revisiId <= 0) {
+            return $this->barisHidupBawaan($mode, $tahun, $status, $opd);
+        }
+
+        return [
+            'rows'            => $this->lakipModel->getIndexIkuTargets($revisiId, (int) $tahun, null),
+            'lakipMap'        => $this->lakipModel->getLakipMapIku((int) $tahun, $status !== '' ? $status : null, null),
+            'sumber_type'     => \App\Services\Version\LakipSourceService::SUMBER_IKU,
+            'sumber_versi_id' => $revisiId,
+        ];
+    }
+
     private function xssRule(): string
     {
         return 'regex_match[/^(?!.*<\s*script\b)(?!.*<\/\s*script\s*>)(?!.*javascript\s*:)(?!.*data\s*:\s*text\/html)(?!.*on\w+\s*=)(?!.*<\?php)(?!.*<\?).*$/is]';
@@ -88,8 +143,15 @@ class LakipController extends BaseController
             $rows = $this->lakipModel->getIndexRenstraTargets((string) $tahun, $opdIdInt);
             $lakipMap = $this->lakipModel->getLakipMapRenstra((string) $tahun, ($status ?: null), $opdIdInt);
         } else {
-            $rows = $this->lakipModel->getIndexRpjmdTargets((string) $tahun);
-            $lakipMap = $this->lakipModel->getLakipMapRpjmd((string) $tahun, ($status ?: null));
+            // Kabupaten memakai pemilih sumber yang sama dengan layar OPD:
+            // bawaan IKU Kabupaten, cadangan RPJMD (§24). lakipMap dari
+            // baganLakip() berkunci INDIKATOR untuk kedua sumber — view
+            // menyesuaikan kuncinya saat mode kabupaten.
+            $pilihanSumberKab = $this->pilihanSumberLakip('kabupaten', null, (int) $tahun);
+
+            [, $lakipMap, $rows] = $this->baganLakip(
+                $pilihanSumberKab, 'kabupaten', null, (int) $tahun, ($status ?: null)
+            );
         }
 
         // Dua tabel tambahan (Analisis Faktor & Efisiensi Program) memakai
@@ -128,6 +190,7 @@ class LakipController extends BaseController
             // koreksinya lewat Penyesuaian Kebijakan yang tercatat.
             'lakipCanWrite' => in_array($role, self::ROLE_TULIS, true) && empty($sumber['terkunci']),
             'lakipBase' => $this->lakipBaseUrl(),
+            'sumberLakip' => $pilihanSumberKab ?? null,
         ]));
     }
 
@@ -300,6 +363,16 @@ class LakipController extends BaseController
         if (!$targetId)
             return redirect()->back()->with('error', 'Target tidak valid.');
 
+        // Sumber IKU Kabupaten: parameter rute adalah id INDIKATOR IKU
+        // BERJALAN, bukan id rpjmd_target — keduanya ruang angka berbeda.
+        if ($mode === 'kabupaten') {
+            [$sumberAktif, $revisiIku] = $this->sumberDariQuery('kabupaten', null, (int) $tahun);
+
+            if ($sumberAktif === 'iku') {
+                return $this->tambahDariIkuKab((int) $targetId, $revisiIku, (int) $tahun, $role);
+            }
+        }
+
         if ($mode === 'kabupaten') {
             $target = $this->db->table('rpjmd_target')->where('id', $targetId)->get()->getRowArray();
             if (!$target)
@@ -349,6 +422,101 @@ class LakipController extends BaseController
             'target' => $target,
             'opdInfo' => $opdInfo,
             'validation' => \Config\Services::validation(),
+        ]);
+    }
+
+    /** Form tambah untuk baris bersumber IKU Kabupaten (lingkup opd NULL). */
+    private function tambahDariIkuKab(int $indikatorId, int $revisiId, int $tahun, string $role)
+    {
+        $qs      = '?mode=kabupaten&tahun=' . $tahun . '&sumber=iku&sumber_versi=' . $revisiId;
+        $kembali = base_url('adminkab/lakip') . '?mode=kabupaten&tahun=' . $tahun;
+
+        if ($revisiId <= 0) {
+            return redirect()->to($kembali)
+                ->with('error', 'Belum ada versi IKU Kabupaten yang berlaku untuk tahun ' . $tahun . '.');
+        }
+
+        $target = $this->lakipModel->getIkuTargetDetail($revisiId, $indikatorId, $tahun);
+
+        if ($target === null) {
+            return redirect()->to($kembali)
+                ->with('error', 'Indikator itu tidak ada pada versi IKU yang sedang dipakai.');
+        }
+
+        // Lingkup kabupaten: indikator IKU milik OPD mana pun ditolak.
+        if (! empty($target['opd_id'])) {
+            return redirect()->to($kembali)
+                ->with('error', 'Indikator itu milik IKU OPD, bukan IKU Kabupaten.');
+        }
+
+        if ($this->lakipModel->getLakipByIku($indikatorId, $tahun, null) !== null) {
+            return redirect()->to(base_url('adminkab/lakip/edit/' . $indikatorId) . $qs)
+                ->with('info', 'LAKIP sudah ada. Silakan edit.');
+        }
+
+        return view('adminKabupaten/lakip/tambah_lakip', [
+            'title'         => 'Tambah LAKIP',
+            'role'          => $role,
+            'mode'          => 'kabupaten',
+            'tahun'         => (string) $tahun,
+            'selectedOpdId' => null,
+            'indikator'     => [
+                'indikator_sasaran' => $target['indikator_sasaran'] ?? '',
+                'satuan'            => $target['satuan'] ?? '',
+                'jenis_indikator'   => $target['jenis_indikator'] ?? 'positif',
+            ],
+            'target'        => $target,
+            'opdInfo'       => null,
+            'validation'    => \Config\Services::validation(),
+            'sumberLakipForm' => [
+                'sumber'      => 'iku',
+                'versi_id'    => $revisiId,
+                'entity_id'   => $indikatorId,
+                'target_beku' => $target['target'] ?? null,
+            ],
+        ]);
+    }
+
+    /** Form edit untuk baris bersumber IKU Kabupaten. */
+    private function editDariIkuKab(int $indikatorId, int $revisiId, int $tahun, string $role)
+    {
+        $qs      = '?mode=kabupaten&tahun=' . $tahun . '&sumber=iku&sumber_versi=' . $revisiId;
+        $kembali = base_url('adminkab/lakip') . '?mode=kabupaten&tahun=' . $tahun;
+
+        $lakip = $this->lakipModel->getLakipByIku($indikatorId, $tahun, null);
+
+        if ($lakip === null) {
+            return redirect()->to(base_url('adminkab/lakip/tambah/' . $indikatorId) . $qs)
+                ->with('info', 'Realisasi belum pernah diisi. Silakan tambah dulu.');
+        }
+
+        // Versi yang dipakai BARISNYA, bukan yang kebetulan dipilih di layar.
+        $revisiBaris = (int) ($lakip['source_version_id'] ?? 0) ?: $revisiId;
+        $target      = $this->lakipModel->getIkuTargetDetail($revisiBaris, $indikatorId, $tahun);
+
+        if ($target === null || ! empty($target['opd_id'])) {
+            return redirect()->to($kembali)
+                ->with('error', 'Indikator IKU tidak sah untuk lingkup kabupaten.');
+        }
+
+        return view('adminKabupaten/lakip/edit_lakip', [
+            'title'         => 'Edit LAKIP',
+            'role'          => $role,
+            'mode'          => 'kabupaten',
+            'tahun'         => (string) $tahun,
+            'selectedOpdId' => null,
+            'indikator'     => [
+                'indikator_sasaran' => $target['indikator_sasaran'] ?? '',
+                'satuan'            => $target['satuan'] ?? '',
+            ],
+            'target'        => $target,
+            'lakip'         => $lakip,
+            'validation'    => \Config\Services::validation(),
+            'sumberLakipForm' => [
+                'sumber'    => 'iku',
+                'versi_id'  => $revisiBaris,
+                'entity_id' => $indikatorId,
+            ],
         ]);
     }
 
@@ -403,6 +571,13 @@ class LakipController extends BaseController
         $tahun = $this->request->getPost('tahun') ?: date('Y');
         $selectedOpdId = $this->request->getPost('selected_opd_id') ?: '';
 
+        // Sumber IKU Kabupaten memakai kunci tersendiri (source_entity_id),
+        // bukan rpjmd_target_id. Ditangani lebih dulu supaya cabang di bawah
+        // tetap apa adanya.
+        if (trim((string) $this->request->getPost('sumber_lakip')) === 'iku') {
+            return $this->simpanDariIkuKab((string) $tahun);
+        }
+
         $dataCommon = [
             'target_lalu' => $this->request->getPost('target_lalu') ?? '',
             'capaian_lalu' => $this->request->getPost('capaian_lalu') ?? '',
@@ -449,6 +624,61 @@ class LakipController extends BaseController
         return redirect()->to(base_url('adminkab/lakip') . $qs)->with('success', 'Data LAKIP berhasil disimpan.');
     }
 
+    /** Simpan realisasi LAKIP Kabupaten bersumber IKU Kabupaten. */
+    private function simpanDariIkuKab(string $tahun)
+    {
+        $indikator = (int) $this->request->getPost('source_entity_id');
+        $revisiId  = (int) $this->request->getPost('source_version_id');
+        $tahunForm = (int) ($tahun ?: date('Y'));
+
+        if ($indikator <= 0 || $revisiId <= 0) {
+            return redirect()->back()->withInput()->with('error', 'Rujukan indikator IKU tidak sah.');
+        }
+
+        // Diperiksa ulang di server: id dari form tidak pernah dipercaya
+        // sebagai bukti lingkup.
+        $cek = $this->lakipModel->getIkuTargetDetail($revisiId, $indikator, $tahunForm);
+
+        if ($cek === null || ! empty($cek['opd_id'])) {
+            return redirect()->back()->withInput()
+                ->with('error', 'Indikator IKU tidak sah untuk lingkup kabupaten.');
+        }
+
+        if ($this->lakipModel->getLakipByIku($indikator, $tahunForm, null) !== null) {
+            return redirect()->back()->withInput()
+                ->with('error', 'LAKIP untuk indikator ini sudah ada. Silakan edit.');
+        }
+
+        $targetHitung = $this->request->getPost('target_hitung');
+
+        $this->lakipModel->insert([
+            'renstra_target_id' => null,
+            'rpjmd_target_id'   => null,
+            'tahun'             => $tahunForm,
+            'opd_id'            => 0,
+            'mode'              => 'kabupaten',
+
+            // Jejak "dinilai terhadap apa", dibekukan saat baris lahir.
+            'source_type'       => 'iku',
+            'source_version_id' => $revisiId,
+            'source_entity_id'  => $indikator,
+
+            'target_lalu'       => $this->request->getPost('target_lalu') ?? '',
+            'capaian_lalu'      => $this->request->getPost('capaian_lalu') ?? '',
+            'capaian_tahun_ini' => $this->request->getPost('capaian_tahun_ini') ?? '',
+            'target_hitung'     => ($targetHitung !== null && $targetHitung !== '')
+                ? $targetHitung : ($cek['target'] ?? null),
+            'capaian_hitung'    => $this->request->getPost('capaian_hitung') !== ''
+                ? $this->request->getPost('capaian_hitung') : null,
+            'status'            => $this->request->getPost('status') ?: 'draft',
+        ]);
+
+        return redirect()
+            ->to(base_url('adminkab/lakip') . '?mode=kabupaten&tahun=' . $tahunForm
+                . '&sumber=iku&sumber_versi=' . $revisiId)
+            ->with('success', 'Data LAKIP berhasil disimpan.');
+    }
+
     public function edit($indikatorId)
     {
         $session = session();
@@ -460,6 +690,14 @@ class LakipController extends BaseController
         $mode = $this->request->getGet('mode') ?: 'kabupaten';
         $tahun = $this->request->getGet('tahun') ?: date('Y');
         $selectedOpdId = $this->request->getGet('opd_id') ?: '';
+
+        if ($mode === 'kabupaten') {
+            [$sumberAktif, $revisiIku] = $this->sumberDariQuery('kabupaten', null, (int) $tahun);
+
+            if ($sumberAktif === 'iku') {
+                return $this->editDariIkuKab((int) $indikatorId, $revisiIku, (int) $tahun, $role);
+            }
+        }
 
         if ($mode === 'opd') {
             $targetDetail = $this->lakipModel->getRenstraTargetDetailByIndikatorAndYear((int) $indikatorId, (string) $tahun);

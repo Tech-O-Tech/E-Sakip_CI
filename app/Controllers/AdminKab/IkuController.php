@@ -6,6 +6,7 @@ use App\Controllers\BaseController;
 use App\Controllers\Concerns\IkuFormTrait;
 use App\Controllers\Concerns\IkuRevisiTrait;
 use App\Models\Opd\IkuModel;
+use App\Models\Opd\IkuRevisiModel;
 use App\Models\OpdModel;
 
 /**
@@ -79,7 +80,18 @@ class IkuController extends BaseController
             'tahun_akhir' => $periode['tahun_akhir'] ?? null,
         ]);
 
+        // Keadaan pengesahan IKU Kabupaten (lingkup opd NULL) — panel yang
+        // sama dengan layar IKU OPD, supaya konsep kedua layar tidak berbeda.
+        $rev = new IkuRevisiModel();
+        $adaPeriode = $mode === 'kabupaten' && $rev->siap() && ! empty($periode['tahun_mulai']);
+
         return view('adminKabupaten/iku/iku', [
+            'revisiMenunggu' => $adaPeriode
+                ? $rev->berjalanMenunggu(null, (int) $periode['tahun_mulai'], (int) $periode['tahun_akhir'])
+                : null,
+            'revisiBerlaku'  => $adaPeriode
+                ? $rev->revisiBerlaku(null, (int) $periode['tahun_mulai'], (int) $periode['tahun_akhir'])
+                : null,
             'title'            => 'IKU - e-SAKIP',
             'mode'             => $mode,
             'opdFilter'        => $opdFilter,
@@ -96,15 +108,14 @@ class IkuController extends BaseController
      * =======================================================*/
     public function tambah()
     {
-        if (!user_can('iku_kab.create')) {
-            return redirect()->to(base_url('adminkab/iku'))
-                ->with('error', 'Anda tidak memiliki akses untuk menambah IKU.');
-        }
-
-        return view('adminKabupaten/iku/tambah_iku', [
-            'title'          => 'Tambah IKU Kabupaten',
-            'satuan_options' => $this->ikuModel->getSatuanOptions(),
-        ]);
+        // Pintu tambah manual DITUTUP (bukan sekadar tombolnya disembunyikan):
+        // selama endpoint-nya hidup, tautan lama atau URL yang diketik langsung
+        // tetap bisa melahirkan sasaran kembar di sebelah hasil sync.
+        //
+        // Rutenya sengaja dibiarkan terdaftar supaya tautan lama tidak berujung
+        // 404 tanpa penjelasan — yang datang ke sini diberi tahu jalan yang benar.
+        return redirect()->to(base_url('adminkab/iku'))
+            ->with('error', 'IKU tidak lagi ditambah manual. Sasaran & indikatornya diambil dari RPJMD lewat tombol Sync — supaya tidak lahir sasaran kembar dan setiap baris punya jejak asal.');
     }
 
     /* =========================================================
@@ -112,36 +123,63 @@ class IkuController extends BaseController
      * =======================================================*/
     public function save()
     {
-        if (!user_can('iku_kab.create')) {
-            return redirect()->to(base_url('adminkab/iku'))
-                ->with('error', 'Anda tidak memiliki akses untuk menambah IKU.');
-        }
-
-        $data = $this->bacaFormIku($this->request->getPost() ?? []);
-
-        if ($error = $this->validasiFormIku($data)) {
-            return redirect()->back()->withInput()->with('error', $error);
-        }
-
-        // IKU yang dibuat di sini selalu tingkat kabupaten.
-        $data['opd_id'] = null;
-
-        try {
-            $this->ikuModel->createComplete($data);
-        } catch (\Throwable $e) {
-            log_message('error', '[IKU SAVE KAB] ' . $e->getMessage());
-
-            return redirect()->back()->withInput()->with('error', 'Gagal menyimpan IKU: ' . $e->getMessage());
-        }
-
-        return redirect()->to(base_url('adminkab/iku?mode=kabupaten'))
-            ->with('success', 'IKU berhasil disimpan.');
+        // Pintu tambah manual DITUTUP (bukan sekadar tombolnya disembunyikan):
+        // selama endpoint-nya hidup, tautan lama atau URL yang diketik langsung
+        // tetap bisa melahirkan sasaran kembar di sebelah hasil sync.
+        //
+        // Rutenya sengaja dibiarkan terdaftar supaya tautan lama tidak berujung
+        // 404 tanpa penjelasan — yang datang ke sini diberi tahu jalan yang benar.
+        return redirect()->to(base_url('adminkab/iku'))
+            ->with('error', 'IKU tidak lagi ditambah manual. Sasaran & indikatornya diambil dari RPJMD lewat tombol Sync — supaya tidak lahir sasaran kembar dan setiap baris punya jejak asal.');
     }
 
     /* =========================================================
      * SYNC DARI RPJMD — PRATINJAU
      * GET adminkab/iku/sync?periode=2025-2029
      * =======================================================*/
+    /**
+     * Bekukan IKU Kabupaten periode ini menjadi revisi, siap disahkan.
+     *
+     * Kembaran AdminOpd\IkuController::ajukanPengesahan() untuk lingkup
+     * kabupaten (opd NULL). Bedanya satu: tidak ada pihak luar yang menunggu —
+     * dokumen kabupaten disahkan penyusunnya sendiri lewat tombol Sahkan.
+     */
+    public function ajukanPengesahan()
+    {
+        if (! user_can('iku_kab.revisi')) {
+            return redirect()->to(base_url('adminkab/iku'))
+                ->with('error', 'Anda tidak berwenang mengajukan pengesahan IKU.');
+        }
+
+        $tm = (int) $this->request->getPost('tahun_mulai');
+        $ta = (int) $this->request->getPost('tahun_akhir');
+
+        if ($tm <= 0 || $ta < $tm) {
+            return redirect()->back()->with('error', 'Periode IKU tidak sah.');
+        }
+
+        $kembali = base_url('adminkab/iku?mode=kabupaten&periode=' . $tm . '-' . $ta);
+
+        try {
+            (new IkuRevisiModel())->bekukanDanAjukan(null, $tm, $ta, $this->penggunaIkuKab(), [
+                'catatan' => $this->request->getPost('catatan') ?: null,
+            ]);
+        } catch (\Throwable $e) {
+            return redirect()->to($kembali)->with('error', $e->getMessage());
+        }
+
+        return redirect()->to($kembali)->with('success',
+            'IKU Kabupaten periode ' . $tm . '-' . $ta . ' dibekukan dan siap disahkan. '
+            . 'Tekan "Sahkan Sekarang" bila isinya sudah final.');
+    }
+
+    private function penggunaIkuKab(): ?int
+    {
+        $id = session()->get('user_id') ?? session()->get('id');
+
+        return $id === null ? null : (int) $id;
+    }
+
     public function sync()
     {
         if (!user_can('iku_kab.create')) {
@@ -156,11 +194,24 @@ class IkuController extends BaseController
                 ->with('error', 'Belum ada periode RPJMD yang bisa disalin. Isi RPJMD terlebih dahulu.');
         }
 
+        // Versi RPJMD yang jadi titik tolak. Tanpa parameter ini, sumbernya
+        // kondisi berjalan — perilaku lama, apa adanya.
+        $versiTersedia = $this->ikuModel->versiRpjmdTersedia(
+            (int) $periode['tahun_mulai'],
+            (int) $periode['tahun_akhir']
+        );
+
+        $versiDipilih = $this->versiSumberDipilih(
+            $this->request->getGet('renstra_versi'),
+            $versiTersedia
+        );
+
         $kandidat = $this->ikuModel->getKandidatSync(
             'rpjmd',
             null,
             $periode['tahun_mulai'],
-            $periode['tahun_akhir']
+            $periode['tahun_akhir'],
+            $versiDipilih !== null ? (int) $versiDipilih['id'] : null
         );
 
         return view('adminKabupaten/iku/sync_iku', [
@@ -169,7 +220,10 @@ class IkuController extends BaseController
             'daftar_periode'   => $daftarPeriode,
             'periode'          => $periode,
             'years'            => $periode['years'],
-        ]);
+            'versi_tersedia'   => $versiTersedia,
+            'versi_dipilih'    => $versiDipilih,
+            'tanpa_padanan'    => $this->ikuModel->ikuTanpaPadananSumber(),
+        ] + $this->muaraSync(null, $periode));
     }
 
     /* =========================================================
@@ -192,25 +246,80 @@ class IkuController extends BaseController
                 ->with('error', 'Periode RPJMD tidak valid.');
         }
 
-        $pilihan = $this->bacaPilihanSync($post);
-        if (empty($pilihan)) {
+        // Seluruh isi RPJMD periode terpilih disalin — pemakai memilih SUMBER,
+        // bukan baris per baris. Keranjang dibangun di server dari kandidat
+        // yang sama dengan yang dipratinjau.
+        // Versi diperiksa ulang terhadap daftar yang sah, bukan dipercaya
+        // dari form.
+        $versiTersedia = $this->ikuModel->versiRpjmdTersedia(
+            (int) $daftarPeriode[$periode]['tahun_mulai'],
+            (int) $daftarPeriode[$periode]['tahun_akhir']
+        );
+
+        $versiDipilih = $this->versiSumberDipilih($post['renstra_versi'] ?? null, $versiTersedia);
+        $versiId      = $versiDipilih !== null ? (int) $versiDipilih['id'] : null;
+
+        $kandidat = $this->ikuModel->getKandidatSync(
+            'rpjmd',
+            null,
+            (int) $daftarPeriode[$periode]['tahun_mulai'],
+            (int) $daftarPeriode[$periode]['tahun_akhir'],
+            $versiId
+        );
+
+        [$pilihan, $perbarui] = $this->keranjangSyncPenuh($kandidat);
+
+        if (empty($pilihan) && empty($perbarui)) {
             return redirect()->to(base_url('adminkab/iku/sync?periode=' . $periode))
-                ->with('error', 'Pilih minimal satu indikator untuk disalin.');
+                ->with('info', 'IKU Kabupaten sudah sama dengan RPJMD periode ini — tidak ada yang perlu disalin.');
         }
 
+        // Ke mana hasilnya bermuara. Sesudah IKU Kabupaten punya revisi yang
+        // berlaku, menyalin langsung ke tabel berjalan berarti mengubah
+        // dokumen resmi tanpa jejak revisi — sama persis dengan alasan di
+        // sisi OPD.
+        $muara = $this->muaraSync(null, $daftarPeriode[$periode]);
+
         try {
-            $stat = $this->ikuModel->importSync(
-                'rpjmd',
-                null,
-                $pilihan,
-                $daftarPeriode[$periode]['tahun_mulai'],
-                $daftarPeriode[$periode]['tahun_akhir']
-            );
+            if ($muara['ke_revisi']) {
+                $stat = $this->syncKeDraft(
+                    $muara,
+                    $post,
+                    null,
+                    $daftarPeriode[$periode],
+                    $versiDipilih,
+                    $pilihan,
+                    $perbarui,
+                    'rpjmd',
+                    base_url('adminkab/iku/sync?periode=' . $periode)
+                );
+
+                if (! is_array($stat)) {
+                    return $stat;
+                }
+            } else {
+                $stat = $this->ikuModel->importSync(
+                    'rpjmd',
+                    null,
+                    $pilihan,
+                    $daftarPeriode[$periode]['tahun_mulai'],
+                    $daftarPeriode[$periode]['tahun_akhir'],
+                    $versiId,
+                    $perbarui
+                );
+            }
         } catch (\Throwable $e) {
             log_message('error', '[IKU SYNC KAB] ' . $e->getMessage());
 
             return redirect()->to(base_url('adminkab/iku/sync?periode=' . $periode))
                 ->with('error', 'Gagal menyalin data RPJMD: ' . $e->getMessage());
+        }
+
+        if ($muara['ke_revisi']) {
+            return redirect()->to(base_url('adminkab/iku/revisi'))
+                ->with('success', $this->pesanHasilSync($stat)
+                    . ' Semuanya masuk ke DRAFT revisi — IKU Kabupaten berjalan belum berubah, '
+                    . 'dan baru berubah setelah revisi itu disahkan.');
         }
 
         return redirect()->to(base_url('adminkab/iku?mode=kabupaten&periode=' . $periode))

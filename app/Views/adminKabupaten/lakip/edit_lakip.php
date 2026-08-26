@@ -98,7 +98,14 @@
         <input type="hidden" name="lakip_id" value="<?= esc($lakip['id'] ?? '') ?>">
 
         <!-- (optional) target id context -->
-        <?php if ($mode === 'kabupaten'): ?>
+        <?php $slf = $sumberLakipForm ?? null; ?>
+        <?php if ($slf !== null && ($slf['sumber'] ?? '') === 'iku'): ?>
+          <?php /* update() hanya perlu lakip_id; penanda sumber dibawa supaya
+                   redirect kembali ke layar dengan sumber yang sama. */ ?>
+          <input type="hidden" name="sumber_lakip" value="iku">
+          <input type="hidden" name="sumber" value="iku">
+          <input type="hidden" name="sumber_versi" value="<?= (int) $slf['versi_id'] ?>">
+        <?php elseif ($mode === 'kabupaten'): ?>
           <input type="hidden" name="rpjmd_target_id" value="<?= esc($target['id'] ?? '') ?>">
         <?php else: ?>
           <input type="hidden" name="renstra_target_id" value="<?= esc($target['id'] ?? '') ?>">

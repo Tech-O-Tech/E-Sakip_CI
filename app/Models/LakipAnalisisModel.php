@@ -23,6 +23,14 @@ class LakipAnalisisModel extends Model
     protected $allowedFields = [
         'renstra_target_id',
         'rpjmd_target_id',
+        // Kolom sumber IKU (migrasi 2026-08-25). WAJIB terdaftar di sini:
+        // dengan $protectFields aktif, kolom yang tak terdaftar DIBUANG DIAM-
+        // DIAM oleh insert()/update() — analisis bersumber IKU pernah tersimpan
+        // dengan seluruh kolom kuncinya NULL dan tak pernah terbaca lagi.
+        // Aman untuk instalasi yang belum bermigrasi: jalur tulisnya sudah
+        // menolak lebih dulu lewat punyaKolomSumber().
+        'iku_indikator_id',
+        'source_type',
         'opd_id',
         'tahun',
         'faktor_pendukung',
@@ -78,13 +86,19 @@ class LakipAnalisisModel extends Model
     /** Sumber baris yang sah untuk satu mode. */
     public function sumberSah(string $mode, $diminta): string
     {
+        $sumber = trim((string) ($diminta ?? ''));
+
+        // IKU sah di KEDUA tingkat: Kabupaten memakai IKU Kabupaten (§24,
+        // iku_sasaran.opd_id NULL). Mode hanya menentukan CADANGANNYA.
+        if ($sumber === 'iku') {
+            return 'iku';
+        }
+
         if ($mode === 'kabupaten') {
             return 'rpjmd';
         }
 
-        $sumber = trim((string) ($diminta ?? ''));
-
-        return in_array($sumber, ['iku', 'renstra'], true) ? $sumber : 'renstra';
+        return 'renstra';
     }
 
     /** Sumber sebuah baris analisis; baris lama tanpa `source_type` dibaca dari kolomnya. */

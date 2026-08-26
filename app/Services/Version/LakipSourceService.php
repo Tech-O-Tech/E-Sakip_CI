@@ -219,6 +219,19 @@ class LakipSourceService
         int $tahun,
         ?string $tanggalRujukan = null
     ): ?array {
+        // IKU hidup di registrinya sendiri (iku_revisi) — lihat catatan panjang
+        // di atas pilihanVersiIku(). Tanpa cabang ini, rekomendasi dicari di
+        // dokumen_versi yang untuk IKU memang tidak pernah diisi.
+        if (strtolower(trim($sumberType)) === self::SUMBER_IKU) {
+            foreach ($this->pilihanVersiIku($mode, $opdId, $tahun) as $r) {
+                if (! empty($r['rekomendasi'])) {
+                    return $r;
+                }
+            }
+
+            return null;
+        }
+
         [$modul, $scopeNama, $pemilik] = $this->petakan($sumberType, $mode, $opdId);
 
         return $this->resolver->rekomendasiUntukTahun(
@@ -253,6 +266,14 @@ class LakipSourceService
         $sumberType = $this->sumberSah($sumberType, $mode);
         $mode       = $this->modeSah($mode);
         $tanggal    = $tanggalRujukan ?? VersionResolver::akhirTahun($tahun);
+
+        // Id versi IKU adalah id `iku_revisi`, BUKAN id `dokumen_versi` —
+        // dua tabel itu ruang angka yang berbeda. Memvalidasinya ke
+        // dokumen_versi berarti "tidak ditemukan", atau lebih buruk:
+        // kebetulan cocok dengan dokumen lain dan lolos sebagai dokumen salah.
+        if ($sumberType === self::SUMBER_IKU) {
+            return $this->validasiPilihanIku($sumberVersiId, $mode, $opdId, $tahun, $alasanOverride, $tanggal);
+        }
 
         $galat  = [];
         $versi  = $this->versi->ambil($sumberVersiId);
@@ -310,6 +331,81 @@ class LakipSourceService
 
         return [
             'sumber_type'        => $sumberType,
+            'sumber_versi'       => $versi,
+            'rekomendasi'        => $rekom,
+            'adalah_rekomendasi' => $adalahRekomendasi,
+            'tanggal_rujukan'    => $tanggal,
+            'galat'              => $galat,
+        ];
+    }
+
+    /**
+     * validasiPilihan() untuk sumber IKU — memeriksa ke `iku_revisi`.
+     *
+     * Daftar dari pilihanVersiIku() sudah tersaring lingkup + periode +
+     * status resmi (berlaku/superseded), jadi satu pemeriksaan keanggotaan
+     * sekaligus menegakkan anti-IDOR (§55), periode, dan §2.11: id yang
+     * bukan milik lingkup ini, di luar periode, atau masih draft/menunggu
+     * memang tidak pernah ada dalam daftar.
+     *
+     * Bentuk kembaliannya sama persis dengan cabang dokumen_versi supaya
+     * pemakai (praTinjau/siapkan, view pemilih sumber) tidak perlu tahu
+     * versinya berasal dari registri yang mana.
+     *
+     * SENGAJA lebih ketat dari cabang dokumen_versi dalam satu hal: revisi
+     * yang masa berlakunya TIDAK memuat tahun laporan ditolak sama sekali,
+     * beralasan sekalipun. Masa berlaku revisi IKU adalah pernyataan resmi
+     * "tahun ini dinilai dengan dokumen itu"; §27 memberi ruang memilih versi
+     * non-rekomendasi, bukan ruang menilai tahun dengan dokumen yang secara
+     * resmi tidak pernah memayunginya.
+     */
+    private function validasiPilihanIku(
+        int $sumberVersiId,
+        string $mode,
+        ?int $opdId,
+        int $tahun,
+        ?string $alasanOverride,
+        string $tanggal
+    ): array {
+        $galat  = [];
+        $daftar = $this->pilihanVersiIku($mode, $opdId, $tahun);
+
+        $versi = null;
+        $rekom = null;
+
+        foreach ($daftar as $r) {
+            if ((int) $r['id'] === $sumberVersiId) {
+                $versi = $r;
+            }
+
+            if (! empty($r['rekomendasi'])) {
+                $rekom = $r;
+            }
+        }
+
+        if ($versi === null) {
+            $galat[] = 'Versi IKU yang dipilih tidak tersedia untuk lingkup dan tahun laporan ini.';
+
+            return [
+                'sumber_type'        => self::SUMBER_IKU,
+                'sumber_versi'       => [],
+                'rekomendasi'        => $rekom,
+                'adalah_rekomendasi' => false,
+                'tanggal_rujukan'    => $tanggal,
+                'galat'              => $galat,
+            ];
+        }
+
+        $adalahRekomendasi = $rekom !== null && (int) $rekom['id'] === (int) $versi['id'];
+
+        // §27 — bukan rekomendasi berarti wajib beralasan.
+        if (! $adalahRekomendasi && trim((string) $alasanOverride) === '') {
+            $galat[] = 'Versi yang dipilih bukan rekomendasi sistem untuk tahun ' . $tahun
+                . '. Alasan penggunaan versi wajib diisi.';
+        }
+
+        return [
+            'sumber_type'        => self::SUMBER_IKU,
             'sumber_versi'       => $versi,
             'rekomendasi'        => $rekom,
             'adalah_rekomendasi' => $adalahRekomendasi,

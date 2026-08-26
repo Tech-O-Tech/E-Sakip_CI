@@ -409,9 +409,11 @@ class IkuModel extends Model
         ?int $renstraVersiId = null
     ): array {
         // Versi Renstra dipilih -> baca ARSIPnya. Tanpa itu -> kondisi berjalan.
-        $dariVersi = $sumber === 'renstra' && $renstraVersiId !== null && $renstraVersiId > 0;
+        $dariVersi = $renstraVersiId !== null && $renstraVersiId > 0;
 
-        if ($dariVersi) {
+        if ($dariVersi && $sumber === 'rpjmd') {
+            $sasaranRows = $this->kandidatSasaranRpjmdVersi($renstraVersiId);
+        } elseif ($dariVersi) {
             $sasaranRows = $this->kandidatSasaranRenstraVersi($renstraVersiId, (int) $opdId);
         } elseif ($sumber === 'rpjmd') {
             $sasaranRows = $this->kandidatSasaranRpjmd($tahunMulai, $tahunAkhir);
@@ -423,7 +425,9 @@ class IkuModel extends Model
             return [];
         }
 
-        if ($dariVersi) {
+        if ($dariVersi && $sumber === 'rpjmd') {
+            $indikatorRows = $this->kandidatIndikatorRpjmdVersi(array_column($sasaranRows, 'sumber_id'));
+        } elseif ($dariVersi) {
             $indikatorRows = $this->kandidatIndikatorRenstraVersi(array_column($sasaranRows, 'sumber_id'));
         } elseif ($sumber === 'rpjmd') {
             $indikatorRows = $this->kandidatIndikatorRpjmd(array_column($sasaranRows, 'sumber_id'));
@@ -514,9 +518,10 @@ class IkuModel extends Model
      * yang sudah ada dilewati supaya definisi/formula yang sudah diketik manual
      * di IKU tidak tertimpa.
      *
-     * @param array<int, int[]> $pilihan [id_sasaran_sumber => [id_indikator_sumber, ...]]
+     * @param array<int, int[]> $pilihan  [id_sasaran_sumber => [id_indikator_sumber, ...]] yang DITAMBAHKAN
+     * @param array<int, int[]> $perbarui  yang isinya DIAMBIL ULANG dari sumber (menimpa nilai IKU)
      *
-     * @return array{sasaran_baru: int, indikator_baru: int, target: int, dilewati: int}
+     * @return array{sasaran_baru: int, indikator_baru: int, target: int, dilewati: int, diperbarui: int}
      */
     public function importSync(
         string $sumber,
@@ -524,10 +529,12 @@ class IkuModel extends Model
         array $pilihan,
         int $tahunMulai,
         int $tahunAkhir,
-        ?int $renstraVersiId = null
+        ?int $renstraVersiId = null,
+        array $perbarui = []
     ): array {
         $kandidat = $this->getKandidatSync($sumber, $opdId, $tahunMulai, $tahunAkhir, $renstraVersiId);
-        $stat     = ['sasaran_baru' => 0, 'indikator_baru' => 0, 'target' => 0, 'dilewati' => 0];
+        $stat     = ['sasaran_baru' => 0, 'indikator_baru' => 0, 'target' => 0,
+                     'dilewati' => 0, 'diperbarui' => 0];
 
         $db = $this->db;
         $db->transBegin();
@@ -535,20 +542,46 @@ class IkuModel extends Model
         try {
             foreach ($kandidat as $sasaran) {
                 $idSumber = (int) $sasaran['sumber_id'];
-                if (empty($pilihan[$idSumber])) {
+
+                if (empty($pilihan[$idSumber]) && empty($perbarui[$idSumber])) {
                     continue;
                 }
 
-                $dipilih = array_map('intval', (array) $pilihan[$idSumber]);
+                $dipilih   = array_map('intval', (array) ($pilihan[$idSumber] ?? []));
+                $diperbaru = array_map('intval', (array) ($perbarui[$idSumber] ?? []));
+
+                // ---- Ambil ulang isi indikator yang sudah ada di IKU --------
+                // Dulu keranjang ini DIBUANG di jalur ini (hanya jalur draft
+                // revisi yang memakainya), sehingga mencentang "ambil
+                // perubahan" melapor sukses tanpa menulis apa pun.
+                foreach ($sasaran['indikator'] as $ind) {
+                    if (! in_array((int) $ind['sumber_id'], $diperbaru, true)) {
+                        continue;
+                    }
+
+                    $ikuId = (int) ($ind['iku_id'] ?? 0);
+
+                    if ($ikuId <= 0) {
+                        continue;
+                    }
+
+                    $target = [];
+                    foreach ($ind['target'] as $tahun => $nilai) {
+                        if ($tahun >= $tahunMulai && $tahun <= $tahunAkhir) {
+                            $target[$tahun] = $nilai;
+                        }
+                    }
+
+                    $this->timpaDariSumber($ikuId, $ind, $target);
+
+                    $stat['diperbarui']++;
+                    $stat['target'] += count($target);
+                }
 
                 $indikatorDiimpor = array_values(array_filter(
                     $sasaran['indikator'],
                     static fn($ind) => in_array((int) $ind['sumber_id'], $dipilih, true)
                 ));
-
-                if (empty($indikatorDiimpor)) {
-                    continue;
-                }
 
                 // Indikator yang sudah ada di IKU dilewati, bukan ditimpa.
                 $indikatorBaru = array_values(array_filter($indikatorDiimpor, static fn($ind) => !$ind['sudah_ada']));
@@ -669,6 +702,57 @@ class IkuModel extends Model
      * =======================================================*/
 
     /** @return array<int,array<string,mixed>> */
+    /** Sasaran dari ARSIP sebuah versi RPJMD (kembaran kandidatSasaranRenstraVersi). */
+    private function kandidatSasaranRpjmdVersi(int $versiId): array
+    {
+        $rows = $this->db->table('rpjmd_versi_sasaran rvs')
+            ->select('rvs.id AS sumber_id, rvs.source_sasaran_id AS sumber_live_id,
+                      rvs.sasaran_rpjmd AS sasaran, rvt.tujuan_rpjmd AS induk')
+            ->join('rpjmd_versi_tujuan rvt', 'rvt.id = rvs.versi_tujuan_id', 'left')
+            ->where('rvs.version_id', $versiId)
+            ->orderBy('rvt.urutan', 'ASC')->orderBy('rvs.urutan', 'ASC')->orderBy('rvs.id', 'ASC')
+            ->get()->getResultArray();
+
+        return array_map(static fn ($r) => $r + [
+            'sumber_id'      => (int) $r['sumber_id'],
+            'sumber_live_id' => $r['sumber_live_id'] !== null ? (int) $r['sumber_live_id'] : null,
+            // Arsip tidak menyimpan status pengerjaan; versi yang ditetapkan
+            // memang tidak lagi dikerjakan.
+            'status'         => 'selesai',
+        ], $rows);
+    }
+
+    /** @param int[] $sasaranIds @return array<int,array<string,mixed>> */
+    private function kandidatIndikatorRpjmdVersi(array $sasaranIds): array
+    {
+        if ($sasaranIds === []) {
+            return [];
+        }
+
+        $rows = $this->db->table('rpjmd_versi_indikator_sasaran rvi')
+            ->select("
+                rvi.id                     AS sumber_id,
+                rvi.source_indikator_id    AS sumber_live_id,
+                rvi.versi_sasaran_id       AS sumber_sasaran_id,
+                rvi.indikator_sasaran      AS indikator,
+                rvi.definisi_op            AS definisi,
+                rvi.satuan                 AS satuan,
+                COALESCE(rvi.satuan_nama, NULLIF(rvi.satuan, '')) AS satuan_nama,
+                rvi.jenis_indikator,
+                rvi.baseline
+            ", false)
+            ->whereIn('rvi.versi_sasaran_id', $sasaranIds)
+            ->orderBy('rvi.urutan', 'ASC')->orderBy('rvi.id', 'ASC')
+            ->get()->getResultArray();
+
+        foreach ($rows as &$r) {
+            $r['sumber_live_id'] = $r['sumber_live_id'] !== null ? (int) $r['sumber_live_id'] : null;
+        }
+        unset($r);
+
+        return $this->lengkapiTargetSumber($rows, 'rpjmd_versi_target', 'versi_indikator_id', 'target_tahunan');
+    }
+
     private function kandidatSasaranRenstraVersi(int $versiId, int $opdId): array
     {
         $rows = $this->db->table('renstra_versi_sasaran rvs')
@@ -729,6 +813,34 @@ class IkuModel extends Model
      *
      * @return array<int,array<string,mixed>>
      */
+    /**
+     * Versi RPJMD yang boleh dijadikan sumber sync IKU Kabupaten.
+     *
+     * Kembaran versiRenstraTersedia() untuk lingkup kabupaten: hanya versi
+     * yang SUDAH DITETAPKAN dan BERISI. RPJMD tidak punya opd_key, jadi
+     * lingkupnya kabupaten (0).
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function versiRpjmdTersedia(int $tahunMulai, int $tahunAkhir): array
+    {
+        if (! $this->db->tableExists('dokumen_versi') || ! $this->db->tableExists('rpjmd_versi_sasaran')) {
+            return [];
+        }
+
+        return $this->db->table('dokumen_versi d')
+            ->select('d.id, d.version_no, d.label, d.effective_from, d.effective_to,
+                      COUNT(rvs.id) AS jumlah_sasaran')
+            ->join('rpjmd_versi_sasaran rvs', 'rvs.version_id = d.id', 'inner')
+            ->where('d.modul', 'rpjmd')
+            ->where('d.periode_mulai', $tahunMulai)
+            ->where('d.periode_akhir', $tahunAkhir)
+            ->where('d.status', 'published')
+            ->groupBy('d.id')
+            ->orderBy('d.version_no', 'DESC')
+            ->get()->getResultArray();
+    }
+
     public function versiRenstraTersedia(int $opdId, int $tahunMulai, int $tahunAkhir): array
     {
         if (! $this->db->tableExists('dokumen_versi') || ! $this->db->tableExists('renstra_versi_sasaran')) {
@@ -1624,6 +1736,32 @@ class IkuModel extends Model
      * Semua kolom teks di `iku_indikator` NULLABLE, jadi string kosong sengaja
      * dinormalkan jadi NULL — bukan sebaliknya.
      */
+    /**
+     * Ambil ulang isi satu indikator IKU dari sumbernya.
+     *
+     * SENGAJA hanya menimpa medan yang memang MILIK sumber: teks indikator,
+     * satuan, baseline, jenis, dan target. Definisi operasional, rumusan
+     * perhitungan, sumber data, dan penanggung jawab TIDAK disentuh — keempatnya
+     * diketik di IKU dan tidak punya padanan di Renstra/RPJMD; menimpanya
+     * dengan NULL berarti menghapus pekerjaan orang tanpa diminta.
+     *
+     * Jejak asal (`source_*`) juga tidak ditulis ulang: ia ditulis sekali saat
+     * baris lahir dan tetap menunjuk indikator sumber yang sama.
+     */
+    private function timpaDariSumber(int $ikuIndikatorId, array $ind, array $target): void
+    {
+        $this->db->table('iku_indikator')->where('id', $ikuIndikatorId)->update([
+            'indikator'       => trim((string) ($ind['indikator'] ?? '')),
+            'satuan'          => $this->nullJikaKosong($ind['satuan'] ?? null),
+            'jenis_indikator' => $this->nullJikaKosong($ind['jenis_indikator'] ?? null),
+            'baseline'        => $this->nullJikaKosong($ind['baseline'] ?? null),
+            'updated_at'      => date('Y-m-d H:i:s'),
+        ]);
+
+        $this->db->table('iku_target')->where('iku_indikator_id', $ikuIndikatorId)->delete();
+        $this->simpanTarget($ikuIndikatorId, $target);
+    }
+
     private function siapkanIndikator(array $indikator, int $urutan): array
     {
         $status = strtolower(trim((string) ($indikator['status'] ?? 'draft')));

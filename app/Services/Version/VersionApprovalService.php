@@ -235,10 +235,23 @@ class VersionApprovalService
             // dengan urutan "lepas dulu, baru klaim" yang wajib itu.
             $perubahan = $this->timeline->terbitkan($versiId);
 
-            // Isi arsip DITERAPKAN ke tabel live setelah timeline rapi.
-            // Urutannya penting: penerapan memakai effective_from untuk
-            // menentukan sampai tahun berapa baris yang hilang dipensiunkan.
-            $penerapan = $this->terapkanArsip($versiId, $baris);
+            // Isi arsip HANYA diterapkan ke tabel live bila versi ini menjadi
+            // UJUNG timeline — sesudah terbitkan(), versi terbaru adalah satu-
+            // satunya yang effective_to-nya NULL. Penyisipan retrospektif di
+            // tengah timeline (§60) selalu diberi effective_to oleh penerusnya,
+            // dan memang tidak boleh diterapkan: menimpa live dengan isi lampau
+            // berarti memensiunkan baris yang justru dibawa versi lebih baru,
+            // sementara resolver tetap menunjuk versi baru itu sebagai CURRENT.
+            // Arsip versi retrospektif tetap utuh dan tetap terbaca lewat
+            // pemilih versi; hanya penerapan ke live yang dilewati.
+            $penerapan   = null;
+            $barisSesudah = $this->wajibAda($versiId); // effective_to baru ditulis terbitkan()
+
+            if ($barisSesudah['effective_to'] === null) {
+                // Urutannya penting: penerapan memakai effective_from untuk
+                // menentukan sampai tahun berapa baris yang hilang dipensiunkan.
+                $penerapan = $this->terapkanArsip($versiId, $baris);
+            }
 
             $this->audit->catat($versiId, VersionAuditService::AKSI_PUBLISHED, [
                 'dari_status'    => $baris['status'],

@@ -225,11 +225,12 @@ class LakipPenyesuaianModel extends Model
     {
         $sumber = trim((string) ($diminta ?? ''));
 
-        if ($mode === 'kabupaten') {
-            return 'rpjmd';
+        // IKU sah di KEDUA tingkat: Kabupaten memakai IKU Kabupaten (§24).
+        if ($sumber === 'iku') {
+            return 'iku';
         }
 
-        return in_array($sumber, ['iku', 'renstra'], true) ? $sumber : 'renstra';
+        return $mode === 'kabupaten' ? 'rpjmd' : 'renstra';
     }
 
     /** Apakah kolom sumber sudah dipasang (migrasi 2026-08-24). */

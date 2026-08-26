@@ -106,7 +106,14 @@
         <?php endif; ?>
 
         <!-- Target ID yang dipakai untuk insert LAKIP -->
-        <?php if ($mode === 'kabupaten'): ?>
+        <?php $slf = $sumberLakipForm ?? null; ?>
+        <?php if ($slf !== null && ($slf['sumber'] ?? '') === 'iku'): ?>
+          <?php /* Baris bersumber IKU tidak punya target RPJMD. Yang dikirim
+                   adalah indikator IKU berjalan + revisi yang dipakai. */ ?>
+          <input type="hidden" name="sumber_lakip" value="iku">
+          <input type="hidden" name="source_entity_id" value="<?= (int) $slf['entity_id'] ?>">
+          <input type="hidden" name="source_version_id" value="<?= (int) $slf['versi_id'] ?>">
+        <?php elseif ($mode === 'kabupaten'): ?>
           <input type="hidden" name="rpjmd_target_id" value="<?= esc($target['id'] ?? '') ?>">
         <?php else: ?>
           <input type="hidden" name="renstra_target_id" value="<?= esc($target['id'] ?? '') ?>">

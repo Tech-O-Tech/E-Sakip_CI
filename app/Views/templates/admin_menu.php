@@ -57,6 +57,22 @@ $canOpd = user_can('renstra.view') || user_can('rkt_opd.view') || user_can('iku_
     color: #6b7a70;
   }
   #sidebar .dropdown-menu .dropdown-divider { margin: 4px 0; }
+  /* Wadah menu memakai .d-grid dengan satu kolom "auto": satu label panjang
+     saja sudah melebarkan SELURUH kolom melebihi sidebar, dan karena
+     .sidebar ber-overflow:hidden semua menu ikut terpotong di kanan.
+     minmax(0,1fr) mengunci lebar kolom = lebar sidebar; sisanya dibungkus. */
+  #sidebar .d-grid { grid-template-columns: minmax(0, 1fr); }
+  #sidebar .d-grid > * { min-width: 0; }
+  #sidebar .dropdown-menu { min-width: 0; max-width: 100%; }
+  /* .btn bawaan Bootstrap ber-white-space:nowrap, jadi label menu yang
+     panjang ("Perencanaan Kinerja") tidak pernah membungkus dan menjebol
+     sidebar. Di sidebar, membungkus jauh lebih baik daripada terpotong. */
+  #sidebar .sidebar-nav-link,
+  #sidebar .sidebar-logout-link,
+  #sidebar .dropdown-header {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
   /* Putar caret saat dropdown terbuka */
   #sidebar .dropdown-toggle::after { transition: transform .2s ease; }
   #sidebar .dropdown-toggle[aria-expanded="true"]::after { transform: rotate(180deg); }

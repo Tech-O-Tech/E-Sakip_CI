@@ -31,8 +31,9 @@
             <div class="bg-white rounded shadow-sm p-4">
                 <h2 class="h4 fw-bold text-success text-center mb-1">Sync IKU dari RPJMD</h2>
                 <p class="text-center text-muted small mb-4">
-                    Pilih sasaran &amp; indikator RPJMD yang mau dijadikan IKU Pemerintah Kabupaten.
-                    Indikator yang sudah ada di IKU tidak akan ditimpa.
+                    Pilih periode &amp; versi RPJMD yang akan disalin menjadi IKU Pemerintah
+                    Kabupaten. Seluruh isinya diambil &mdash; keterangan yang Anda ketik di IKU
+                    (definisi operasional, rumusan, sumber data, penanggung jawab) tidak ikut tertimpa.
                 </p>
 
                 <?php if (session()->getFlashdata('error')): ?>

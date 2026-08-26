@@ -197,30 +197,35 @@ $tanpaPadanan = $tanpa_padanan ?? [];
             </div>
         <?php endif; ?>
 
-        <?php /* Tidak ada lagi pemilihan per indikator untuk yang BARU: seluruh
-                 isi versi sumber diambil. Yang tersisa hanyalah keputusan atas
-                 indikator yang BERUBAH, sebab mengambilnya berarti menimpa
-                 nilai yang mungkin sengaja diubah di IKU. */ ?>
-        <div class="alert alert-success py-2 px-3 small d-flex flex-wrap gap-2 align-items-center">
-            <i class="fas fa-check-double"></i>
-            <div>
-                <strong>Seluruh <?= $totalBaru ?> indikator yang belum ada akan diambil.</strong>
-                <?php if ($totalBerubah > 0): ?>
-                    Untuk <?= $totalBerubah ?> indikator yang <strong>berbeda</strong> dari IKU,
-                    centang sendiri mana yang nilainya mau diikutkan &mdash; mengambilnya berarti
-                    <strong>menimpa</strong> nilai yang sekarang dipakai.
-                <?php endif; ?>
+        <?php /* Tidak ada pemilihan per indikator sama sekali. Yang dipilih
+                 pemakai adalah SUMBER-nya (periode + versi) di atas; tabel ini
+                 pratinjau atas apa yang akan terjadi bila tombol ditekan. */ ?>
+        <div class="alert alert-success py-2 px-3 small">
+            <div class="d-flex flex-wrap gap-2 align-items-start">
+                <i class="fas fa-check-double mt-1"></i>
+                <div>
+                    <strong>Seluruh isi sumber ini akan disalin ke IKU.</strong>
+                    <div class="mt-1">
+                        <?= $totalBaru ?> indikator <strong>ditambahkan</strong><?php if ($totalBerubah > 0): ?>,
+                        <?= $totalBerubah ?> yang <strong>berbeda</strong> diambil ulang nilainya dari sumber
+                        (teks, satuan, baseline, dan target <strong>tertimpa</strong>)<?php endif; ?>.
+                        Yang sudah sama dilewati.
+                    </div>
+                    <?php if ($totalBerubah > 0): ?>
+                        <div class="mt-1 text-muted">
+                            Definisi operasional, rumusan perhitungan, sumber data, dan penanggung jawab
+                            yang Anda ketik di IKU <strong>tidak ikut tertimpa</strong> &mdash; keempatnya
+                            tidak punya padanan di <?= esc($sumber_label) ?>.
+                        </div>
+                    <?php endif; ?>
+                </div>
             </div>
-            <span class="ms-auto text-muted">
-                Perubahan dicentang: <strong id="jumlah-terpilih">0</strong>
-            </span>
         </div>
 
         <div class="table-responsive table-wrap">
             <table class="table table-bordered table-striped align-middle small iku-table" data-no-paginate>
                 <thead class="table-success text-dark">
                     <tr class="text-center">
-                        <th style="width:38px;" title="Hanya indikator yang BERUBAH yang perlu dicentang">&nbsp;</th>
                         <th>Sasaran <?= esc($sumber_label) ?></th>
                         <th>Indikator</th>
                         <th>Satuan</th>
@@ -228,7 +233,7 @@ $tanpaPadanan = $tanpa_padanan ?? [];
                         <th>Status di IKU</th>
                     </tr>
                     <tr class="text-center">
-                        <th colspan="4"></th>
+                        <th colspan="3"></th>
                         <?php if (empty($years)): ?>
                             <th>-</th>
                         <?php else: ?>
@@ -250,40 +255,13 @@ $tanpaPadanan = $tanpa_padanan ?? [];
                         ?>
 
                         <?php foreach ($daftarBaris as $ind): ?>
+                            <?php /* Dipakai kolom "Status di IKU" di ujung baris.
+                                     Baris sasaran tanpa indikator ($ind === null)
+                                     tidak punya status apa pun. */ ?>
+                            <?php $bandingInd = $ind === null
+                                ? null
+                                : ($ind['banding'] ?? (! empty($ind['sudah_ada']) ? 'sama' : 'baru')); ?>
                             <tr>
-                                <?php if ($ind === null): ?>
-                                    <td class="text-center">-</td>
-                                <?php else: ?>
-                                    <?php
-                                    /* Nama medannya berbeda menurut keadaan, dan itu
-                                       disengaja: `pilih` menambah baris baru,
-                                       `perbarui` MENIMPA nilai yang sudah dipakai.
-                                       Satu nama untuk dua akibat cepat atau lambat
-                                       membuat orang menimpa tanpa bermaksud. */
-                                    $bandingInd = $ind['banding'] ?? ($ind['sudah_ada'] ? 'sama' : 'baru');
-                                    $medanInd   = $bandingInd === 'berubah' ? 'perbarui' : 'pilih';
-                                    ?>
-                                    <td class="text-center">
-                                        <?php if ($bandingInd === 'baru'): ?>
-                                            <?php /* Ikut terkirim tanpa bisa dibatalkan: seluruh isi
-                                                     versi sumber memang diambil. */ ?>
-                                            <input type="hidden"
-                                                   name="pilih[<?= (int) $sasaran['sumber_id'] ?>][<?= (int) $ind['sumber_id'] ?>]"
-                                                   value="1">
-                                            <i class="fas fa-arrow-right-to-bracket text-success"
-                                               title="Akan diambil"></i>
-                                        <?php elseif ($bandingInd === 'berubah'): ?>
-                                            <input type="checkbox"
-                                                   class="form-check-input centang-indikator"
-                                                   name="perbarui[<?= (int) $sasaran['sumber_id'] ?>][<?= (int) $ind['sumber_id'] ?>]"
-                                                   value="1"
-                                                   title="Ambil perubahan ini (menimpa nilai IKU sekarang)">
-                                        <?php else: ?>
-                                            <span class="text-muted" title="Sama dengan IKU berjalan">&mdash;</span>
-                                        <?php endif; ?>
-                                    </td>
-                                <?php endif; ?>
-
                                 <?php if ($barisPertama): ?>
                                     <td rowspan="<?= $barisSasaran ?>" class="text-start align-middle">
                                         <?= esc($sasaran['sasaran'] ?? '-') ?>
@@ -366,35 +344,10 @@ $tanpaPadanan = $tanpa_padanan ?? [];
                 <i class="fas fa-arrow-left me-1"></i> Kembali
             </a>
             <button type="submit" class="btn btn-success">
-                <i class="fas fa-download me-1"></i> Salin ke IKU
+                <i class="fas fa-download me-1"></i> Salin Seluruhnya ke IKU
             </button>
         </div>
     </form>
 
-    <script>
-        (function () {
-            const form     = document.getElementById('sync-form');
-            const jumlahEl = document.getElementById('jumlah-terpilih');
-
-            // Hanya indikator BERUBAH yang punya kotak centang; yang baru ikut
-            // lewat medan tersembunyi dan tidak perlu dihitung di sini.
-            const semua = () => Array.from(form.querySelectorAll('.centang-indikator'));
-
-            function hitung() {
-                if (jumlahEl) jumlahEl.textContent = semua().filter(c => c.checked).length;
-            }
-
-            form.addEventListener('change', e => {
-                if (e.target.classList.contains('centang-indikator')) hitung();
-            });
-
-            /* Pengiriman TIDAK lagi diblokir saat tak ada centang: indikator baru
-               ikut lewat medan tersembunyi, jadi "nol centang" bukan berarti
-               "tidak ada yang disalin". Yang benar-benar kosong ditolak server. */
-            form.addEventListener('submit', () => hitung());
-
-            hitung();
-        })();
-    </script>
 
 <?php endif; ?>

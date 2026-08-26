@@ -26,7 +26,7 @@
       document.addEventListener('DOMContentLoaded', function () {
         // Auto-wrap tabel agar responsif (scroll horizontal) — selalu jalan
         document.querySelectorAll('main table.table').forEach(function (t) {
-          if (t.closest('.table-responsive') || t.closest('.table-responsive-wrapper') || t.closest('.casc-table-wrap')) return;
+          if (t.closest('.table-responsive') || t.closest('.table-responsive-wrapper') || t.closest('.casc-table-wrap') || t.closest('.rk-scroll')) return;
           var w = document.createElement('div');
           w.className = 'table-responsive';
           t.parentNode.insertBefore(w, t);
@@ -70,7 +70,7 @@
 
           var pageSize = DEFAULT_SIZE;
           var page = 1;
-          var anchor = table.closest('.casc-table-wrap') || table.closest('.table-responsive') || table.closest('.table-responsive-wrapper') || table;
+          var anchor = table.closest('.rk-box') || table.closest('.casc-table-wrap') || table.closest('.table-responsive') || table.closest('.table-responsive-wrapper') || table;
           var bar = document.createElement('div');
           bar.className = 'js-pager';
           anchor.insertAdjacentElement('afterend', bar);

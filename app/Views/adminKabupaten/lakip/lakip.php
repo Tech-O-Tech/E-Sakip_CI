@@ -149,6 +149,50 @@ $lakipBase     = $lakipBase ?? 'adminkab/lakip';
                     $cetakParams['opd_id'] = $selectedOpdId;
                 }
                 ?>
+                <?php /* Pemilih dokumen sumber — kembaran layar LAKIP OPD.
+                         LAKIP menilai capaian terhadap dokumen tertentu; selama
+                         dokumen itu tidak tertulis, "salah dokumen" baru
+                         ketahuan setelah laporannya jadi. */ ?>
+                <?php if ($mode === 'kabupaten' && ($sumberLakip ?? null) !== null): ?>
+                    <?php $sl = $sumberLakip; ?>
+                    <div class="col-md-4">
+                        <label class="form-label fw-semibold text-secondary mb-1">Dinilai terhadap</label>
+                        <select name="sumber" class="form-select" onchange="this.form.submit()">
+                            <?php foreach ($sl['pilihan_sumber'] as $p): ?>
+                                <option value="<?= esc($p['nilai']) ?>"
+                                    <?= $sl['sumber'] === $p['nilai'] ? 'selected' : '' ?>
+                                    <?= empty($p['tersedia']) ? 'disabled' : '' ?>>
+                                    <?= esc($p['label']) ?><?= ! empty($p['bawaan']) ? ' (bawaan)' : '' ?><?= empty($p['tersedia'])
+                                        ? ' — belum ada versi' : '' ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <?php if (! empty($sl['daftar_versi'])): ?>
+                        <div class="col-md-4">
+                            <label class="form-label fw-semibold text-secondary mb-1">Versi yang dipakai</label>
+                            <select name="sumber_versi" class="form-select" onchange="this.form.submit()">
+                                <?php foreach ($sl['daftar_versi'] as $v): ?>
+                                    <option value="<?= (int) $v['id'] ?>"
+                                        <?= (int) ($sl['versi']['id'] ?? 0) === (int) $v['id'] ? 'selected' : '' ?>>
+                                        V<?= (int) ($v['version_no'] ?? 0) ?> — <?= esc($v['label'] ?? '') ?><?= ! empty($v['rekomendasi'])
+                                            ? ' (rekomendasi)' : '' ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                    <?php endif; ?>
+
+                    <?php if (! empty($sl['catatan'])): ?>
+                        <div class="col-12">
+                            <div class="alert alert-warning py-2 mb-0 small">
+                                <i class="fas fa-circle-info me-1"></i><?= esc($sl['catatan']) ?>
+                            </div>
+                        </div>
+                    <?php endif; ?>
+                <?php endif; ?>
+
                 <div class="col-md-auto d-flex gap-2">
                     <a href="<?= base_url($lakipBase . '/cetak') . '?' . http_build_query($cetakParams) ?>"
                         target="_blank" class="btn btn-outline-danger">
@@ -192,6 +236,15 @@ $lakipBase     = $lakipBase ?? 'adminkab/lakip';
 
             $rows = $rows ?? [];
             $lakipMap = $lakipMap ?? [];
+
+            /* Sumber dokumen yang sedang dipakai layar ini. Dipakai tabel untuk
+               memilih kunci baris DAN untuk membawa penanda sumber pada tombol
+               +/Edit — tanpa itu, tombol pada baris IKU mendarat di formulir
+               RPJMD. */
+            $slKab          = $sumberLakip ?? null;
+            $sumberAktifKab = ($mode === 'kabupaten' && $slKab !== null)
+                ? (string) ($slKab['sumber'] ?? '') : '';
+            $versiAktifKab  = (int) ($slKab['versi']['id'] ?? 0);
 
             // rowspan counts
             $opdCounts = [];
@@ -250,7 +303,13 @@ $lakipBase     = $lakipBase ?? 'adminkab/lakip';
                             foreach ($rows as $r): ?>
                                 <?php
                                 $targetId = (int) ($r['target_id'] ?? 0);
-                                $lakipItem = $lakipMap[$targetId] ?? null;
+                                // baganLakip() mengembalikan lakipMap berkunci
+                                // INDIKATOR untuk mode kabupaten (baik sumber
+                                // IKU maupun RPJMD); mode opd tetap berkunci
+                                // target seperti sebelumnya.
+                                $lakipItem = ($mode === 'kabupaten')
+                                    ? ($lakipMap[(int) ($r['indikator_id'] ?? 0)] ?? null)
+                                    : ($lakipMap[$targetId] ?? null);
 
                                 $jenis = $r['jenis_indikator'] ?? 'indikator positif';
                                 $targetNow = $r['target_tahun_ini'] ?? null;
@@ -276,10 +335,24 @@ $lakipBase     = $lakipBase ?? 'adminkab/lakip';
                                 $q = 'mode=' . urlencode($mode)
                                     . '&tahun=' . urlencode($filters['tahun'] ?? date('Y'))
                                     . '&status=' . urlencode($filters['status'] ?? '');
+                                // Tanpa penanda sumber, tombol +/Edit mendarat
+                                // di formulir RPJMD walau layarnya IKU.
+                                if ($sumberAktifKab !== '') {
+                                    $q .= '&sumber=' . urlencode($sumberAktifKab);
+                                    if ($versiAktifKab > 0) {
+                                        $q .= '&sumber_versi=' . $versiAktifKab;
+                                    }
+                                }
                                 if ($mode === 'opd')
                                     $q .= '&opd_id=' . urlencode($selectedOpdId ?? '');
 
-                                $tambahUrl = base_url($lakipBase . '/tambah/' . ($r['target_id'] ?? 0)) . '?' . $q;
+                                // Sumber IKU: rutenya menerima id INDIKATOR IKU
+                                // berjalan; target_id milik ruang angka lain.
+                                $idTambah = ($sumberAktifKab === 'iku')
+                                    ? ($r['indikator_id'] ?? 0)
+                                    : ($r['target_id'] ?? 0);
+
+                                $tambahUrl = base_url($lakipBase . '/tambah/' . $idTambah) . '?' . $q;
 
                                 $editUrl = base_url($lakipBase . '/edit/' . ($r['indikator_id'] ?? 0)) . '?' . $q;
 

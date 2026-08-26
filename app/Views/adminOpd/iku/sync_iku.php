@@ -31,9 +31,11 @@
             <div class="bg-white rounded shadow-sm p-4">
                 <h2 class="h4 fw-bold text-success text-center mb-1">Sync IKU dari Renstra</h2>
                 <p class="text-center text-muted small mb-4">
-                    Pilih sasaran &amp; indikator Renstra
+                    Pilih periode &amp; versi Renstra
                     <?= !empty($nama_opd) ? '<strong>' . esc($nama_opd) . '</strong>' : '' ?>
-                    yang mau dijadikan IKU. Indikator yang sudah ada di IKU tidak akan ditimpa.
+                    yang akan disalin menjadi IKU. Seluruh isinya diambil &mdash; keterangan yang
+                    Anda ketik di IKU (definisi operasional, rumusan, sumber data, penanggung
+                    jawab) tidak ikut tertimpa.
                 </p>
 
                 <?php if (session()->getFlashdata('error')): ?>

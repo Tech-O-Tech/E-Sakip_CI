@@ -2,6 +2,8 @@
 
 namespace App\Controllers\Concerns;
 
+use App\Models\Opd\IkuRevisiModel;
+
 /**
  * Bagian bersama form IKU standalone (dipakai AdminKab\IkuController dan
  * AdminOpd\IkuController): pembacaan input, validasi, dan filter anti-script.
@@ -92,6 +94,152 @@ trait IkuFormTrait
         }
 
         return $pilihan;
+    }
+
+    /**
+     * Susun kedua keranjang sync dari KANDIDAT, bukan dari centang form.
+     *
+     * Sejak layar sync tidak lagi memakai kotak centang — pemakai memilih
+     * sumber + versinya, lalu seluruh isinya disalin — keranjangnya dibangun
+     * di server dari kandidat yang sama dengan yang dipratinjau. Membangunnya
+     * dari POST berarti mempercayai daftar id kiriman peramban untuk
+     * menentukan APA yang disalin; di sini POST tidak menentukan apa pun.
+     *
+     * @return array{0: array<int,int[]>, 1: array<int,int[]>} [baru, berubah]
+     */
+    private function keranjangSyncPenuh(array $kandidat): array
+    {
+        $baru    = [];
+        $berubah = [];
+
+        foreach ($kandidat as $sasaran) {
+            $idSasaran = (int) ($sasaran['sumber_id'] ?? 0);
+
+            if ($idSasaran <= 0) {
+                continue;
+            }
+
+            foreach ($sasaran['indikator'] ?? [] as $ind) {
+                $idInd = (int) ($ind['sumber_id'] ?? 0);
+
+                if ($idInd <= 0) {
+                    continue;
+                }
+
+                // 'sama' tidak masuk keranjang mana pun: menimpanya dengan
+                // nilai yang identik hanya menambah beban tulis.
+                if (($ind['banding'] ?? '') === 'baru') {
+                    $baru[$idSasaran][] = $idInd;
+                } elseif (($ind['banding'] ?? '') === 'berubah') {
+                    $berubah[$idSasaran][] = $idInd;
+                }
+            }
+        }
+
+        return [$baru, $berubah];
+    }
+
+    /**
+     * Versi sumber yang dipilih, DIVALIDASI terhadap daftar yang sah.
+     *
+     * Nilai dari form tidak pernah dipercaya: id karangan tidak boleh membuka
+     * arsip milik lingkup lain.
+     */
+    private function versiSumberDipilih($nilai, array $tersedia): ?array
+    {
+        $id = (int) $nilai;
+
+        if ($id <= 0) {
+            return null;
+        }
+
+        foreach ($tersedia as $v) {
+            if ((int) $v['id'] === $id) {
+                return $v;
+            }
+        }
+
+        return null;
+    }
+
+    private function muaraSync(?int $opdId, array $periode): array
+    {
+        $rev = new IkuRevisiModel();
+
+        if (! $rev->siap()) {
+            return ['ke_revisi' => false, 'revisi_berlaku' => null, 'draft_tersedia' => []];
+        }
+
+        $tm = (int) $periode['tahun_mulai'];
+        $ta = (int) $periode['tahun_akhir'];
+
+        $berlaku = $rev->revisiBerlaku($opdId, $tm, $ta);
+
+        return [
+            'ke_revisi'      => $berlaku !== null,
+            'revisi_berlaku' => $berlaku,
+            'draft_tersedia' => $berlaku === null ? [] : $rev->draftTersedia($opdId, $tm, $ta),
+        ];
+    }
+
+/**
+     * Masukkan hasil sync ke draft revisi yang dipilih pengguna.
+     *
+     * Mengembalikan array statistik bila berhasil, atau RedirectResponse bila
+     * pilihannya tidak sah — pemanggil meneruskannya apa adanya.
+     *
+     * @return array|\CodeIgniter\HTTP\RedirectResponse
+     */
+    private function syncKeDraft(
+        array $muara,
+        array $post,
+        ?int $opdId,
+        array $periode,
+        ?array $versiDipilih,
+        array $pilihan,
+        array $perbarui,
+        string $sumber,
+        string $kembali
+    ) {
+
+        if (empty($muara['draft_tersedia'])) {
+            return redirect()->to($kembali)->with('error',
+                'IKU periode ini sudah punya revisi yang berlaku, jadi hasil sync harus masuk '
+                . 'ke sebuah draft revisi. Buat revisinya lebih dulu di menu Revisi IKU.');
+        }
+
+        // Draft tujuan diperiksa terhadap daftar yang sah, bukan dipercaya dari
+        // form: id karangan tidak boleh menyisipkan baris ke revisi OPD lain.
+        $tujuanId = (int) ($post['revisi_tujuan'] ?? 0);
+        $draft    = null;
+
+        foreach ($muara['draft_tersedia'] as $d) {
+            if ((int) $d['id'] === $tujuanId) {
+                $draft = $d;
+            }
+        }
+
+        if ($draft === null) {
+            return redirect()->to($kembali)->with('error',
+                'Pilih draft revisi yang akan menampung hasil sync.');
+        }
+
+        $kandidat = $this->ikuModel->getKandidatSync(
+            $sumber,
+            $opdId,
+            (int) $periode['tahun_mulai'],
+            (int) $periode['tahun_akhir'],
+            $versiDipilih !== null ? (int) $versiDipilih['id'] : null
+        );
+
+        return (new IkuRevisiModel())->imporKandidat(
+            (int) $draft['id'],
+            $kandidat,
+            $pilihan,
+            $sumber,
+            $versiDipilih !== null ? (int) $versiDipilih['id'] : null,
+            $perbarui
+        );
     }
 
     /** Susun pesan hasil sync untuk flashdata. */

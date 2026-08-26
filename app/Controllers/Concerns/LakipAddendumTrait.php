@@ -200,7 +200,7 @@ trait LakipAddendumTrait
         // id target Renstra. Tanpa cabang ini, penyesuaian pada baris IKU
         // ditolak sebagai "tidak ada pada tahun & lingkup ini" — atau, lebih
         // buruk, DITERIMA karena kebetulan ada renstra_target ber-id sama.
-        if ($sumber === 'iku' && $mode !== 'kabupaten') {
+        if ($sumber === 'iku') {
             $b = $this->db->table('iku_indikator ii')
                 ->select('ii.id AS target_id, ii.indikator AS indikator_sasaran, ii.id AS indikator_id, isa.opd_id')
                 ->join('iku_sasaran isa', 'isa.id = ii.iku_sasaran_id', 'left')
@@ -210,7 +210,12 @@ trait LakipAddendumTrait
                 $b->where('ii.dihentikan_pada IS NULL', null, false);
             }
 
-            if (! empty($opdScope)) {
+            // IKU Kabupaten hidup di iku_sasaran.opd_id NULL. Tanpa saringan
+            // ini, id indikator IKU OPD mana pun lolos sebagai "milik
+            // kabupaten" — lingkupnya bocor lintas pemilik.
+            if ($mode === 'kabupaten') {
+                $b->where('isa.opd_id IS NULL', null, false);
+            } elseif (! empty($opdScope)) {
                 $b->where('isa.opd_id', (int) $opdScope);
             }
 

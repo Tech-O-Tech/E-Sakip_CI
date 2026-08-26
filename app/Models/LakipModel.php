@@ -273,6 +273,14 @@ class LakipModel extends Model
 
         if (! empty($opdId)) {
             $b->where('l.opd_id', $opdId);
+        } else {
+            // null = lingkup KABUPATEN (LAKIP kabupaten bersumber IKU
+            // Kabupaten), bukan "tanpa saringan": tanpa cabang ini peta
+            // kabupaten ikut memuat realisasi milik seluruh OPD.
+            $b->groupStart()
+                ->where('l.opd_id IS NULL', null, false)
+                ->orWhere('l.opd_id', 0)
+                ->groupEnd();
         }
 
         $map = [];

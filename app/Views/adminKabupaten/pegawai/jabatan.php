@@ -1,3 +1,11 @@
+<?php
+/* Peta id OPD -> nama, dipakai untuk mencetak SATU opsi terpilih per baris.
+   Daftar lengkapnya cukup dikirim sekali (lihat $opdJson di bawah tabel). */
+$namaOpd = [];
+foreach (($opdList ?? []) as $o) {
+    $namaOpd[(int) $o['id']] = $o['nama_opd'];
+}
+?>
 <!DOCTYPE html>
 <html lang="id">
 
@@ -91,14 +99,23 @@
                                                 value="<?= esc($j['nama_jabatan']) ?>" required>
                                         </td>
                                         <td>
-                                            <select form="<?= $fid ?>" name="opd_id" class="form-select form-select-sm">
-                                                <option value="">- Tanpa OPD -</option>
-                                                <?php foreach ($opdList as $opd): ?>
-                                                    <option value="<?= (int) $opd['id'] ?>"
-                                                        <?= ((int) ($j['opd_id'] ?? 0) === (int) $opd['id']) ? 'selected' : '' ?>>
-                                                        <?= esc($opd['nama_opd']) ?>
-                                                    </option>
-                                                <?php endforeach; ?>
+                                            <?php
+                                            /* Hanya opsi TERPILIH yang dicetak. Daftar OPD lengkap
+                                               diisi JavaScript saat dropdown disentuh (lihat skrip di
+                                               bawah). Sebelumnya tiap baris mencetak seluruh daftar
+                                               OPD; dengan ribuan baris halaman ini membengkak sampai
+                                               puluhan MB dan praktis tidak bisa dibuka di ponsel.
+                                               Nilai kiriman form tidak berubah: select tetap
+                                               <select name="opd_id"> dengan nilai yang sama. */
+                                            $opdTerpilih = (int) ($j['opd_id'] ?? 0);
+                                            ?>
+                                            <select form="<?= $fid ?>" name="opd_id" data-no-select2
+                                                class="form-select form-select-sm js-opd-pilih">
+                                                <?php if ($opdTerpilih > 0): ?>
+                                                    <option value="<?= $opdTerpilih ?>" selected><?= esc($namaOpd[$opdTerpilih] ?? ('OPD #' . $opdTerpilih)) ?></option>
+                                                <?php else: ?>
+                                                    <option value="" selected>- Tanpa OPD -</option>
+                                                <?php endif; ?>
                                             </select>
                                         </td>
                                         <td>
@@ -121,6 +138,35 @@
 
             </div>
         </main>
+
+        <script>
+            /* Daftar OPD dikirim SEKALI, bukan diulang di tiap baris. Opsi baru
+               ditanam ke sebuah <select> saat pengguna menyentuhnya. */
+            (function () {
+                var OPD = <?= json_encode(array_map(static fn($o) => ['i' => (int) $o['id'], 'n' => $o['nama_opd']], $opdList ?? []), JSON_UNESCAPED_UNICODE) ?>;
+
+                function isiOpsi(sel) {
+                    if (sel.dataset.lengkap) return;
+                    sel.dataset.lengkap = '1';
+                    var terpilih = sel.value;
+                    var potongan = ['<option value="">- Tanpa OPD -</option>'];
+                    for (var k = 0; k < OPD.length; k++) {
+                        potongan.push('<option value="' + OPD[k].i + '">' +
+                            String(OPD[k].n).replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</option>');
+                    }
+                    sel.innerHTML = potongan.join('');
+                    sel.value = terpilih;
+                }
+
+                // pointerdown & focusin: mencakup klik tetikus, sentuhan, dan Tab.
+                ['pointerdown', 'focusin'].forEach(function (ev) {
+                    document.addEventListener(ev, function (e) {
+                        var sel = e.target.closest ? e.target.closest('.js-opd-pilih') : null;
+                        if (sel) isiOpsi(sel);
+                    }, true);
+                });
+            })();
+        </script>
 
         <?= $this->include('adminKabupaten/templates/footer.php'); ?>
     </div>

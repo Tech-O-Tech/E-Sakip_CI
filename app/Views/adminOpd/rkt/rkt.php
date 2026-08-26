@@ -112,11 +112,13 @@
             <?php endif; ?>
 
             <!-- FILTER -->
-            <div class="d-flex flex-column flex-md-row justify-content-between gap-3 mb-4">
-                <div class="d-flex gap-2 flex-fill">
+            <?php /* Grid: tiga filter + tombol tidak muat sebaris di layar
+               sempit; w-50/w-25 dilepas karena lebar diatur kolom grid. */ ?>
+            <div class="row g-2 align-items-center mb-4">
+                <div class="col-12 col-md-6 col-xl-5">
 
                     <!-- Filter Indikator Sasaran Renstra -->
-                    <select id="indikatorFilter" class="form-select w-50" onchange="applyFilter()">
+                    <select id="indikatorFilter" class="form-select" onchange="applyFilter()">
                         <option value="all">SEMUA INDIKATOR SASARAN RENSTRA</option>
                         <?php if (!empty($sasaranList ?? [])): ?>
                             <?php foreach ($sasaranList as $s): ?>
@@ -128,9 +130,12 @@
                         <?php endif; ?>
                     </select>
 
+                </div>
+
+                <div class="col-6 col-md-3 col-xl-2">
                     <!-- Filter Tahun -->
                     <?php $selectedYear = $filter_tahun ?? 'all'; ?>
-                    <select id="yearFilter" class="form-select w-25" onchange="applyFilter()">
+                    <select id="yearFilter" class="form-select" onchange="applyFilter()">
                         <option value="all" <?= $selectedYear === 'all' ? 'selected' : '' ?>>
                             SEMUA TAHUN
                         </option>
@@ -143,8 +148,11 @@
                         <?php endif; ?>
                     </select>
 
+                </div>
+
+                <div class="col-6 col-md-3 col-xl-2">
                     <!-- Filter Status -->
-                    <select id="statusFilter" class="form-select w-25" onchange="applyFilter()">
+                    <select id="statusFilter" class="form-select" onchange="applyFilter()">
                         <option value="all" <?= ($filter_status ?? 'all') === 'all' ? 'selected' : '' ?>>
                             SEMUA STATUS
                         </option>
@@ -156,7 +164,7 @@
                         </option>
                     </select>
                 </div>
-                <div class="d-flex gap-2">
+                <div class="col-12 col-xl d-flex flex-wrap gap-2 justify-content-xl-end">
                     <a href="<?= base_url('adminopd/rkt/cetak?' . http_build_query(array_filter([
                         'sasaran' => ($filter_sasaran ?? 'all') !== 'all' ? ($filter_sasaran ?? 'all') : null,
                         'tahun' => ($filter_tahun ?? 'all') !== 'all' ? ($filter_tahun ?? 'all') : null,

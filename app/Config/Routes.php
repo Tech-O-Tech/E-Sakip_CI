@@ -198,6 +198,8 @@ $routes->group(
         $routes->post('iku/revisi/izin/selesai/(:num)', 'AdminKab\IkuController::revisiSelesaikanIzin/$1');
 
         $routes->post('iku/revisi/berlaku/(:num)', 'AdminKab\IkuController::revisiUbahBerlaku/$1');
+        $routes->post('iku/revisi/tarik/(:num)', 'AdminKab\IkuController::revisiTarik/$1');
+        $routes->post('iku/ajukan-pengesahan', 'AdminKab\IkuController::ajukanPengesahan');
         $routes->post('iku/revisi/sahkan/(:num)', 'AdminKab\IkuController::revisiSahkan/$1');
         $routes->post('iku/revisi/batalkan/(:num)', 'AdminKab\IkuController::revisiBatalkan/$1');
 
@@ -228,6 +230,10 @@ $routes->group(
         $routes->post('rpjmd/versi/ajukan/(:num)', 'RpjmdController::versiAjukan/$1');
         $routes->post('rpjmd/versi/tetapkan/(:num)', 'RpjmdController::versiTetapkan/$1');
         $routes->post('rpjmd/versi/batalkan/(:num)', 'RpjmdController::versiBatalkan/$1');
+        // Tombolnya dirender versi/lihat.php untuk semua pemegang
+        // rpjmd.version.pin — tanpa dua rute ini POST-nya mendarat 404.
+        $routes->post('rpjmd/versi/jadikan-utama/(:num)', 'RpjmdController::versiJadikanUtama/$1');
+        $routes->post('rpjmd/versi/lepas-utama/(:num)', 'RpjmdController::versiLepasUtama/$1');
 
         $routes->get('rpjmd/cetak', 'RpjmdController::cetak');
         $routes->get('rpjmd', 'RpjmdController::index');

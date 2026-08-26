@@ -582,7 +582,13 @@ trait RenstraSiklusTrait
 
         // Lingkup diperiksa dari SESI, bukan dari permintaan: tanpa ini, id
         // permohonan OPD lain bisa ditarik hanya dengan mengarang angkanya.
-        if ($izin === null || (int) $izin['opd_key'] !== (int) session()->get('opd_id')) {
+        // Modul ikut diperiksa (seperti IkuRevisiTrait::revisiTarikIzin):
+        // tabel izinnya lintas modul, jadi tanpa saringan ini pemegang izin
+        // renstra bisa menarik permohonan IKU/LAKIP milik OPD-nya sendiri
+        // lewat modul yang bukan wewenangnya.
+        if ($izin === null
+            || ($izin['modul'] ?? '') !== VersionScope::MODUL_RENSTRA
+            || (int) $izin['opd_key'] !== (int) session()->get('opd_id')) {
             return redirect()->to(base_url('adminopd/renstra'))
                 ->with('error', 'Permohonan tidak ditemukan pada lingkup Anda.');
         }

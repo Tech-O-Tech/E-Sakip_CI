@@ -24,6 +24,20 @@ class CascadingModel extends Model
         $this->db = \Config\Database::connect();
     }
 
+    // =====================================================================
+    // SUMBER TAMPILAN CASCADING KABUPATEN: IKU Kabupaten dulu, RPJMD sebagai
+    // jaring pengaman. Kembaran SASARAN_ES2_SELECT dkk. pada cascading OPD.
+    //
+    // Nama kolom hasil TIDAK berubah (`sasaran_rpjmd`, `indikator_sasaran`,
+    // `satuan`, `baseline`): view kabupaten, ekspor Excel, cetak, API, dan
+    // analisis AI membacanya dengan nama itu.
+    // =====================================================================
+
+    private const SASARAN_KAB_SELECT   = "COALESCE(NULLIF(iks.sasaran, ''), s.sasaran_rpjmd)";
+    private const INDIKATOR_KAB_SELECT = "COALESCE(NULLIF(iki.indikator, ''), i.indikator_sasaran)";
+    private const SATUAN_KAB_SELECT    = "COALESCE(satiku.satuan, NULLIF(iki.satuan, ''), i.satuan)";
+    private const BASELINE_KAB_SELECT  = "COALESCE(NULLIF(iki.baseline, ''), i.baseline)";
+
     public function getMatrix($start, $end)
     {
         // ==========================================================
@@ -32,7 +46,18 @@ class CascadingModel extends Model
         //    (Tidak lagi memakai WHERE pada tabel LEFT JOIN yang
         //     dulu menyebabkan baris RPJMD tanpa mapping menghilang.)
         // ==========================================================
-        $backbone = $this->db->table('rpjmd_misi m')
+        // Server yang belum menjalankan db/update_2026-08-28_silsilah_iku_kabupaten.sql
+        // tidak punya kolom jejaknya. Tanpa penjaga ini seluruh menu Cascading
+        // Kabupaten mati dengan "Unknown column" — perilaku lamanya masih sah.
+        $adaSilsilahIku = $this->db->fieldExists('source_indikator_id', 'iku_indikator');
+
+        $sasaranKab   = $adaSilsilahIku ? self::SASARAN_KAB_SELECT   : 's.sasaran_rpjmd';
+        $indikatorKab = $adaSilsilahIku ? self::INDIKATOR_KAB_SELECT : 'i.indikator_sasaran';
+        $satuanKab    = $adaSilsilahIku ? self::SATUAN_KAB_SELECT    : 'i.satuan';
+        $baselineKab  = $adaSilsilahIku ? self::BASELINE_KAB_SELECT  : 'i.baseline';
+        $lineageKab   = $adaSilsilahIku ? 'iki.id' : 'NULL';
+
+        $backboneQ = $this->db->table('rpjmd_misi m')
             ->select("
                 m.id as misi_id,
                 m.misi,
@@ -41,13 +66,14 @@ class CascadingModel extends Model
                 t.tujuan_rpjmd,
 
                 s.id as sasaran_id,
-                s.sasaran_rpjmd,
+                {$sasaranKab} as sasaran_rpjmd,
                 s.csf,
 
                 i.id as indikator_id,
-                i.indikator_sasaran,
-                i.satuan,
-                i.baseline
+                {$indikatorKab} as indikator_sasaran,
+                {$satuanKab} as satuan,
+                {$baselineKab} as baseline,
+                {$lineageKab} as iku_indikator_id
             ", false)
             ->join('rpjmd_tujuan t', 't.misi_id = m.id', 'left')
             ->join('rpjmd_sasaran s', 's.tujuan_id = t.id', 'left')
@@ -57,9 +83,36 @@ class CascadingModel extends Model
             ->orderBy('m.id', 'ASC')
             ->orderBy('t.id', 'ASC')
             ->orderBy('s.id', 'ASC')
-            ->orderBy('i.id', 'ASC')
-            ->get()
-            ->getResultArray();
+            ->orderBy('i.id', 'ASC');
+
+        // Jembatan ke IKU Kabupaten. Baris RPJMD yang punya padanan IKU
+        // ditampilkan memakai teks & satuan IKU — dokumen itulah yang resmi
+        // dinilai LAKIP. Yang tidak punya padanan tetap tampil apa adanya dari
+        // RPJMD: IKU memang PILIHAN indikator utama, bukan salinan penuh.
+        if ($adaSilsilahIku) {
+            $backboneQ
+                ->join(
+                    'iku_indikator iki',
+                    "iki.source_indikator_id = i.id AND iki.source_type = 'rpjmd'
+                     AND iki.dihentikan_pada IS NULL",
+                    'left',
+                    false
+                )
+                ->join(
+                    'iku_sasaran iks',
+                    'iks.id = iki.iku_sasaran_id AND iks.opd_id IS NULL',
+                    'left',
+                    false
+                )
+                ->join(
+                    'satuan satiku',
+                    "satiku.id = iki.satuan AND iki.satuan REGEXP '^[0-9]+$'",
+                    'left',
+                    false
+                );
+        }
+
+        $backbone = $backboneQ->get()->getResultArray();
 
         if (empty($backbone)) {
             return [];
@@ -152,8 +205,27 @@ class CascadingModel extends Model
             $targetMap[$t['indikator_sasaran_id']][$t['tahun']] = $t['target_tahunan'];
         }
 
+        // Target IKU menang atas target RPJMD untuk baris yang berjembatan:
+        // percuma menampilkan teks indikator dari IKU tetapi angkanya dari
+        // RPJMD — satu baris jadi memuat dua dokumen sekaligus.
+        $targetIku = [];
+        $idIku     = array_values(array_unique(array_filter(array_column($rows, 'iku_indikator_id'))));
+
+        if ($idIku !== [] && $this->db->tableExists('iku_target')) {
+            foreach ($this->db->table('iku_target')
+                ->select('iku_indikator_id, tahun, target')
+                ->whereIn('iku_indikator_id', $idIku)
+                ->get()->getResultArray() as $t) {
+                $targetIku[(int) $t['iku_indikator_id']][$t['tahun']] = $t['target'];
+            }
+        }
+
         foreach ($rows as &$r) {
-            $r['targets'] = $targetMap[$r['indikator_id']] ?? [];
+            $ikuId = (int) ($r['iku_indikator_id'] ?? 0);
+
+            $r['targets'] = $ikuId > 0 && ! empty($targetIku[$ikuId])
+                ? $targetIku[$ikuId]
+                : ($targetMap[$r['indikator_id']] ?? []);
         }
         unset($r);
 

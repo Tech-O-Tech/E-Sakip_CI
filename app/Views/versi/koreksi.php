@@ -263,8 +263,10 @@ foreach ($isi as $akar) {
 
 <script>
 (function () {
-    var data = <?= json_encode($pilihan, JSON_UNESCAPED_UNICODE) ?>;
-    var kolomMeta = <?= json_encode(array_map(static fn ($d) => $d['kolom'], $daftarPutih), JSON_UNESCAPED_UNICODE) ?>;
+<?php /* HEX_TAG dkk. wajib: isinya teks indikator dari basis data, dan tanpa
+         itu '</script>' di dalam teks menutup blok ini = stored XSS. */ ?>
+    var data = <?= json_encode($pilihan, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    var kolomMeta = <?= json_encode(array_map(static fn ($d) => $d['kolom'], $daftarPutih), JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
     var dipakaiLakip = <?= (int) $dipakaiLakip ?>;
 
     var selEntitas = document.getElementById('pilihEntitas');

@@ -219,9 +219,11 @@
             <?php endif; ?>
 
             <!-- FILTER -->
-            <div class="d-flex flex-column flex-md-row justify-content-between gap-3 mb-4">
-                <div class="d-flex gap-2 flex-fill">
-                    <select id="opdFilter" class="form-select w-50" onchange="applyFilter()">
+            <?php /* Grid: di layar sempit filter & tombol turun baris sendiri.
+               Lebar w-50/w-25 dilepas karena sudah diatur kolom grid. */ ?>
+            <div class="row g-2 align-items-center mb-4">
+                <div class="col-12 col-md-7 col-xl-5">
+                    <select id="opdFilter" class="form-select" onchange="applyFilter()">
                         <option value="all" <?= ($selectedOpd === 'all') ? 'selected' : '' ?>>SEMUA OPD</option>
                         <?php foreach ($allOpd ?? [] as $opd): ?>
                             <option value="<?= esc($opd['id']) ?>"
@@ -231,7 +233,10 @@
                         <?php endforeach; ?>
                     </select>
 
-                    <select id="yearFilter" class="form-select w-25" onchange="applyFilter()">
+                </div>
+
+                <div class="col-12 col-md-5 col-xl-2">
+                    <select id="yearFilter" class="form-select" onchange="applyFilter()">
                         <option value="all" <?= ($selectedYear === 'all') ? 'selected' : '' ?>>SEMUA TAHUN</option>
                         <?php foreach ($available_years ?? [] as $y): ?>
                             <option value="<?= esc($y) ?>"
@@ -240,7 +245,9 @@
                             </option>
                         <?php endforeach; ?>
                     </select>
+                </div>
 
+                <div class="col-12 col-xl d-flex flex-wrap gap-2 justify-content-xl-end">
                     <button type="button"
                             onclick="window.location.href='<?= base_url('adminkab/rkpd') ?>'"
                             class="btn btn-outline-secondary">Reset</button>

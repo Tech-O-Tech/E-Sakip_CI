@@ -450,12 +450,80 @@ class IkuRevisiModel extends Model
             ->get()->getRowArray();
 
         if ($bentrok !== null) {
+            // Menolak saja memaksa operator menebak; disebutkan sekalian
+            // siapa yang memakai tahun itu DAN tahun mana yang masih kosong.
+            $bebas = $this->tahunBerlakuBebas($opdId, $tahunMulai, $tahunAkhir);
+
             throw new RuntimeException(
                 'Tahun ' . $berlaku . ' sudah dipakai revisi lain ("' . $bentrok['nama'] . '", '
                 . 'revisi ke-' . $bentrok['nomor'] . ', status ' . $bentrok['status'] . '). '
-                . 'Satu tahun hanya boleh dipayungi satu revisi — pilih tahun mulai berlaku yang lain.'
+                . 'Satu tahun hanya boleh dipayungi satu revisi. '
+                . ($bebas === []
+                    ? 'Seluruh tahun pada periode ini sudah terpakai — geser dulu tahun berlaku salah satu revisi yang ada.'
+                    : 'Tahun yang masih kosong: ' . implode(', ', $bebas) . '.')
             );
         }
+    }
+
+    /**
+     * Tahun mulai berlaku yang SUDAH dipakai pada satu lingkup, beserta
+     * pemakainya.
+     *
+     * Dipakai layar untuk dua hal sekaligus: menyodorkan tahun yang masih
+     * kosong, dan menyebut revisi mana yang menghalangi. Menolak tanpa
+     * menyebut keduanya memaksa operator menebak.
+     *
+     * @return array<int,array{id:int,nomor:string,nama:string,status:string}>
+     *         [tahun => revisi pemakainya]
+     */
+    public function tahunBerlakuTerpakai(?int $opdId, int $tahunMulai, int $tahunAkhir, ?int $kecuali = null): array
+    {
+        if (! $this->siap()) {
+            return [];
+        }
+
+        $b = $this->lingkup($opdId, $tahunMulai, $tahunAkhir)
+            ->select('id, nomor, nama, status, berlaku_mulai_tahun')
+            ->whereIn('status', [self::STATUS_BERLAKU, self::STATUS_SUPERSEDED, self::STATUS_MENUNGGU]);
+
+        if ($kecuali !== null) {
+            $b->where('id !=', $kecuali);
+        }
+
+        $peta = [];
+
+        foreach ($b->get()->getResultArray() as $r) {
+            $peta[(int) $r['berlaku_mulai_tahun']] = [
+                'id'     => (int) $r['id'],
+                'nomor'  => (string) $r['nomor'],
+                'nama'   => (string) $r['nama'],
+                'status' => (string) $r['status'],
+            ];
+        }
+
+        return $peta;
+    }
+
+    /**
+     * Tahun yang MASIH BEBAS dipakai revisi bernomor pada satu lingkup.
+     *
+     * Tahun pertama periode selalu dikecualikan: itu jatah Kondisi Awal.
+     *
+     * @return int[]
+     */
+    public function tahunBerlakuBebas(?int $opdId, int $tahunMulai, int $tahunAkhir, ?int $kecuali = null): array
+    {
+        $terpakai = $this->tahunBerlakuTerpakai($opdId, $tahunMulai, $tahunAkhir, $kecuali);
+
+        $bebas = [];
+
+        foreach (range($tahunMulai + 1, $tahunAkhir) as $th) {
+            if (! isset($terpakai[$th])) {
+                $bebas[] = $th;
+            }
+        }
+
+        return $bebas;
     }
 
     private function validasiLingkupDraft(int $tahunMulai, int $tahunAkhir, int $berlaku): void
@@ -1097,10 +1165,15 @@ class IkuRevisiModel extends Model
                 ->get()->getRowArray();
 
             if ($bentrok !== null) {
+                $bebas = $this->tahunBerlakuBebas($opdId, $tahunMulai, $tahunAkhir, $revisiId);
+
                 throw new RuntimeException(
                     'Tahun ' . $tahunBaru . ' sudah dipakai "' . $bentrok['nama'] . '" '
                     . '(revisi ke-' . $bentrok['nomor'] . ', status ' . $bentrok['status'] . '). '
-                    . 'Satu tahun hanya boleh dipayungi satu revisi.'
+                    . 'Satu tahun hanya boleh dipayungi satu revisi. '
+                    . ($bebas === []
+                        ? 'Seluruh tahun lain pada periode ini juga terpakai — geser dulu salah satunya.'
+                        : 'Tahun yang masih kosong: ' . implode(', ', $bebas) . '.')
                 );
             }
 
@@ -1168,6 +1241,91 @@ class IkuRevisiModel extends Model
 
             return ['dari' => $dari, 'ke' => $tahunBaru, 'digeser' => $digeser];
         }, 'ubah tahun berlaku revisi IKU');
+    }
+
+    /**
+     * Bekukan ULANG arsip sebuah revisi dari IKU berjalan.
+     *
+     * Dipakai ketika arsip revisi tidak lagi mencerminkan IKU yang sebenarnya
+     * berlaku pada masanya — misalnya sesudah periode IKU dirapikan, ketika
+     * revisi lahir di periode yang isinya belum lengkap.
+     *
+     * BUKAN operasi rutin. Arsip revisi memang dimaksudkan beku; membekukan
+     * ulang berarti menyatakan "potret yang lama diambil dari keadaan yang
+     * keliru". Karena itu jejaknya ditulis pada catatan revisi, bukan
+     * dikerjakan diam-diam.
+     *
+     * Revisi berstatus `batal` ditolak: tidak ada gunanya memotret ulang
+     * sesuatu yang sudah dinyatakan tidak berlaku.
+     */
+    public function bekukanUlangArsip(int $revisiId): void
+    {
+        if (! $this->siap()) {
+            throw new RuntimeException('Tabel revisi IKU belum tersedia.');
+        }
+
+        $revisi = $this->ambil($revisiId);
+
+        if ($revisi === null) {
+            throw new RuntimeException('Revisi tidak ditemukan.');
+        }
+
+        if ($revisi['status'] === self::STATUS_BATAL) {
+            throw new RuntimeException('Revisi yang dibatalkan tidak dibekukan ulang.');
+        }
+
+        $this->dalamTransaksi(function () use ($revisiId, $revisi) {
+            $opdId = $revisi['opd_id'] !== null ? (int) $revisi['opd_id'] : null;
+
+            $this->kosongkanArsipRevisi($revisiId);
+
+            $this->bekukanLiveKeRevisi(
+                $revisiId,
+                $opdId,
+                (int) $revisi['tahun_mulai'],
+                (int) $revisi['tahun_akhir'],
+                false
+            );
+
+            $catatan = trim((string) ($revisi['catatan'] ?? ''));
+            $tambahan = 'Arsip dibekukan ulang pada ' . date('Y-m-d H:i:s')
+                . ' karena potret sebelumnya diambil saat periode IKU belum dirapikan.';
+
+            $this->db->table('iku_revisi')->where('id', $revisiId)->update([
+                'catatan'    => $catatan === '' ? $tambahan : ($catatan . ' ' . $tambahan),
+                'updated_at' => date('Y-m-d H:i:s'),
+            ]);
+        }, 'pembekuan ulang arsip revisi IKU');
+    }
+
+    /** Buang isi arsip sebuah revisi (kepalanya tetap). */
+    private function kosongkanArsipRevisi(int $revisiId): void
+    {
+        $sasaranIds = array_column(
+            $this->db->table('iku_revisi_sasaran')->select('id')
+                ->where('revisi_id', $revisiId)->get()->getResultArray(),
+            'id'
+        );
+
+        if ($sasaranIds !== []) {
+            $indikatorIds = array_column(
+                $this->db->table('iku_revisi_indikator')->select('id')
+                    ->whereIn('revisi_sasaran_id', $sasaranIds)->get()->getResultArray(),
+                'id'
+            );
+
+            if ($indikatorIds !== []) {
+                $this->db->table('iku_revisi_target')->whereIn('revisi_indikator_id', $indikatorIds)->delete();
+
+                if ($this->db->tableExists('iku_revisi_program')) {
+                    $this->db->table('iku_revisi_program')->whereIn('revisi_indikator_id', $indikatorIds)->delete();
+                }
+
+                $this->db->table('iku_revisi_indikator')->whereIn('id', $indikatorIds)->delete();
+            }
+
+            $this->db->table('iku_revisi_sasaran')->whereIn('id', $sasaranIds)->delete();
+        }
     }
 
     /** Buang draft. Barisnya tetap disimpan supaya jejak usulan tidak hilang. */

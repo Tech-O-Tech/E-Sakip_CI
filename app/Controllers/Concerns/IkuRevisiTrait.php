@@ -528,6 +528,22 @@ trait IkuRevisiTrait
             'bolehUbahBerlaku' => $this->bolehRevisi()
                 && (int) $revisi['nomor'] !== 0
                 && $this->revisiBolehDisunting($revisi),
+
+            // Tahun yang masih kosong pada lingkup ini + siapa memakai yang
+            // lain. Dropdown hanya menawarkan yang bebas, jadi bentrok
+            // dicegah sebelum tombol ditekan — bukan ditolak sesudahnya.
+            'tahunBebas' => $this->revisi()->tahunBerlakuBebas(
+                $revisi['opd_id'] !== null ? (int) $revisi['opd_id'] : null,
+                (int) $revisi['tahun_mulai'],
+                (int) $revisi['tahun_akhir'],
+                (int) $revisi['id']
+            ),
+            'tahunTerpakai' => $this->revisi()->tahunBerlakuTerpakai(
+                $revisi['opd_id'] !== null ? (int) $revisi['opd_id'] : null,
+                (int) $revisi['tahun_mulai'],
+                (int) $revisi['tahun_akhir'],
+                (int) $revisi['id']
+            ),
         ]);
     }
 

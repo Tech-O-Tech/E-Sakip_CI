@@ -302,6 +302,25 @@
                             <?php endforeach; ?>
                         </select>
 
+                        <?php /* Versi IKU Kabupaten yang dibaca kolom Sasaran &
+                                 Indikator. Bawaannya IKU berjalan; memilih versi
+                                 lama menampilkan cascading sebagaimana dibaca
+                                 pada masa versi itu. */ ?>
+                        <?php if ($mode === 'kabupaten' && ! empty($versiIkuList)): ?>
+                            <select name="iku_versi" class="form-select" style="flex:1;"
+                                onchange="this.form.submit()">
+                                <option value="">IKU Kabupaten berjalan (terkini)</option>
+                                <?php foreach ($versiIkuList as $v): ?>
+                                    <option value="<?= (int) $v['id'] ?>"
+                                        <?= (int) ($versiIkuDipilih ?? 0) === (int) $v['id'] ? 'selected' : '' ?>>
+                                        <?= esc($v['nama'] ?? ('Revisi ke-' . $v['nomor'])) ?>
+                                        (berlaku <?= (int) $v['berlaku_mulai_tahun'] ?>&ndash;<?= $v['berlaku_sampai_tahun'] !== null
+                                            ? (int) $v['berlaku_sampai_tahun'] : (int) $v['tahun_akhir'] ?>)
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php endif; ?>
+
                         <!-- OPD (hanya mode OPD) -->
                         <?php if ($mode === 'opd'): ?>
                             <select name="opd_id" class="form-select" style="flex:1.4;" onchange="this.form.submit()">

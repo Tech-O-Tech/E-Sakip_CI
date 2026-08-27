@@ -29,6 +29,44 @@ class CascadingController extends BaseController
     /** Mode tampilan yang valid. */
     private const MODES = ['kabupaten', 'opd', 'keseluruhan'];
 
+    /**
+     * Revisi IKU Kabupaten yang bisa dibaca cascading pada satu periode.
+     * Hanya yang PERNAH RESMI (berlaku/superseded).
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private function versiIkuKabTersedia(int $start, int $end): array
+    {
+        $rev = new \App\Models\Opd\IkuRevisiModel();
+
+        if (! $rev->siap()) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            $rev->daftar(null, $start, $end),
+            static fn ($r) => in_array($r['status'], ['berlaku', 'superseded'], true)
+        ));
+    }
+
+    /** Versi terpilih, divalidasi terhadap daftar yang sah. */
+    private function versiIkuKabDipilih($nilai, array $tersedia): ?int
+    {
+        $id = (int) $nilai;
+
+        if ($id <= 0) {
+            return null;
+        }
+
+        foreach ($tersedia as $v) {
+            if ((int) $v['id'] === $id) {
+                return $id;
+            }
+        }
+
+        return null;
+    }
+
     public function index()
     {
         $mode = $this->request->getGet('mode') ?: 'kabupaten';
@@ -75,9 +113,17 @@ class CascadingController extends BaseController
             $years = range($start, $end);
 
             if ($mode === 'kabupaten') {
+                // Versi IKU Kabupaten yang dibaca; null = IKU berjalan.
+                // Divalidasi terhadap daftar revisi lingkup kabupaten.
+                $versiIkuList    = $this->versiIkuKabTersedia($start, $end);
+                $versiIkuDipilih = $this->versiIkuKabDipilih(
+                    $this->request->getGet('iku_versi'),
+                    $versiIkuList
+                );
+
                 // Matriks RPJMD penuh (Misi -> Tujuan -> Sasaran -> Indikator -> Program
                 // -> Perangkat Daerah) + target & kondisi akhir — selaras Cetak Cascading.
-                $rows = $this->cascadingModel->getMatrix($start, $end);
+                $rows = $this->cascadingModel->getMatrix($start, $end, $versiIkuDipilih);
                 $tree = $this->cascadingModel->getPohonKinerja($start, $end);
                 $visi = $this->ambilVisi($start, $end);
             } elseif ($mode === 'opd') {
@@ -129,6 +175,8 @@ class CascadingController extends BaseController
             'visi'           => $visi,
             'tahun_mulai'    => $tahunMulai,
             'tahun_akhir'    => $tahunAkhir,
+            'versiIkuList'    => $versiIkuList ?? [],
+            'versiIkuDipilih' => $versiIkuDipilih ?? null,
             'filters'        => [
                 'periode' => $periode,
             ],

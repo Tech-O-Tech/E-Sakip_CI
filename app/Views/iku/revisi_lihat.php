@@ -29,7 +29,15 @@ $tanda = static function (string $jenis): array {
                     Diusulkan mulai <?= (int) $revisi['berlaku_mulai_tahun'] ?>
                 <?php else: ?>
                     <?= (int) $revisi['berlaku_mulai_tahun'] ?> &ndash;
-                    <?= $revisi['berlaku_sampai_tahun'] !== null ? (int) $revisi['berlaku_sampai_tahun'] : 'sekarang' ?>
+<?php /* NULL pada berlaku_sampai_tahun berarti "belum ada revisi
+                         berikutnya", BUKAN "berlaku selamanya" — IKU berhenti
+                         di ujung periodenya. Yang ditampilkan karena itu tahun
+                         akhir periode; nilainya sengaja TIDAK ditulis ke basis
+                         data supaya sahkan() tetap bebas menjahit ulang
+                         timeline tanpa harus membatalkan angka tampilan. */ ?>
+                    <?= $revisi['berlaku_sampai_tahun'] !== null
+                        ? (int) $revisi['berlaku_sampai_tahun']
+                        : (int) $revisi['tahun_akhir'] ?>
                 <?php endif; ?>
             </div>
 
@@ -43,11 +51,26 @@ $tanda = static function (string $jenis): array {
                       class="d-flex align-items-center gap-1 mt-2"
                       onsubmit="return confirm('Ubah tahun mulai berlaku revisi ini? Masa berlaku revisi sebelumnya ikut disesuaikan.');">
                     <?= csrf_field() ?>
+                    <?php
+                    /* Daftarnya OTOMATIS mengikuti periode IKU revisi ini —
+                       yang periodenya sendiri mengikuti Renstra sumbernya.
+                       Tahun pertama periode tidak pernah ditawarkan: itu jatah
+                       Kondisi Awal. Tahun yang sudah dipakai revisi lain
+                       ditandai dan tidak bisa dipilih, jadi bentrok dicegah
+                       SEBELUM tombol ditekan — bukan ditolak sesudahnya. */
+                    $bebas    = $tahunBebas ?? [];
+                    $terpakai = $tahunTerpakai ?? [];
+                    $kini     = (int) $revisi['berlaku_mulai_tahun'];
+                    ?>
                     <select name="berlaku_mulai_tahun" class="form-select form-select-sm" style="width:auto">
-                        <?php /* Tahun pertama periode milik Kondisi Awal, jadi pilihan mulai +1. */ ?>
                         <?php foreach (range((int) $revisi['tahun_mulai'] + 1, (int) $revisi['tahun_akhir']) as $th): ?>
-                            <option value="<?= $th ?>" <?= $th === (int) $revisi['berlaku_mulai_tahun'] ? 'selected' : '' ?>>
-                                <?= $th ?>
+                            <?php $dipakai = $terpakai[$th] ?? null; ?>
+                            <option value="<?= $th ?>"
+                                <?= $th === $kini ? 'selected' : '' ?>
+                                <?= $dipakai !== null ? 'disabled' : '' ?>>
+                                <?= $th ?><?= $dipakai !== null
+                                    ? ' — dipakai revisi ke-' . esc($dipakai['nomor']) . ' (' . esc($dipakai['status']) . ')'
+                                    : '' ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
@@ -55,6 +78,13 @@ $tanda = static function (string $jenis): array {
                         <i class="fa-solid fa-calendar-pen me-1"></i>Ubah Tahun
                     </button>
                 </form>
+
+                <?php if (($tahunBebas ?? []) === []): ?>
+                    <div class="small text-danger mt-1">
+                        Seluruh tahun lain pada periode <?= (int) $revisi['tahun_mulai'] ?>&ndash;<?= (int) $revisi['tahun_akhir'] ?>
+                        sudah dipakai revisi lain. Geser dulu tahun berlaku salah satunya.
+                    </div>
+                <?php endif; ?>
             <?php endif; ?>
         </div>
         <div class="col-md-3">

@@ -102,8 +102,17 @@ class CascadingController extends BaseController
 
             $years = range($start, $end);
 
+            // Versi IKU yang dibaca. Tanpa parameter = IKU berjalan.
+            // Nilainya TIDAK dipercaya dari URL: harus ada pada daftar revisi
+            // milik lingkup & periode ini.
+            $daftarVersiIku = $this->versiIkuTersedia($start, $end);
+            $versiIkuId     = $this->versiIkuDipilih(
+                $this->request->getGet('iku_versi'),
+                $daftarVersiIku
+            );
+
             $rows = $this->cascadingModel
-                ->getCascadingMatrixByOpd($this->opdId, $start, $end);
+                ->getCascadingMatrixByOpd($this->opdId, $start, $end, $versiIkuId);
 
             $this->preprocessEmptyIds($rows);
 
@@ -131,6 +140,8 @@ class CascadingController extends BaseController
             // rincian Program & Kegiatan PK tetap tampil di Pohon Kinerja.
             'showProgramPk' => false,
             'opd_missing' => empty($this->opdId),
+            'versiIkuList'   => $daftarVersiIku ?? [],
+            'versiIkuDipilih' => $versiIkuId ?? null,
             'filters' => [
                 'periode' => $periode
             ]
@@ -138,6 +149,47 @@ class CascadingController extends BaseController
         // dd($data['rowspan']);
 
         return view('adminOpd/cascading/cascading', $data);
+    }
+
+    /**
+     * Revisi IKU yang bisa dibaca cascading pada satu periode.
+     *
+     * Hanya yang PERNAH RESMI (berlaku/superseded): draft belum menjadi
+     * dokumen siapa pun, dan menawarkannya berarti menampilkan cascading
+     * terhadap sesuatu yang belum tentu jadi.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private function versiIkuTersedia(int $start, int $end): array
+    {
+        $rev = new \App\Models\Opd\IkuRevisiModel();
+
+        if (! $rev->siap() || empty($this->opdId)) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            $rev->daftar((int) $this->opdId, $start, $end),
+            static fn ($r) => in_array($r['status'], ['berlaku', 'superseded'], true)
+        ));
+    }
+
+    /** Versi terpilih, divalidasi terhadap daftar yang sah. */
+    private function versiIkuDipilih($nilai, array $tersedia): ?int
+    {
+        $id = (int) $nilai;
+
+        if ($id <= 0) {
+            return null;
+        }
+
+        foreach ($tersedia as $v) {
+            if ((int) $v['id'] === $id) {
+                return $id;
+            }
+        }
+
+        return null;
     }
 
     public function excel()

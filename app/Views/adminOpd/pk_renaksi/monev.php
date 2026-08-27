@@ -424,9 +424,6 @@ $filterQs = http_build_query(array_filter([
                                                     $span     = $spanUnit[$ui] ?? 1;
                                                     $refKey   = (string) ($unit['ref_key'] ?? '');
                                                     $realUnit = $anggaranRow[$refKey] ?? null;
-                                                    // Angka warisan (belum dirinci per unit) hanya dicetak sekali,
-                                                    // menempel pada unit PERTAMA supaya tidak hilang dari layar.
-                                                    $adaWarisan = ($ui === 0 && !empty($warisan));
                                                     ?>
                                                     <td rowspan="<?= $span ?>" class="text-start align-top">
                                                         <?= esc($unit['nama'] ?? ($unit['program'] ?? '-')) ?>
@@ -441,24 +438,12 @@ $filterQs = http_build_query(array_filter([
                                                                 </span>
                                                             </div>
                                                         <?php endif; ?>
-                                                        <?php if ($adaWarisan): ?>
-                                                            <div class="mt-1">
-                                                                <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle fw-normal"
-                                                                    title="Realisasi anggaran lama masih tersimpan tanpa rincian unit">warisan (belum dirinci)</span>
-                                                            </div>
-                                                        <?php endif; ?>
                                                     </td>
                                                     <td rowspan="<?= $span ?>" class="text-end text-nowrap align-top"><?= esc($rupiah($unit['anggaran'] ?? 0)) ?></td>
                                                     <?php foreach ([1, 2, 3, 4] as $q): ?>
-                                                        <?php
-                                                        $rv = $realUnit['realisasi_triwulan_' . $q] ?? null;
-                                                        $wv = $adaWarisan ? ($warisan['realisasi_triwulan_' . $q] ?? null) : null;
-                                                        ?>
+                                                        <?php $rv = $realUnit['realisasi_triwulan_' . $q] ?? null; ?>
                                                         <td rowspan="<?= $span ?>" class="text-end text-nowrap align-top">
                                                             <?= ($rv !== null && $rv !== '') ? esc($rupiah($rv)) : '<span class="text-muted">-</span>' ?>
-                                                            <?php if ($wv !== null && $wv !== ''): ?>
-                                                                <div class="text-muted" style="font-size:.7rem;">warisan: <?= esc($rupiah($wv)) ?></div>
-                                                            <?php endif; ?>
                                                         </td>
                                                     <?php endforeach; ?>
                                                     <td rowspan="<?= $span ?>" class="align-top">

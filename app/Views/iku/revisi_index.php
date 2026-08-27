@@ -97,7 +97,15 @@ $badge = static function (string $status): array {
                                 <div class="sel-kecil text-secondary">diusulkan <?= (int) $r['berlaku_mulai_tahun'] ?></div>
                             <?php else: ?>
                                 <?= (int) $r['berlaku_mulai_tahun'] ?> &ndash;
-                                <?= $r['berlaku_sampai_tahun'] !== null ? (int) $r['berlaku_sampai_tahun'] : 'sekarang' ?>
+<?php /* NULL pada berlaku_sampai_tahun berarti "belum ada revisi
+                         berikutnya", BUKAN "berlaku selamanya" — IKU berhenti
+                         di ujung periodenya. Yang ditampilkan karena itu tahun
+                         akhir periode; nilainya sengaja TIDAK ditulis ke basis
+                         data supaya sahkan() tetap bebas menjahit ulang
+                         timeline tanpa harus membatalkan angka tampilan. */ ?>
+                                <?= $r['berlaku_sampai_tahun'] !== null
+                                    ? (int) $r['berlaku_sampai_tahun']
+                                    : (int) $r['tahun_akhir'] ?>
                             <?php endif; ?>
                         </td>
                         <td class="text-center">

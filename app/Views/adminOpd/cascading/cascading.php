@@ -166,6 +166,24 @@
                                 </option>
                             <?php endforeach; ?>
                         </select>
+
+                        <?php /* Versi IKU yang dibaca kolom Eselon II. Bawaannya
+                                 IKU BERJALAN; memilih versi lama menampilkan
+                                 cascading sebagaimana dibaca pada masa itu. */ ?>
+                        <?php if (! empty($versiIkuList)): ?>
+                            <select name="iku_versi" class="form-select" style="flex:1;">
+                                <option value="">IKU berjalan (terkini)</option>
+                                <?php foreach ($versiIkuList as $v): ?>
+                                    <option value="<?= (int) $v['id'] ?>"
+                                        <?= (int) ($versiIkuDipilih ?? 0) === (int) $v['id'] ? 'selected' : '' ?>>
+                                        <?= esc($v['nama'] ?? ('Revisi ke-' . $v['nomor'])) ?>
+                                        (berlaku <?= (int) $v['berlaku_mulai_tahun'] ?>&ndash;<?= $v['berlaku_sampai_tahun'] !== null
+                                            ? (int) $v['berlaku_sampai_tahun'] : (int) $v['tahun_akhir'] ?>)
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php endif; ?>
+
                         <div class="d-flex gap-2 flex-wrap">
                             <button type="submit" class="btn btn-success text-nowrap">
                                 <i class="fas fa-search"></i> Tampilkan

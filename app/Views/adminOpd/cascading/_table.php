@@ -47,9 +47,36 @@
             }
         }
         ?>
+        <?php
+        /* Penanda versi. Saat cascading dibaca pada VERSI IKU tertentu, tiap
+           baris membawa `es2_versi_status` yang menyatakan apa yang terjadi
+           pada indikator induknya di versi itu. Baris Eselon III/IV/Pelaksana
+           di bawah induk yang BERUBAH atau TIDAK ADA diberi warna dan
+           keterangan — tanpa itu, kolomnya tampak kosong tanpa sebab dan
+           terbaca sebagai data hilang. */
+        $tandaVersi = static function (?string $st): ?array {
+            return match ($st) {
+                'tidak_ada'  => ['#fff4f4', 'bg-danger',            'Tidak ada di versi ini',
+                                 'Indikator induknya tidak dibawa versi IKU ini, sehingga turunannya tidak dinilai pada masa itu.'],
+                'dihentikan' => ['#f6f6f6', 'bg-dark',              'Induk dihentikan',
+                                 'Indikator induknya dinyatakan berhenti mulai versi ini.'],
+                'pengganti'  => ['#fff8ec', 'bg-primary',           'Induk diganti',
+                                 'Indikator induknya digantikan indikator lain pada versi ini.'],
+                'revisi'     => ['#fffbe8', 'bg-info text-dark',    'Induk direvisi',
+                                 'Isi indikator induknya berubah pada versi ini.'],
+                'baru'       => ['#f2fbf4', 'bg-success',           'Induk baru',
+                                 'Indikator induknya baru muncul pada versi ini.'],
+                default      => null,
+            };
+        };
+        ?>
         <?php foreach ($rows as $index => $r): ?>
-            <?php $hasIndikatorEss2 = is_numeric($r['indikator_id'] ?? null); ?>
-            <tr>
+            <?php
+            $hasIndikatorEss2 = is_numeric($r['indikator_id'] ?? null);
+            $tv    = $tandaVersi($r['es2_versi_status'] ?? null);
+            $trBg  = $tv !== null ? ' style="background:' . $tv[0] . '"' : '';
+            ?>
+            <tr<?= $trBg ?>>
                 <?php if ($firstShow['tujuan'][$r['tujuan_id']] == $index): ?>
                     <td rowspan="<?= $rowspan['tujuan'][$r['tujuan_id']] ?>" class="text-start">
                         <?= !empty($r['tujuan_rpjmd']) ? esc($r['tujuan_rpjmd']) : '<span class="text-muted">-</span>' ?>
@@ -91,6 +118,16 @@
                             <span class="ind-kode">IK</span><?= esc($r['indikator_sasaran']) ?>
                         <?php else: ?>
                             -
+                        <?php endif; ?>
+
+                        <?php /* Keterangan versi ditempel pada indikator induknya,
+                                 bukan diulang di tiap turunan — satu sebab, satu
+                                 tempat menjelaskannya. */ ?>
+                        <?php if ($tv !== null): ?>
+                            <div class="mt-1">
+                                <span class="badge <?= $tv[1] ?>" style="font-size:.62rem"
+                                      title="<?= esc($tv[3]) ?>"><?= esc($tv[2]) ?></span>
+                            </div>
                         <?php endif; ?>
                     </td>
                 <?php endif; ?>

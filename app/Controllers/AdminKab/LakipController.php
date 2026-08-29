@@ -191,7 +191,53 @@ class LakipController extends BaseController
             'lakipCanWrite' => in_array($role, self::ROLE_TULIS, true) && empty($sumber['terkunci']),
             'lakipBase' => $this->lakipBaseUrl(),
             'sumberLakip' => $pilihanSumberKab ?? null,
-        ]));
+        ],
+            $this->dataPengesahanKab((int) $tahun, $mode, $opdId)
+        ));
+    }
+
+    /**
+     * Bahan panel Pengesahan untuk layar LAKIP Kabupaten.
+     *
+     * Berbeda dari sisi OPD dalam satu hal: layar ini bisa MENENGOK LAKIP OPD
+     * lain (mode 'opd' + opd_id terpilih). Dalam keadaan itu panelnya
+     * ditampilkan sebagai INFORMASI saja — admin kabupaten mengesahkan LAKIP
+     * kabupaten, bukan mengesahkan LAKIP milik OPD.
+     *
+     * @return array<string,mixed>
+     */
+    private function dataPengesahanKab(int $tahun, string $mode, ?int $opdId): array
+    {
+        $m = new \App\Models\LakipPengesahanModel();
+
+        if (! $m->siap()) {
+            return ['pengesahanSiap' => false];
+        }
+
+        $lingkupOpd = $mode === 'kabupaten' ? null : ($opdId !== null ? (int) $opdId : null);
+
+        // Menengok LAKIP OPD tanpa memilih OPD tertentu: tidak ada lingkup yang
+        // jelas untuk ditampilkan.
+        if ($mode !== 'kabupaten' && $lingkupOpd === null) {
+            return ['pengesahanSiap' => false];
+        }
+
+        $keadaan  = $m->keadaan($tahun, $mode, $lingkupOpd);
+        $menunggu = $keadaan ? $m->permintaanMenunggu((int) $keadaan['id']) : null;
+
+        return [
+            'pengesahanSiap'     => true,
+            // Layar kabupaten tidak memasok $tahun sebagai variabel view
+            // (hanya lewat $filters), sehingga panel akan jatuh ke bawaan
+            // date('Y') dan MENGESAHKAN TAHUN YANG SALAH. Dikirim tegas.
+            'tahun'              => $tahun,
+            'pengesahan'         => $keadaan,
+            'permintaanMenunggu' => $menunggu,
+            'riwayatPermintaan'  => $keadaan ? $m->riwayat((int) $keadaan['id']) : [],
+            // Hanya lingkup KABUPATEN yang boleh disahkan dari layar ini.
+            'bolehSahkan'        => $mode === 'kabupaten' && user_can('lakip_kab.finalisasi'),
+            'pengesahanUrl'      => base_url('adminkab/lakip/pengesahan'),
+        ];
     }
 
     public function cetak()
@@ -596,9 +642,25 @@ class LakipController extends BaseController
             if ($exist)
                 return redirect()->back()->with('error', 'LAKIP untuk target ini sudah ada. Silakan edit.')->withInput();
 
+            // Lingkup dibekukan saat lahir — jangan hanya menyimpan jangkar
+            // id: begitu targetnya dihapus di dokumen sumber, FK me-NULL-kan
+            // jangkar dan barisnya jadi yatim tak bertuan (asal 123 baris
+            // realisasi hilang).
+            $ikatan = $this->db->table('renstra_target rt')
+                ->select('rt.tahun, rs.opd_id')
+                ->join('renstra_indikator_sasaran ris', 'ris.id = rt.renstra_indikator_id')
+                ->join('renstra_sasaran rs', 'rs.id = ris.renstra_sasaran_id')
+                ->where('rt.id', $renstraTargetId)
+                ->get()->getRowArray();
+
             $insert = array_merge($dataCommon, [
                 'renstra_target_id' => $renstraTargetId,
                 'rpjmd_target_id' => null,
+                'tahun' => isset($ikatan['tahun']) ? (int) $ikatan['tahun'] : null,
+                'opd_id' => isset($ikatan['opd_id']) ? (int) $ikatan['opd_id'] : null,
+                'mode' => 'opd',
+                'source_type' => 'renstra',
+                'source_entity_id' => $renstraTargetId,
             ]);
         } else {
             $rpjmdTargetId = (int) $this->request->getPost('rpjmd_target_id');
@@ -609,9 +671,18 @@ class LakipController extends BaseController
             if ($exist)
                 return redirect()->back()->with('error', 'LAKIP untuk target ini sudah ada. Silakan edit.')->withInput();
 
+            $rpjmdTarget = $this->db->table('rpjmd_target')
+                ->select('tahun')->where('id', $rpjmdTargetId)
+                ->get()->getRowArray();
+
             $insert = array_merge($dataCommon, [
                 'renstra_target_id' => null,
                 'rpjmd_target_id' => $rpjmdTargetId,
+                'tahun' => isset($rpjmdTarget['tahun']) ? (int) $rpjmdTarget['tahun'] : null,
+                'opd_id' => 0,
+                'mode' => 'kabupaten',
+                'source_type' => 'rpjmd',
+                'source_entity_id' => $rpjmdTargetId,
             ]);
         }
 
@@ -853,5 +924,142 @@ class LakipController extends BaseController
         }
 
         return redirect()->back()->with('error', 'Gagal menghapus LAKIP.');
+    }
+
+    /* =========================================================
+     * PENGESAHAN LAKIP KABUPATEN
+     *
+     * Kembaran sisi OPD, untuk lingkup kabupaten (opd_id = 0). Admin
+     * kabupaten mengesahkan LAKIP kabupaten sendiri; LAKIP milik OPD tetap
+     * disahkan OPD-nya masing-masing.
+     * =======================================================*/
+
+    public function pengesahanSahkan()
+    {
+        if (! user_can('lakip_kab.finalisasi')) {
+            return redirect()->back()->with('error', 'Anda tidak berwenang mengesahkan LAKIP Kabupaten.');
+        }
+
+        $tahun = (int) ($this->request->getPost('tahun') ?: (date('Y') - 1));
+        $m     = new \App\Models\LakipPengesahanModel();
+
+        try {
+            $hasil = $m->sahkan($tahun, 'kabupaten', null, session()->get('user_id'), [
+                'nomor'   => $this->request->getPost('nomor') ?: null,
+                'catatan' => $this->request->getPost('catatan') ?: null,
+            ]);
+        } catch (\Throwable $e) {
+            return redirect()->to(base_url('adminkab/lakip?mode=kabupaten&tahun=' . $tahun))
+                ->with('error', $e->getMessage());
+        }
+
+        return redirect()->to(base_url('adminkab/lakip?mode=kabupaten&tahun=' . $tahun))->with(
+            'success',
+            ($hasil['sahkan_ulang'] ? 'LAKIP Kabupaten ' . $tahun . ' disahkan ulang'
+                                    : 'LAKIP Kabupaten ' . $tahun . ' disahkan')
+            . ' dan dikunci — ' . $hasil['jumlah_realisasi'] . ' realisasi tercakup.'
+        );
+    }
+
+    public function pengesahanAjukan()
+    {
+        if (! user_can('lakip_kab.finalisasi')) {
+            return redirect()->back()->with('error', 'Anda tidak berwenang mengajukan perbaikan.');
+        }
+
+        $tahun = (int) ($this->request->getPost('tahun') ?: (date('Y') - 1));
+        $m     = new \App\Models\LakipPengesahanModel();
+
+        try {
+            $m->ajukanPembukaan($tahun, 'kabupaten', null,
+                (string) $this->request->getPost('alasan'), session()->get('user_id'));
+        } catch (\Throwable $e) {
+            return redirect()->to(base_url('adminkab/lakip?mode=kabupaten&tahun=' . $tahun))
+                ->with('error', $e->getMessage());
+        }
+
+        return redirect()->to(base_url('adminkab/lakip?mode=kabupaten&tahun=' . $tahun))
+            ->with('success', 'Permintaan perbaikan dicatat. Buka lewat menu Permintaan Perbaikan.');
+    }
+
+    public function pengesahanTarik($permintaanId)
+    {
+        $tahun = (int) ($this->request->getPost('tahun') ?: (date('Y') - 1));
+        $m     = new \App\Models\LakipPengesahanModel();
+
+        $keadaan  = $m->keadaan($tahun, 'kabupaten', null);
+        $menunggu = $keadaan ? $m->permintaanMenunggu((int) $keadaan['id']) : null;
+
+        if ($menunggu === null || (int) $menunggu['id'] !== (int) $permintaanId) {
+            return redirect()->to(base_url('adminkab/lakip?mode=kabupaten&tahun=' . $tahun))
+                ->with('error', 'Permintaan itu bukan milik lingkup kabupaten atau sudah diputuskan.');
+        }
+
+        try {
+            $m->tarik((int) $permintaanId);
+        } catch (\Throwable $e) {
+            return redirect()->back()->with('error', $e->getMessage());
+        }
+
+        return redirect()->to(base_url('adminkab/lakip?mode=kabupaten&tahun=' . $tahun))
+            ->with('success', 'Permintaan perbaikan ditarik kembali.');
+    }
+
+    /* =========================================================
+     * KOTAK MASUK: PERMINTAAN PERBAIKAN LAKIP DARI OPD
+     *
+     * Kembaran alur verifikasi revisi IKU, disengaja: operator kabupaten
+     * tidak perlu menghafal dua tata cara untuk dua dokumen.
+     * =======================================================*/
+
+    public function permintaanIndex()
+    {
+        if (! user_can('lakip_opd.buka_kunci')) {
+            return redirect()->to(base_url('adminkab/lakip'))
+                ->with('error', 'Anda tidak berwenang memutuskan permintaan pembukaan LAKIP.');
+        }
+
+        $m = new \App\Models\LakipPengesahanModel();
+
+        return view('adminKabupaten/lakip/permintaan', [
+            'title'      => 'Permintaan Perbaikan LAKIP',
+            'permintaan' => $m->menungguKeputusan(),
+        ]);
+    }
+
+    public function permintaanPutuskan($permintaanId, $keputusan)
+    {
+        if (! user_can('lakip_opd.buka_kunci')) {
+            return redirect()->to(base_url('adminkab/lakip'))
+                ->with('error', 'Anda tidak berwenang memutuskan permintaan pembukaan LAKIP.');
+        }
+
+        if (! in_array($keputusan, ['setujui', 'tolak'], true)) {
+            return redirect()->back()->with('error', 'Keputusan tidak dikenal.');
+        }
+
+        $m         = new \App\Models\LakipPengesahanModel();
+        $tanggapan = $this->request->getPost('tanggapan') ?: null;
+
+        // Menolak WAJIB beralasan; menyetujui tidak. Penolakan tanpa sebab
+        // membuat OPD menebak-nebak apa yang harus diperbaiki.
+        if ($keputusan === 'tolak' && trim((string) $tanggapan) === '') {
+            return redirect()->back()->with('error', 'Alasan penolakan wajib diisi.');
+        }
+
+        try {
+            $keputusan === 'setujui'
+                ? $m->setujui((int) $permintaanId, session()->get('user_id'), $tanggapan)
+                : $m->tolak((int) $permintaanId, session()->get('user_id'), $tanggapan);
+        } catch (\Throwable $e) {
+            return redirect()->back()->with('error', $e->getMessage());
+        }
+
+        return redirect()->to(base_url('adminkab/lakip/permintaan'))->with(
+            'success',
+            $keputusan === 'setujui'
+                ? 'Permintaan disetujui — LAKIP tahun itu dibuka untuk diperbaiki OPD.'
+                : 'Permintaan ditolak. LAKIP tahun itu tetap terkunci.'
+        );
     }
 }

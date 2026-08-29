@@ -252,6 +252,13 @@ $routes->group(
         $routes->get('cascading/cetak', 'AdminKab\CascadingController::cetak');
         $routes->get('cascading/excel', 'AdminKab\CascadingController::excel');
         $routes->post('cascading/save-csf', 'AdminKab\CascadingController::saveCsf');
+        // Pengesahan LAKIP Kabupaten (kunci tahun) — kembaran sisi OPD.
+        $routes->post('lakip/pengesahan/sahkan', 'AdminKab\LakipController::pengesahanSahkan');
+        $routes->post('lakip/pengesahan/ajukan', 'AdminKab\LakipController::pengesahanAjukan');
+        $routes->post('lakip/pengesahan/tarik/(:num)', 'AdminKab\LakipController::pengesahanTarik/$1');
+        // Kotak masuk permintaan perbaikan LAKIP dari OPD.
+        $routes->get('lakip/permintaan', 'AdminKab\LakipController::permintaanIndex');
+        $routes->post('lakip/permintaan/(:num)/(:segment)', 'AdminKab\LakipController::permintaanPutuskan/$1/$2');
         $routes->get('cascading/cetak-pohon', 'AdminKab\CascadingController::cetakPohon');
 
         // RKPD (read-only: turunan RKT). Hanya index yang aktif.
@@ -598,6 +605,10 @@ $routes->group('adminopd', ['filter' => 'auth:admin_opd,admin,admin_kecamatan'],
     $routes->post('lakip/snapshot/sinkronkan', 'AdminOpd\LakipOpdController::snapshotSinkronkan');
     $routes->post('lakip/snapshot/finalkan', 'AdminOpd\LakipOpdController::snapshotFinalkan');
     $routes->post('lakip/penyesuaian/save', 'AdminOpd\LakipOpdController::penyesuaianSave');
+    // Pengesahan LAKIP (kunci tahun) + permintaan perbaikan ke admin kabupaten.
+    $routes->post('lakip/pengesahan/sahkan', 'AdminOpd\LakipOpdController::pengesahanSahkan');
+    $routes->post('lakip/pengesahan/ajukan', 'AdminOpd\LakipOpdController::pengesahanAjukan');
+    $routes->post('lakip/pengesahan/tarik/(:num)', 'AdminOpd\LakipOpdController::pengesahanTarik/$1');
     $routes->post('lakip/penyesuaian/usul-revisi/(:num)', 'AdminOpd\LakipOpdController::penyesuaianUsulRevisi/$1');
     $routes->post('lakip/penyesuaian/cabut/(:num)', 'AdminOpd\LakipOpdController::penyesuaianCabut/$1');
 

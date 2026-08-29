@@ -2616,9 +2616,28 @@ class IkuRevisiModel extends Model
             ['iku_revisi_indikator', 'indikator_sebelumnya_id'],
             ['iku_indikator',        'indikator_sebelumnya_id'],
             ['lakip_snapshot_baris', 'iku_indikator_id'],
+            // Baris CASCADING yang berjangkar pada indikator ini.
+            //
+            // Sejak matriks Cascading berakar pada IKU, jangkar ini bukan
+            // sekadar penanda sumber: ia satu-satunya yang menahan baris
+            // Eselon III/IV/Pelaksana tetap tampil. FK-nya ON DELETE SET NULL,
+            // jadi menghapus indikatornya TIDAK menghapus baris cascading —
+            // tetapi baris itu kehilangan induknya dan lenyap dari layar,
+            // membawa serta isian operator di bawahnya. Tidak ada galat, tidak
+            // ada peringatan; datanya masih di basis data tetapi tak terjangkau.
+            //
+            // Karena itu indikator yang sedang menopang cascading diperlakukan
+            // sama dengan yang dirujuk sejarah: DIPENSIUNKAN, bukan dihapus.
+            ['cascading_sasaran_opd', 'iku_indikator_id'],
         ];
 
         foreach ($sumber as [$tabel, $kolom]) {
+            // Kolom opsional: basis data yang belum menjalankan migrasi
+            // 2026-08-27 belum punya jangkar IKU pada cascading.
+            if ($tabel === 'cascading_sasaran_opd' && ! $this->db->fieldExists($kolom, $tabel)) {
+                continue;
+            }
+
             // Tabel opsional: server yang belum menjalankan SQL 2026-08-18
             // hanya kehilangan lapisan pemeriksaan ini, bukan seluruh modul.
             if (! $this->db->tableExists($tabel)) {

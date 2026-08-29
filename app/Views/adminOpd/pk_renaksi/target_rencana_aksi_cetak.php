@@ -324,10 +324,9 @@ $splitAksi = function ($text) {
         <?php if (!empty($grouped)): ?>
             <?php
             $no = 1;
-            // Tinggi 1 indikator = jumlah butir rencana aksi, tiap butir setinggi
-            // jumlah sub rencana aksinya (min 1) — sama dengan tampilan layar.
-            // Tinggi 1 indikator ditentukan HANYA oleh rencana aksi; unit &
-            // anggaran menempel ke indikator (digabung setinggi $n).
+            // Tinggi 1 indikator = yang TERTINGGI antara jumlah baris rencana aksi
+            // (tiap butir setinggi jumlah sub-nya, min 1) dan jumlah unit. Sisi yang
+            // lebih pendek diregangkan lewat rowspan — sama dengan tampilan layar.
             $subMap     = $subMap ?? [];
             $programMap = $programMap ?? [];
             $barisFor = function ($row) use ($splitAksi, $subMap, $programMap) {
@@ -387,7 +386,7 @@ $splitAksi = function ($text) {
                 ?>
                 <?php foreach ($rows as $ri => $row): ?>
                     <?php
-                    [$items, $barisButir, $n, $barisRenaksi] = $barisFor($row);
+                    [$items, $barisButir, $n] = $barisFor($row);
                     $subsRow = $subMap[(int) ($row['target_id'] ?? 0)] ?? [];
                     $units   = array_values($programMap[(int) ($row['pk_indikator_id'] ?? 0)] ?? []);
                     $barisRender = [];
@@ -397,9 +396,17 @@ $splitAksi = function ($text) {
                         }
                     }
                     [$spanUnit, $mulaiUnit] = pk_bagi_baris($units, $n);
+
+                    // Baris rencana aksi dibagi rata dengan cara yang sama, supaya
+                    // sisa tinggi ketika unit lebih banyak TIDAK jadi blok kosong.
+                    [$spanBaris, $mulaiBaris, $spanButir] = pk_bagi_renaksi($barisRender, $n);
                     ?>
                     <?php for ($k = 0; $k < $n; $k++): ?>
-                        <?php [$butirIdx, $subIdx] = $barisRender[$k] ?? [null, null]; ?>
+                        <?php
+                        $riBaris             = $mulaiBaris[$k] ?? null;
+                        [$butirIdx, $subIdx] = $riBaris !== null ? $barisRender[$riBaris] : [null, null];
+                        $spanRow             = $riBaris !== null ? ($spanBaris[$riBaris] ?? 1) : 1;
+                        ?>
                         <tr>
                             <?php if (!$noPrinted): ?>
                                 <td rowspan="<?= $sasTotal ?>" class="c nowrap"><?= $no ?></td>
@@ -456,28 +463,23 @@ $splitAksi = function ($text) {
                                 </td>
                             <?php endif; ?>
 
-                            <?php if ($butirIdx === null): ?>
-                                <?php // Sisa baris ketika unit lebih banyak dari baris rencana aksi.
-                                      // colspan 6 = Rencana Aksi + Sub Rencana Aksi + TW I..IV. ?>
-                                <?php if ($k === $barisRenaksi): ?>
-                                    <td colspan="6" rowspan="<?= $n - $barisRenaksi ?>"></td>
-                                <?php endif; ?>
-                            <?php else: ?>
+                            <?php if ($butirIdx !== null): ?>
+                                <?php // Rencana Aksi membentang setinggi seluruh sub rencana aksinya ?>
                                 <?php if ($subIdx === 0): ?>
-                                    <td rowspan="<?= $barisButir[$butirIdx] ?? 1 ?>" class="text-start">
+                                    <td rowspan="<?= $spanButir[$butirIdx] ?? 1 ?>" class="text-start">
                                         <?= ($items[$butirIdx] ?? '') !== '' ? esc(($butirIdx + 1) . '. ' . $items[$butirIdx]) : '-' ?>
                                     </td>
                                 <?php endif; ?>
 
                                 <?php $sub = $subsRow[$butirIdx][$subIdx] ?? null; ?>
-                                <td class="text-start">
+                                <td rowspan="<?= $spanRow ?>" class="text-start">
                                     <?= $sub !== null ? esc(($subIdx + 1) . '. ' . $sub['teks']) : '-' ?>
                                 </td>
 
                                 <?php // Target Triwulan mengikuti SUB rencana aksi pada baris ini ?>
                                 <?php foreach ([1, 2, 3, 4] as $q): ?>
                                     <?php $nilaiTw = $sub['tw'][$q] ?? null; ?>
-                                    <td class="c"><?= ($nilaiTw !== null && $nilaiTw !== '') ? esc($nilaiTw) : '-' ?></td>
+                                    <td rowspan="<?= $spanRow ?>" class="c"><?= ($nilaiTw !== null && $nilaiTw !== '') ? esc($nilaiTw) : '-' ?></td>
                                 <?php endforeach; ?>
                             <?php endif; ?>
 

@@ -3,12 +3,15 @@
 namespace App\Controllers\AdminOpd;
 
 use App\Controllers\BaseController;
+use App\Exceptions\CascadingTanpaJangkar;
+use App\Controllers\Concerns\CascadingIzinTrait;
 use App\Controllers\Concerns\CascadingOpdMetaTrait;
 use App\Models\CascadingModel;
 
 class CascadingController extends BaseController
 {
     /** Rowspan/firstShow/pohon matriks cascading OPD (termasuk jenjang Pelaksana). */
+    use CascadingIzinTrait;
     use CascadingOpdMetaTrait;
 
     protected $cascadingModel;
@@ -34,27 +37,188 @@ class CascadingController extends BaseController
      *
      * @return array<string,mixed> siap digabung ke array insert
      */
-    private function jangkarSumber($renstraIndikatorId): array
+    /** @return array<string, string> */
+    protected function petaIzinCascading(): array
     {
-        $kolom = ['renstra_indikator_sasaran_id' => $renstraIndikatorId];
+        return [
+            // BACA
+            'index'               => 'cascading_opd.view',
+            'partialTable'        => 'cascading_opd.view',
+            'excel'               => 'cascading_opd.view',
+            'cetak'               => 'cascading_opd.view',
+            'cetakPohon'          => 'cascading_opd.view',
+            'getRenstraIndikator' => 'cascading_opd.view',
+            'getEssChild'         => 'cascading_opd.view',
 
+            // BUAT — layar formulirnya ikut dijaga, bukan hanya simpannya:
+            // menawarkan formulir yang pasti ditolak saat disimpan itu
+            // menyesatkan.
+            'tambah'              => 'cascading_opd.create',
+            'tambahEs3'           => 'cascading_opd.create',
+            'tambahEs4'           => 'cascading_opd.create',
+            'tambahPelaksana'     => 'cascading_opd.create',
+            'save'                => 'cascading_opd.create',
+            'saveEs3'             => 'cascading_opd.create',
+            'saveEs4'             => 'cascading_opd.create',
+            'savePelaksana'       => 'cascading_opd.create',
+
+            // UBAH
+            'editEs3'             => 'cascading_opd.update',
+            'editEs4'             => 'cascading_opd.update',
+            'editPelaksana'       => 'cascading_opd.update',
+            'updateEs3'           => 'cascading_opd.update',
+            'updateEs4'           => 'cascading_opd.update',
+            'updatePelaksana'     => 'cascading_opd.update',
+            'saveCsf'             => 'cascading_opd.update',
+
+            // HAPUS
+            'deleteEs3'           => 'cascading_opd.delete',
+            'deleteEs4'           => 'cascading_opd.delete',
+            'deletePelaksana'     => 'cascading_opd.delete',
+        ];
+    }
+
+    protected function izinBacaCascading(): string
+    {
+        return 'cascading_opd.view';
+    }
+
+    /**
+     * Satu pintu keluar untuk kegagalan jangkar.
+     *
+     * `insertCascadingRow()` melempar bila sebuah baris hendak lahir tanpa
+     * jangkar. Tanpa penangkap, lemparan itu jadi halaman 500 di tengah
+     * transaksi — buruk bagi pengguna, dan transaksinya menggantung sampai
+     * koneksi ditutup.
+     *
+     * Ditangkap di sini, sekali, alih-alih menaburkan try/catch di enam metode
+     * simpan & sunting yang gaya kembaliannya berbeda-beda (redirect vs JSON).
+     * Yang ditangkap hanya CascadingTanpaJangkar; galat lain tetap naik.
+     */
+    public function _remap(string $method, ...$params)
+    {
+        if (! $this->metodePublikCascading($method)) {
+            throw \CodeIgniter\Exceptions\PageNotFoundException::forPageNotFound();
+        }
+
+        if ($tolak = $this->tolakBilaTakBerizin($method)) {
+            return $tolak;
+        }
+
+        try {
+            return $this->$method(...$params);
+        } catch (CascadingTanpaJangkar $e) {
+            try {
+                $this->db->transRollback();
+            } catch (\Throwable $abai) {
+                // Transaksi mungkin memang belum terbuka; tidak ada yang perlu dibatalkan.
+            }
+
+            log_message('error', '[CASCADING JANGKAR] ' . $e->getMessage());
+
+            if ($this->request->isAJAX()) {
+                return $this->response->setStatusCode(422)
+                    ->setJSON(['success' => false, 'message' => $e->getMessage()]);
+            }
+
+            return redirect()->back()->withInput()->with('error', $e->getMessage());
+        }
+    }
+
+    private function jangkarSumber(array $data): array
+    {
         // DB yang belum dimigrasi tetap dilayani dengan perilaku lama.
         if (! $this->db->fieldExists('iku_indikator_id', 'cascading_sasaran_opd')) {
-            return $kolom;
+            return [];
         }
 
-        $kunci = (int) $renstraIndikatorId;
+        // ASAL NILAINYA ADA DUA JENIS, DAN TIDAK BISA DIBEDAKAN DARI ANGKANYA.
+        //
+        //   a. IDENTITAS ESELON II DARI LAYAR (`es2_identitas`). Artinya
+        //      bergantung akar yang aktif: id indikator Renstra pada akar
+        //      'renstra', id indikator IKU pada akar 'iku'. Harus DITERJEMAHKAN.
+        //
+        //   b. JANGKAR YANG DISALIN DARI BARIS LAIN
+        //      (`renstra_indikator_sasaran_id`, kadang beserta
+        //      `iku_indikator_id`). Ini sudah id Renstra yang sah — tidak boleh
+        //      diterjemahkan, karena id yang sama bisa juga sah di tabel IKU dan
+        //      hasilnya menunjuk induk yang keliru.
+        //
+        // Karena `renstra_indikator_sasaran_id` dan `iku_indikator_id` sama-sama
+        // integer kecil, rentangnya bertabrakan dan menebak dari nilainya
+        // mustahil. Maka jenisnya dibedakan lewat NAMA KUNCI, bukan tebakan.
+        if (! empty($data['es2_identitas'])) {
+            $kunci = 'es2:' . (int) $data['es2_identitas'];
+            $cari  = static fn ($m) => $m->jangkarDariEs2((int) $data['es2_identitas']);
+        } elseif (! empty($data['iku_indikator_id']) && ! empty($data['renstra_indikator_sasaran_id'])) {
+            // Keduanya sudah disebut — salinan utuh, tidak ada yang perlu diisi.
+            return [];
+        } elseif (! empty($data['renstra_indikator_sasaran_id'])) {
+            // Jangkar Renstra yang sah; pasangan IKU-nya dicari ke arah yang
+            // selalu benar (Renstra -> IKU), apa pun akar yang sedang aktif.
+            $kunci = 'renstra:' . (int) $data['renstra_indikator_sasaran_id'];
+            $cari  = static fn ($m) => $m->jangkarDariEs2((int) $data['renstra_indikator_sasaran_id'], 'renstra');
+        } elseif (! empty($data['iku_indikator_id'])) {
+            $kunci = 'iku:' . (int) $data['iku_indikator_id'];
+            $cari  = static fn ($m) => $m->jangkarDariEs2((int) $data['iku_indikator_id'], 'iku');
+        } elseif (! empty($data['parent_id'])) {
+            // WARISAN DARI INDUK.
+            //
+            // ES IV dan Pelaksana tidak punya identitas Eselon II sendiri;
+            // jangkarnya disalin dari baris di atasnya. Sebelum ini penyalinan
+            // itu hanya membawa SEPARUH — kolom Renstra saja — sehingga
+            // turunan dari Eselon II yang berjangkar IKU SAJA kehilangan
+            // jangkarnya sama sekali:
+            //
+            //   * `saveEs4()` mengirim string kosong dari medan tersembunyi,
+            //     yang jadi 0 dan melanggar foreign key -> transaksi mundur,
+            //     tetapi halaman tetap berkata "berhasil disimpan";
+            //   * jalur salin & sunting menulis NULL di kedua kolom -> baris
+            //     hantu yang tidak muncul di matriks mana pun.
+            //
+            // Diwarisi dari barisnya, bukan dari medan form, supaya POST yang
+            // dikarang tidak bisa memindahkan baris ke induk milik OPD lain.
+            $kunci = 'induk:' . (int) $data['parent_id'];
+            $cari  = fn () => $this->jangkarBaris((int) $data['parent_id']);
+        } else {
+            return [];
+        }
 
         if (! array_key_exists($kunci, $this->memoJangkarIku)) {
-            $this->memoJangkarIku[$kunci] = $this->cascadingModel->padananIkuIndikator($kunci);
+            $this->memoJangkarIku[$kunci] = $cari($this->cascadingModel);
         }
 
-        $ikuId = $this->memoJangkarIku[$kunci];
+        $jangkar = $this->memoJangkarIku[$kunci];
 
-        $kolom['iku_indikator_id'] = $ikuId;
-        $kolom['source_type']      = $ikuId !== null ? 'iku' : 'renstra';
+        return [
+            'renstra_indikator_sasaran_id' => $jangkar['renstra_indikator_sasaran_id'],
+            'iku_indikator_id'             => $jangkar['iku_indikator_id'],
+            'source_type'                  => $jangkar['iku_indikator_id'] !== null ? 'iku' : 'renstra',
+        ];
+    }
 
-        return $kolom;
+    /**
+     * Kedua jangkar milik satu baris cascading, untuk diwarisi turunannya.
+     *
+     * Dibaca UTUH — bukan hanya kolom Renstra — karena sejak akar 'iku' baris
+     * Eselon II bisa sah walau kolom Renstra-nya kosong.
+     *
+     * @return array{renstra_indikator_sasaran_id: int|null, iku_indikator_id: int|null}
+     */
+    private function jangkarBaris(int $barisId): array
+    {
+        $b = $this->db->table('cascading_sasaran_opd')
+            ->select('renstra_indikator_sasaran_id, iku_indikator_id')
+            ->where('id', $barisId)
+            ->get()
+            ->getRowArray();
+
+        return [
+            'renstra_indikator_sasaran_id' => isset($b['renstra_indikator_sasaran_id'])
+                ? (int) $b['renstra_indikator_sasaran_id'] : null,
+            'iku_indikator_id' => isset($b['iku_indikator_id'])
+                ? (int) $b['iku_indikator_id'] : null,
+        ];
     }
 
     /**
@@ -66,8 +230,41 @@ class CascadingController extends BaseController
      */
     private function insertCascadingRow(array $data): int
     {
-        // Union, bukan array_merge: nilai yang sudah ada di $data menang.
-        $data += $this->jangkarSumber($data['renstra_indikator_sasaran_id'] ?? null);
+        // Hasil terjemahan MENANG atas apa yang datang dari form.
+        //
+        // Kolom `renstra_indikator_sasaran_id` yang dikirim layar sebenarnya
+        // berisi IDENTITAS Eselon II menurut akar yang aktif — pada akar IKU ia
+        // id indikator IKU, bukan id Renstra. Kalau nilai mentah itu dibiarkan
+        // menang, barisnya tersimpan dengan jangkar Renstra yang tidak sah,
+        // melanggar foreign key, dan transaksinya mundur diam-diam.
+        //
+        // jangkarSumber() mengembalikan array KOSONG bila tidak ada yang perlu
+        // diterjemahkan, sehingga union ini tidak mengubah apa pun di jalur itu.
+        $data = $this->jangkarSumber($data) + $data;
+
+        // `es2_identitas` hanya penanda asal bagi jangkarSumber(); ia bukan kolom
+        // tabel dan akan menggagalkan INSERT bila ikut terbawa.
+        unset($data['es2_identitas']);
+
+        // PENJAGA: baris tanpa jangkar sama sekali tidak boleh lahir.
+        //
+        // Matriks cascading menjangkau barisnya lewat salah satu dari dua
+        // jangkar itu. Baris yang tidak punya keduanya tidak akan pernah
+        // terbaca — di akar 'renstra' maupun 'iku' — jadi ia cuma menghuni
+        // tabel tanpa pernah tampil, dan penggunanya mengira datanya hilang.
+        //
+        // Digagalkan terang-terangan, bukan dibiarkan lahir diam-diam.
+        if ($this->db->fieldExists('iku_indikator_id', 'cascading_sasaran_opd')) {
+            $kosong = static fn ($v): bool => $v === null || $v === '' || (int) $v === 0;
+
+            if ($kosong($data['renstra_indikator_sasaran_id'] ?? null)
+                && $kosong($data['iku_indikator_id'] ?? null)) {
+                throw new CascadingTanpaJangkar(
+                    'Baris cascading tidak bisa disimpan: induknya tidak ditemukan '
+                    . 'atau tidak punya jangkar Eselon II.'
+                );
+            }
+        }
 
         $this->db->table('cascading_sasaran_opd')->insert($data);
 
@@ -142,6 +339,9 @@ class CascadingController extends BaseController
             'opd_missing' => empty($this->opdId),
             'versiIkuList'   => $daftarVersiIku ?? [],
             'versiIkuDipilih' => $versiIkuId ?? null,
+            // Penanda "masih dari Renstra" hanya dicetak bila jangkar IKU
+            // memang sudah ada di basis data ini.
+            'jangkarIkuAda'  => $this->cascadingModel->jangkarIkuTersedia(),
             'filters' => [
                 'periode' => $periode
             ]
@@ -233,6 +433,7 @@ class CascadingController extends BaseController
             // Kolom sasaran eselon di TABEL cukup menampilkan sasarannya saja;
             // rincian Program & Kegiatan PK tetap tampil di Pohon Kinerja.
             'showProgramPk' => false,
+            'jangkarIkuAda' => $this->cascadingModel->jangkarIkuTersedia(),
         ]);
     }
 
@@ -399,7 +600,14 @@ class CascadingController extends BaseController
             return redirect()->back()->with('error', 'Indikator tidak ditemukan');
         }
 
-        $indikator = $this->db->table('renstra_indikator_sasaran ris')
+        // Yang datang dari layar adalah IDENTITAS Eselon II menurut akar yang
+        // sedang aktif — id indikator Renstra pada akar 'renstra', id indikator
+        // IKU pada akar 'iku'. Diterjemahkan dulu supaya pencarian di bawah
+        // selalu memakai id Renstra.
+        $jangkar   = $this->cascadingModel->jangkarDariEs2((int) $indikatorId);
+        $renstraId = $jangkar['renstra_indikator_sasaran_id'];
+
+        $indikator = $renstraId === null ? null : $this->db->table('renstra_indikator_sasaran ris')
             ->select("
             ris.id,
             ris.indikator_sasaran,
@@ -408,13 +616,30 @@ class CascadingController extends BaseController
         ")
             ->join('renstra_sasaran rs', 'rs.id = ris.renstra_sasaran_id')
             ->join('renstra_tujuan rt', 'rt.id = rs.renstra_tujuan_id')
-            ->where('ris.id', $indikatorId)
+            ->where('ris.id', $renstraId)
             ->get()
             ->getRowArray();
+
+        // Indikator IKU yang TIDAK punya padanan Renstra tetap harus bisa
+        // di-cascade — justru baris seperti inilah yang hanya terlihat pada
+        // akar IKU. Keterangannya dirangkai dari sisi IKU.
+        if (! $indikator && ! empty($jangkar['iku_indikator_id'])) {
+            $indikator = $this->db->table('iku_indikator ii')
+                ->select("ii.id, ii.indikator as indikator_sasaran,
+                          iks.sasaran as sasaran_es2, '' as tujuan_renstra", false)
+                ->join('iku_sasaran iks', 'iks.id = ii.iku_sasaran_id')
+                ->where('ii.id', $jangkar['iku_indikator_id'])
+                ->get()
+                ->getRowArray();
+        }
 
         if (!$indikator) {
             return redirect()->back()->with('error', 'Indikator tidak ditemukan');
         }
+
+        // Form mengirim balik identitas yang SAMA dengan yang dipakai layar,
+        // supaya jangkarSumber() menerjemahkannya lewat akar yang sama pula.
+        $indikator['id'] = (int) $indikatorId;
 
         $periode = $this->request->getGet('periode');
 
@@ -474,9 +699,11 @@ class CascadingController extends BaseController
             // INSERT SASARAN ESS III
             // ==========================
 
+            // `es2_identitas`, bukan `renstra_indikator_sasaran_id`: nilai ini
+            // datang dari LAYAR, jadi artinya mengikuti akar yang aktif.
             $this->insertCascadingRow([
                 'opd_id' => $opdId,
-                'renstra_indikator_sasaran_id' => $renstraIndikatorId,
+                'es2_identitas' => $renstraIndikatorId,
                 'parent_id' => null,
                 'level' => 'es3',
                 'nama_sasaran' => $es3['nama']
@@ -518,7 +745,7 @@ class CascadingController extends BaseController
 
                             $this->insertCascadingRow([
                                 'opd_id' => $opdId,
-                                'renstra_indikator_sasaran_id' => $renstraIndikatorId,
+                                'es2_identitas' => $renstraIndikatorId,
                                 'parent_id' => $es3Id,
                                 'es3_indikator_id' => $indikatorEs3Id,
                                 'level' => 'es4',
@@ -558,6 +785,14 @@ class CascadingController extends BaseController
 
         $this->db->transComplete();
 
+        // Tanpa pemeriksaan ini, transaksi yang MUNDUR tetap dilaporkan
+        // berhasil: pengguna kembali ke matriks, barisnya tidak ada, dan tidak
+        // ada satu pun petunjuk mengapa.
+        if ($this->db->transStatus() === false) {
+            return redirect()->back()->withInput()
+                ->with('error', 'Cascading gagal disimpan. Perubahan dikembalikan seperti semula.');
+        }
+
         return redirect()->to('adminopd/cascading')
             ->with('success', 'Cascading berhasil disimpan');
     }
@@ -577,7 +812,8 @@ class CascadingController extends BaseController
 
             $this->insertCascadingRow([
                 'opd_id' => $opdId,
-                'renstra_indikator_sasaran_id' => $renstraIndikatorId,
+                // Datang dari layar -> identitas Eselon II, bukan jangkar Renstra.
+                'es2_identitas' => $renstraIndikatorId,
                 'parent_id' => null,
                 'level' => 'es3',
                 'nama_sasaran' => $es3['nama']
@@ -604,6 +840,14 @@ class CascadingController extends BaseController
         }
 
         $this->db->transComplete();
+
+        // Tanpa pemeriksaan ini, transaksi yang MUNDUR tetap dilaporkan
+        // berhasil: pengguna kembali ke matriks, barisnya tidak ada, dan tidak
+        // ada satu pun petunjuk mengapa.
+        if ($this->db->transStatus() === false) {
+            return redirect()->back()->withInput()
+                ->with('error', 'ESS III gagal disimpan. Perubahan dikembalikan seperti semula.');
+        }
 
         return redirect()->to('adminopd/cascading')
             ->with('success', 'ESS III berhasil disimpan');
@@ -657,6 +901,14 @@ class CascadingController extends BaseController
         }
 
         $this->db->transComplete();
+
+        // Tanpa pemeriksaan ini, transaksi yang MUNDUR tetap dilaporkan
+        // berhasil: pengguna kembali ke matriks, barisnya tidak ada, dan tidak
+        // ada satu pun petunjuk mengapa.
+        if ($this->db->transStatus() === false) {
+            return redirect()->back()->withInput()
+                ->with('error', 'ESS IV gagal disimpan. Perubahan dikembalikan seperti semula.');
+        }
 
         return redirect()->to('adminopd/cascading')
             ->with('success', 'ESS IV berhasil disimpan');
@@ -815,13 +1067,25 @@ class CascadingController extends BaseController
                 foreach ($sasaranBaru as $es3) {
                     if (empty($es3['nama'])) continue;
 
-                    $this->insertCascadingRow([
+                    // Menyalin dari baris yang sudah ada, bukan dari layar.
+                    $barisBaru = [
                         'opd_id' => $currentSasaran['opd_id'],
                         'renstra_indikator_sasaran_id' => $currentSasaran['renstra_indikator_sasaran_id'],
                         'parent_id' => null,
                         'level' => 'es3',
                         'nama_sasaran' => $es3['nama']
-                    ]);
+                    ];
+
+                    // Jangkar IKU diteruskan apa adanya supaya tidak ada
+                    // penerjemahan ulang yang bisa salah menebak akar. Hanya
+                    // bila memang terisi — kalau disertakan bernilai NULL,
+                    // insertCascadingRow() justru berhenti mengisinya.
+                    if (! empty($currentSasaran['iku_indikator_id'])) {
+                        $barisBaru['iku_indikator_id'] = $currentSasaran['iku_indikator_id'];
+                        $barisBaru['source_type']      = $currentSasaran['source_type'] ?? 'iku';
+                    }
+
+                    $this->insertCascadingRow($barisBaru);
                     $newId = $this->db->insertID();
 
                     if (!empty($es3['indikator'])) {
@@ -1119,6 +1383,14 @@ class CascadingController extends BaseController
 
         $this->db->transComplete();
 
+        // Tanpa pemeriksaan ini, transaksi yang MUNDUR tetap dilaporkan
+        // berhasil: pengguna kembali ke matriks, barisnya tidak ada, dan tidak
+        // ada satu pun petunjuk mengapa.
+        if ($this->db->transStatus() === false) {
+            return redirect()->back()->withInput()
+                ->with('error', 'Sasaran Pelaksana gagal disimpan. Perubahan dikembalikan seperti semula.');
+        }
+
         return redirect()->to('adminopd/cascading')
             ->with('success', 'Sasaran Pelaksana berhasil disimpan');
     }
@@ -1361,27 +1633,64 @@ class CascadingController extends BaseController
         return $this->cascOpdFirstShowMeta($rows);
     }
 
+    /**
+     * Simpan CSF satu baris cascading.
+     *
+     * =====================================================================
+     * MENGAPA DIPERKETAT
+     *
+     * Versi sebelumnya menerima `id` apa adanya, tanpa memeriksa izin dan
+     * tanpa membatasi OPD — sehingga siapa pun yang sudah masuk bisa menulis
+     * CSF ke baris cascading milik OPD mana pun hanya dengan mengarang POST.
+     * Ia juga selalu menjawab 'success', bahkan ketika tidak ada baris yang
+     * tersentuh sama sekali.
+     *
+     * Level 'es2' DITOLAK. Ia dulu menulis ke `renstra_sasaran`, padahal
+     * identitas Eselon II di layar mengikuti akar yang aktif: pada akar 'iku'
+     * angkanya id `iku_sasaran`, dan id yang sama bisa juga sah di
+     * `renstra_sasaran` milik OPD lain. Menebak dari angkanya mustahil, jadi
+     * satu-satunya jawaban yang jujur adalah menolak.
+     */
     public function saveCsf()
     {
-        $id     = $this->request->getPost('id');
-        $csfVal = $this->request->getPost('csf');
-        $level  = $this->request->getPost('level'); // es2, es3, or es4
-
-        if ($level === 'es2') {
-            $this->db->table('renstra_sasaran')
-                ->where('id', $id)
-                ->update(['csf' => $csfVal]);
-        } elseif ($level === 'es3') {
-            $this->db->table('cascading_sasaran_opd')
-                ->where('id', $id)
-                ->where('level', 'es3')
-                ->update(['csf' => $csfVal]);
-        } elseif ($level === 'es4' || $level === 'pelaksana') {
-            $this->db->table('cascading_sasaran_opd')
-                ->where('id', $id)
-                ->where('level', $level)
-                ->update(['csf' => $csfVal]);
+        if (! user_can('cascading_opd.update')) {
+            return $this->response->setStatusCode(403)
+                ->setJSON(['status' => 'error', 'message' => 'Anda tidak berwenang mengubah CSF.']);
         }
+
+        $id     = (int) $this->request->getPost('id');
+        $csfVal = $this->request->getPost('csf');
+        $level  = (string) $this->request->getPost('level');
+        $opdId  = session()->get('opd_id');
+
+        if (! in_array($level, ['es3', 'es4', 'pelaksana'], true)) {
+            return $this->response->setStatusCode(422)->setJSON([
+                'status'  => 'error',
+                'message' => $level === 'es2'
+                    ? 'CSF Eselon II tidak diubah dari sini; ia milik dokumen Renstra/IKU.'
+                    : 'Jenjang tidak dikenal.',
+            ]);
+        }
+
+        // Keberadaannya diperiksa TERPISAH, bukan lewat affectedRows(): MySQL
+        // melaporkan 0 baris tersentuh ketika nilainya kebetulan sama dengan
+        // yang sudah tersimpan, dan itu bukan kegagalan.
+        $syarat = ['id' => $id, 'level' => $level];
+
+        // Operator OPD hanya boleh menyentuh barisnya sendiri; peran lintas OPD
+        // (opd_id sesi kosong) dibiarkan seperti sebelumnya.
+        if (! empty($opdId)) {
+            $syarat['opd_id'] = (int) $opdId;
+        }
+
+        if ($this->db->table('cascading_sasaran_opd')->where($syarat)->countAllResults() < 1) {
+            return $this->response->setStatusCode(404)->setJSON([
+                'status'  => 'error',
+                'message' => 'Baris tidak ditemukan atau bukan milik OPD Anda.',
+            ]);
+        }
+
+        $this->db->table('cascading_sasaran_opd')->where($syarat)->update(['csf' => $csfVal]);
 
         return $this->response->setJSON(['status' => 'success']);
     }

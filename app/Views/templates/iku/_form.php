@@ -20,6 +20,12 @@ $back_url       = $back_url ?? '';
 
 $isEdit = !empty($iku['id']);
 
+// Daftar tujuan Renstra untuk SASARAN MANDIRI (lihat blok di bawah). Kosong
+// berarti layar ini tidak sedang membuat sasaran mandiri, dan medannya tidak
+// dirender sama sekali.
+$tujuanOptions = $tujuanOptions ?? [];
+$tujuanTerpilih = old('renstra_tujuan_id', $iku['renstra_tujuan_id'] ?? '');
+
 // Nilai lama (setelah validasi gagal) diprioritaskan supaya isian user tidak hilang.
 $tahunMulai = old('tahun_mulai', $iku['tahun_mulai'] ?? '');
 $tahunAkhir = old('tahun_akhir', $iku['tahun_akhir'] ?? '');
@@ -94,6 +100,31 @@ if ($tahunMulai !== '' && $tahunAkhir !== '' && (int) $tahunAkhir >= (int) $tahu
                             </option>
                         <?php endforeach; ?>
                     </select>
+                </div>
+            <?php endif; ?>
+
+            <?php if ($tujuanOptions !== []): ?>
+                <?php /* TUJUAN RENSTRA — WAJIB.
+                         Tulang punggung matriks Cascading adalah
+                         Tujuan Renstra -> Sasaran Eselon II. Sasaran yang lahir
+                         di IKU tidak punya sasaran Renstra untuk dituruni
+                         tujuannya, jadi ia harus menyebut sendiri tempatnya
+                         bernaung — kalau tidak, barisnya muncul dengan empat
+                         kolom kosong dan berdiri sebagai pulau sendiri. */ ?>
+                <div class="col-md-12">
+                    <label class="form-label">Tujuan Renstra <span class="text-danger">*</span></label>
+                    <select name="renstra_tujuan_id" class="form-select" required>
+                        <option value="">-- Pilih tujuan Renstra --</option>
+                        <?php foreach ($tujuanOptions as $t): ?>
+                            <option value="<?= (int) $t['id'] ?>"
+                                <?= (string) $tujuanTerpilih === (string) $t['id'] ? 'selected' : '' ?>>
+                                <?= esc($t['tujuan']) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <small class="text-muted">
+                        Sasaran ini akan tampil di Cascading di bawah tujuan yang Anda pilih.
+                    </small>
                 </div>
             <?php endif; ?>
 

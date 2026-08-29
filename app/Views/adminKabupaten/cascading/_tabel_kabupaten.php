@@ -29,10 +29,14 @@ foreach ($rows as $r) {
         'baseline' => $r['baseline'] ?? null,
         'targets'  => $r['targets'] ?? [],
         'is_mapped'=> $r['is_mapped'] ?? 0,
+        // Teks baris ini datang dari IKU Kabupaten bila silsilahnya ketemu;
+        // tanpa itu ia jatuh ke RPJMD, dan keadaan itu perlu diberitahukan.
+        'dari_iku' => !empty($r['iku_indikator_id']),
         'opd'      => [],
     ];
     $ind = &$ss['indikator'][$ii];
     if (!empty($r['is_mapped'])) $ind['is_mapped'] = 1;
+    if (!empty($r['iku_indikator_id'])) $ind['dari_iku'] = true;
     $opdName = trim((string) ($r['nama_opd'] ?? ''));
     $opdKey  = $opdName !== '' ? $opdName : '__none__';
     if (!isset($ind['opd'][$opdKey])) $ind['opd'][$opdKey] = ['nama' => $opdName, 'programs' => []];
@@ -51,6 +55,40 @@ $colCount = 6 + 2 + count($years) + 2; // Misi..PD + Satuan,KondisiAwal + Target
 <?php if (!empty($visi)): ?>
     <div class="alert alert-success py-2 px-3 mb-3 fw-bold" style="font-size:.9rem;">
         <i class="fas fa-flag-checkered me-1"></i> VISI : <?= esc($visi) ?>
+    </div>
+<?php endif; ?>
+<?php
+/* Keterangan sumber, dikumpulkan sekali di atas tabel. Cascading Kabupaten
+   membaca IKU Kabupaten lewat silsilah ke RPJMD; indikator yang belum punya
+   padanan IKU tetap ditampilkan dari RPJMD supaya tidak ada yang hilang —
+   tetapi keadaan itu diberitahukan, bukan dibiarkan senyap. */
+$indDariRpjmd = 0;
+if ($silsilahIkuAda ?? false) {
+    foreach ($tree as $m) {
+        foreach ($m['tujuan'] as $t) {
+            foreach ($t['sasaran'] as $s) {
+                foreach ($s['indikator'] as $i) {
+                    if ($i['nama'] !== null && empty($i['dari_iku'])) {
+                        $indDariRpjmd++;
+                    }
+                }
+            }
+        }
+    }
+}
+?>
+<?php if ($indDariRpjmd > 0): ?>
+    <div class="alert alert-warning d-flex align-items-start gap-2 py-2 px-3 mb-3" style="font-size:.85rem">
+        <i class="fas fa-triangle-exclamation mt-1"></i>
+        <div>
+            <strong><?= $indDariRpjmd ?> indikator</strong> pada tabel ini
+            <strong>masih membaca RPJMD</strong>, bukan IKU Kabupaten.
+            <div class="text-muted mt-1">
+                Datanya tetap tampil dan tidak ada yang hilang. Indikator itu belum punya
+                padanan di IKU Kabupaten — susun IKU-nya, atau samakan redaksinya agar
+                silsilahnya terbentuk.
+            </div>
+        </div>
     </div>
 <?php endif; ?>
 <div class="casc-table-wrap">
@@ -92,7 +130,8 @@ $colCount = 6 + 2 + count($years) + 2; // Misi..PD + Satuan,KondisiAwal + Target
                                                 <?php if (!$mPr): ?><td rowspan="<?= $mSpan ?>" class="text-start"><?= $miNo ?>. <?= esc($m['misi']) ?></td><?php $mPr = true; endif; ?>
                                                 <?php if (!$tPr): ?><td rowspan="<?= $tSpan ?>" class="text-start"><?= $tuNo ?>. <?= esc($t['nama']) ?></td><?php $tPr = true; endif; ?>
                                                 <?php if (!$sPr): ?><td rowspan="<?= $sSpan ?>" class="text-start"><?= $saNo ?>. <?= esc($s['nama']) ?></td><?php $sPr = true; endif; ?>
-                                                <?php if (!$iPr): ?><td rowspan="<?= $iSpan ?>" class="text-start"><?php if ($ind['nama'] !== null): ?><span class="ind-kode">IK</span><?= esc($ind['nama']) ?><?php else: ?><span class="text-muted">-</span><?php endif; ?></td><?php endif; ?>
+                                                <?php if (!$iPr): ?><td rowspan="<?= $iSpan ?>" class="text-start"><?php if ($ind['nama'] !== null): ?><span class="ind-kode">IK</span><?= esc($ind['nama']) ?><?php else: ?><span class="text-muted">-</span><?php endif; ?><?php /* Sumber tidak ditandai per baris — keterangannya dikumpulkan
+                                                            sekali di atas tabel. */ ?></td><?php endif; ?>
                                                 <td class="text-start"><?= $prog !== null ? $pNo . '. ' . esc($prog) : '<span class="text-muted">-</span>' ?></td>
                                                 <?php if (!$oPr): ?><td rowspan="<?= $oSpan ?>" class="text-start"><?= $opd['nama'] !== '' ? esc($opd['nama']) : '<span class="text-muted">-</span>' ?></td><?php $oPr = true; endif; ?>
                                                 <?php if (!$iPr): ?>

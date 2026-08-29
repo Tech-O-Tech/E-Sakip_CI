@@ -200,9 +200,16 @@ $js = static fn ($v) => json_encode(
                   </div>
                   <div class="kpi-sub mt-2">
                     <div><?= (int) $capaian['valid'] ?> dari <?= (int) $capaian['wajib'] ?> indikator valid</div>
-                    <div class="fw-semibold" style="color:<?= esc($capaian['status']['color_hex']) ?>">
-                      <?= esc($capaian['label']) ?><?= $capaian['belum_verifikasi'] > 0 ? ' — ' . (int) $capaian['belum_verifikasi'] . ' indikator belum diverifikasi' : '' ?>
-                    </div>
+                    <?php // Status verifikasi hanya dilaporkan bila mekanismenya memang ada.
+                    // Selama belum ada, barisnya akan selalu berbunyi "Sementara — N indikator
+                    // belum diverifikasi" dengan N = jumlah indikator valid, sehingga terbaca
+                    // sebagai tunggakan padahal tidak ada yang bisa dikerjakan operator.
+                    // Lihat OpdDashboardService::verificationInfo(). ?>
+                    <?php if ($capaian['verifikasi']['available'] ?? false): ?>
+                      <div class="fw-semibold" style="color:<?= esc($capaian['status']['color_hex']) ?>">
+                        <?= esc($capaian['label']) ?><?= $capaian['belum_verifikasi'] > 0 ? ' — ' . (int) $capaian['belum_verifikasi'] . ' indikator belum diverifikasi' : '' ?>
+                      </div>
+                    <?php endif; ?>
                   </div>
                 <?php else: ?>
                   <div class="kpi-num sm text-muted">Belum dapat dihitung</div>
@@ -270,7 +277,11 @@ $js = static fn ($v) => json_encode(
               </div>
               <div class="chart-box"><canvas id="chartStatus"></canvas></div>
               <div id="legendStatus" class="d-flex flex-wrap gap-2 justify-content-center mt-3"></div>
-              <?php if (!($ctx['verifikasi']['available'] ?? false)): ?>
+              <?php // Catatan ini dulu menerangkan label "Sementara". Karena labelnya kini
+              // disembunyikan selama mekanisme verifikasi belum ada, keterangannya ikut
+              // disembunyikan supaya tidak menerangkan sesuatu yang tak tampak.
+              ?>
+              <?php if ($ctx['verifikasi']['available'] ?? false): ?>
                 <p class="text-muted mt-3 mb-0" style="font-size:.74rem;">
                   <i class="fas fa-circle-info me-1"></i><?= esc($ctx['verifikasi']['note']) ?>
                 </p>
@@ -618,7 +629,8 @@ $js = static fn ($v) => json_encode(
             '</div>' +
             '<div class="d-flex flex-wrap gap-2 mt-2">' + badge(i.status) +
               '<span class="badge-soft" style="background:#f1f3f2;color:#6b7a70;">' + (i.is_valid ? 'Valid' : 'Belum valid') + '</span>' +
-              '<span class="badge-soft" style="background:#fdf0e6;color:#e07b39;">' + esc(i.verification.label) + '</span>' +
+              // Lencana status verifikasi hanya bila mekanismenya ada (lihat verificationInfo()).
+              (i.verification.available ? '<span class="badge-soft" style="background:#fdf0e6;color:#e07b39;">' + esc(i.verification.label) + '</span>' : '') +
             '</div>' +
             (i.reason ? '<div class="ins-why mt-2"><i class="fas fa-circle-info me-1"></i>' + esc(i.reason) + '</div>' : '') +
             '<div class="mt-2 d-flex flex-wrap gap-1">' + aksi + '</div>' +
@@ -697,7 +709,7 @@ $js = static fn ($v) => json_encode(
                   '<div class="fw-bold mb-2" style="font-size:.92rem;line-height:1.4;">' + esc(d.indikator) + '</div>' +
                   '<div class="d-flex flex-wrap gap-2 mb-3">' + badge(d.status) +
                     '<span class="badge-soft" style="background:#f1f3f2;color:#6b7a70;">' + (d.validity.is_valid ? 'Valid' : 'Belum valid') + '</span>' +
-                    '<span class="badge-soft" style="background:#fdf0e6;color:#e07b39;">' + esc(d.verification.label) + '</span>' +
+                    (d.verification.available ? '<span class="badge-soft" style="background:#fdf0e6;color:#e07b39;">' + esc(d.verification.label) + '</span>' : '') +
                   '</div>' +
                   '<dl class="drawer-dl mb-0">' +
                     '<dt>Sasaran PK</dt><dd>' + esc(d.sasaran) + '</dd>' +
@@ -743,11 +755,14 @@ $js = static fn ($v) => json_encode(
           },
           capaian: function () {
             var c = D.capaian;
+            // Baris "Status nilai" beserta catatannya ikut disembunyikan selama
+            // mekanisme verifikasi belum ada (lihat verificationInfo()).
+            var adaVerif = !!(c.verifikasi && c.verifikasi.available);
             var ringkas = '<div class="drawer-section"><dl class="drawer-dl mb-0">' +
               '<dt>Capaian Total OPD</dt><dd>' + (c.can_compute ? pct(c.total) : 'belum dapat dihitung') + '</dd>' +
               '<dt>Indikator valid</dt><dd>' + c.valid + ' dari ' + c.wajib + '</dd>' +
-              '<dt>Status nilai</dt><dd>' + esc(c.label) + '</dd>' +
-              '</dl><p class="text-muted mt-3 mb-0" style="font-size:.75rem;">' + esc(c.verifikasi.note) + '</p></div>';
+              (adaVerif ? '<dt>Status nilai</dt><dd>' + esc(c.label) + '</dd>' : '') +
+              '</dl>' + (adaVerif ? '<p class="text-muted mt-3 mb-0" style="font-size:.75rem;">' + esc(c.verifikasi.note) + '</p>' : '') + '</div>';
             var bermasalah = D.indicators.filter(function (i) { return !i.is_valid; });
             var tombol = bermasalah.length
               ? '<div class="drawer-section"><button type="button" class="btn btn-sm btn-outline-danger" data-filter="belum_valid">' +

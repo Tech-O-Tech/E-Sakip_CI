@@ -253,6 +253,9 @@
 
                     <!-- ============== VIEW: TABEL ============== -->
                     <div id="view-tabel" <?= $isPohon ? 'hidden' : '' ?>>
+                        <?php /* Keterangan "masih membaca Renstra" hidup di dalam partial
+                                 _table.php supaya ikut diperbarui saat tabelnya dimuat ulang
+                                 lewat AJAX. */ ?>
                         <div class="casc-table-wrap">
                             <div class="table-responsive" id="cascTableWrap"
                                 data-table-url="<?= base_url('adminopd/cascading/table') ?>"

@@ -335,7 +335,7 @@ $filterQs = http_build_query(array_filter([
                                     ?>
                                     <?php foreach ($rows as $ri => $row): ?>
                                         <?php
-                                        [$items, $barisButir, $n, $barisRenaksi] = $barisFor($row);
+                                        [$items, $barisButir, $n] = $barisFor($row);
                                         $targetId  = (int) ($row['target_id'] ?? 0);
                                         $subsRow   = $subMap[$targetId] ?? [];
                                         $capaian   = $monevSub[$targetId] ?? [];
@@ -355,9 +355,17 @@ $filterQs = http_build_query(array_filter([
                                         // Unit anggaran & pagunya dibagi rata lewat rowspan (sama seperti
                                         // Target & Rencana Aksi) supaya tidak ada sel kosong.
                                         [$spanUnit, $mulaiUnit] = pk_bagi_baris($units, $n);
+
+                                        // Baris rencana aksi dibagi rata dengan cara yang sama, supaya
+                                        // sisa tinggi ketika unit lebih banyak TIDAK jadi blok kosong.
+                                        [$spanBaris, $mulaiBaris, $spanButir] = pk_bagi_renaksi($barisRender, $n);
                                         ?>
                                         <?php for ($k = 0; $k < $n; $k++): ?>
-                                            <?php [$butirIdx, $subIdx] = $barisRender[$k] ?? [null, null]; ?>
+                                            <?php
+                                            $riBaris             = $mulaiBaris[$k] ?? null;
+                                            [$butirIdx, $subIdx] = $riBaris !== null ? $barisRender[$riBaris] : [null, null];
+                                            $spanRow             = $riBaris !== null ? ($spanBaris[$riBaris] ?? 1) : 1;
+                                            ?>
                                             <tr>
                                                 <?php if ($showOpd): ?>
                                                     <?php if ($newOpd): ?>
@@ -463,19 +471,11 @@ $filterQs = http_build_query(array_filter([
                                                     </td>
                                                 <?php endif; ?>
 
-                                                <?php if ($butirIdx === null): ?>
-                                                    <?php // Sisa baris ketika unit anggaran lebih banyak dari baris rencana aksi.
-                                                    // Renaksi + Sub + 4 target + 4 capaian + total + Aksi = 12 kolom.
-                                                    // (kolom Penanggung Jawab tidak ikut: hanya dicetak di baris k=0) 
-                                                    ?>
-                                                    <?php if ($k === $barisRenaksi): ?>
-                                                        <td colspan="12" rowspan="<?= $n - $barisRenaksi ?>"></td>
-                                                    <?php endif; ?>
-                                                <?php else: ?>
-                                                    <?php // Rencana Aksi membentang setinggi sub rencana aksinya 
+                                                <?php if ($butirIdx !== null): ?>
+                                                    <?php // Rencana Aksi membentang setinggi seluruh sub rencana aksinya
                                                     ?>
                                                     <?php if ($subIdx === 0): ?>
-                                                        <td rowspan="<?= $barisButir[$butirIdx] ?? 1 ?>" class="text-start align-top">
+                                                        <td rowspan="<?= $spanButir[$butirIdx] ?? 1 ?>" class="text-start align-top">
                                                             <?php $txt = $items[$butirIdx] ?? ''; ?>
                                                             <?= ($txt !== '') ? esc(($butirIdx + 1) . '. ' . $txt) : '<span class="text-muted">-</span>' ?>
                                                         </td>
@@ -487,26 +487,26 @@ $filterQs = http_build_query(array_filter([
                                                     // Capaian menempel ke id sub; tanpa sub dipakai capaian tingkat renaksi (id 0).
                                                     $cap    = $capaian[$subId] ?? null;
                                                     ?>
-                                                    <td class="text-start">
+                                                    <td rowspan="<?= $spanRow ?>" class="text-start">
                                                         <?= $sub !== null ? esc(($subIdx + 1) . '. ' . $sub['teks']) : '<span class="text-muted">-</span>' ?>
                                                     </td>
 
-                                                    <?php // Target Triwulan diambil dari SUB rencana aksi 
+                                                    <?php // Target Triwulan diambil dari SUB rencana aksi
                                                     ?>
                                                     <?php foreach ([1, 2, 3, 4] as $q): ?>
                                                         <?php $tw = $sub['tw'][$q] ?? null; ?>
-                                                        <td><?= ($tw !== null && $tw !== '') ? esc($tw) : '<span class="text-muted">-</span>' ?></td>
+                                                        <td rowspan="<?= $spanRow ?>"><?= ($tw !== null && $tw !== '') ? esc($tw) : '<span class="text-muted">-</span>' ?></td>
                                                     <?php endforeach; ?>
 
                                                     <?php // Capaian Triwulan juga per sub 
                                                     ?>
                                                     <?php foreach ([1, 2, 3, 4] as $q): ?>
                                                         <?php $cv = $cap['capaian_triwulan_' . $q] ?? null; ?>
-                                                        <td><?= ($cv !== null && $cv !== '') ? esc($cv) : '<span class="text-muted">-</span>' ?></td>
+                                                        <td rowspan="<?= $spanRow ?>"><?= ($cv !== null && $cv !== '') ? esc($cv) : '<span class="text-muted">-</span>' ?></td>
                                                     <?php endforeach; ?>
 
                                                     <?php // Capaian Total = persentase hasil hitungan server (monev.total) ?>
-                                                    <td class="text-nowrap">
+                                                    <td rowspan="<?= $spanRow ?>" class="text-nowrap">
                                                         <span class="fw-semibold"><?= capaianFormatPersen($cap['total'] ?? null, '<span class="text-muted fw-normal">-</span>') ?></span>
                                                         <?php if (!empty($cap['metode_perhitungan'])): ?>
                                                             <div class="text-muted" style="font-size:.7rem;"><?= esc(capaianMetodeNama($cap['metode_perhitungan'])) ?></div>
@@ -545,10 +545,10 @@ $filterQs = http_build_query(array_filter([
                                                     <td rowspan="<?= $n ?>" class="text-start"><?= esc($row['penanggung_jawab'] ?? '-') ?></td>
                                                 <?php endif; ?>
                                                 <?php // Capaian diisi PER SUB, jadi tombolnya juga per baris sub.
-                                                // Baris sisa (tanpa sub) sudah tertutup colspan di atas. 
+                                                // Baris sisa (tanpa sub) tertutup rowspan sel di atasnya.
                                                 ?>
                                                 <?php if ($butirIdx !== null): ?>
-                                                    <td>
+                                                    <td rowspan="<?= $spanRow ?>">
                                                         <?php if (empty($row['target_id'])): ?>
                                                             <span class="text-muted">&mdash;</span>
                                                         <?php elseif ($canWrite ?? true): ?>

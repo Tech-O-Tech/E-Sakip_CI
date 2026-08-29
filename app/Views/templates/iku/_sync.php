@@ -107,6 +107,22 @@ $draftTersedia = $draft_tersedia ?? [];
 
 <?php
 $tanpaPadanan = $tanpa_padanan ?? [];
+
+/* MODE GANTI — pratinjau.
+   `dipertahankan` adalah inti peringatannya: indikator yang tidak ada di
+   sumber TETAPI sudah dipakai di tempat lain. Membuangnya bukan menghapus
+   satu baris, melainkan memutus pekerjaan orang lain — sasaran Eselon III/IV
+   di bawahnya, capaian LAKIP yang sudah diinput, atau dokumen revisi yang
+   sudah disahkan. Karena itu baris seperti ini TIDAK PERNAH dibuang, dan
+   alasannya disebut satu per satu. */
+$gantiPratinjau = $ganti_pratinjau ?? ['dibuang_indikator' => 0, 'dipertahankan' => []];
+$akanDibuang    = (int) ($gantiPratinjau['dibuang_indikator'] ?? 0);
+$dipertahankan  = $gantiPratinjau['dipertahankan'] ?? [];
+
+// Satu gerbang untuk panel Ganti DAN untuk kalimat yang menyebutnya. Sebelum
+// ini kalimatnya berkata "kecuali Anda mencentang Ganti di bawah" walau
+// panelnya tidak dirender — pengguna mencari centang yang tidak ada.
+$gantiTampil = ! ($keRevisi ?? false) && ($akanDibuang > 0 || $dipertahankan !== []);
 ?>
 
 <?php if ($tanpaPadanan !== []): ?>
@@ -117,7 +133,13 @@ $tanpaPadanan = $tanpa_padanan ?? [];
             Ini <strong>bukan kesalahan</strong>. IKU memang boleh memuat indikator yang tidak
             ada di <?= esc($sumber_label) ?> &mdash; itulah gunanya ia dokumen tersendiri.
             Daftar ini hanya supaya Anda tahu mana yang berdiri sendiri, terutama setelah
-            berganti versi sumber. Tidak ada yang dihapus dari sini.
+            berganti versi sumber.
+            <?php if ($gantiTampil): ?>
+                Tidak ada yang dihapus, <em>kecuali</em> Anda mencentang
+                <strong>Ganti</strong> di bawah.
+            <?php else: ?>
+                <strong>Tidak ada yang dihapus.</strong>
+            <?php endif; ?>
         </div>
         <ul class="small mt-2 mb-0">
             <?php foreach ($tanpaPadanan as $t): ?>
@@ -133,6 +155,36 @@ $tanpaPadanan = $tanpa_padanan ?? [];
                 </li>
             <?php endforeach; ?>
         </ul>
+    </div>
+<?php endif; ?>
+
+<?php /* PERINGATAN TURUNAN — hanya muncul bila memang ada yang sudah dipakai,
+         dan hanya di jalur yang benar-benar bisa membuang (bukan draft revisi):
+         menakut-nakuti tentang penghapusan yang tidak akan terjadi sama saja
+         dengan berbohong ke arah sebaliknya. */ ?>
+<?php if (! $keRevisi && $dipertahankan !== []): ?>
+    <div class="alert alert-warning">
+        <i class="fas fa-triangle-exclamation me-1"></i>
+        <strong><?= count($dipertahankan) ?> indikator di antaranya sudah dipakai di tempat lain.</strong>
+        <div class="small mt-1">
+            Kalau Anda memilih <strong>Ganti</strong>, indikator berikut <strong>tetap tidak akan
+            dibuang</strong> &mdash; yang ikut hilang bukan barisnya saja, melainkan pekerjaan
+            yang sudah menempel padanya.
+        </div>
+        <ul class="small mt-2 mb-0">
+            <?php foreach ($dipertahankan as $d): ?>
+                <li>
+                    <?= esc($d['indikator']) ?>
+                    <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle ms-1">
+                        <?= esc($d['alasan']) ?>
+                    </span>
+                </li>
+            <?php endforeach; ?>
+        </ul>
+        <div class="small text-muted mt-2">
+            Untuk benar-benar membuangnya, lepaskan dulu kaitannya &mdash; hapus baris
+            cascading di bawahnya, atau kosongkan capaian LAKIP-nya.
+        </div>
     </div>
 <?php endif; ?>
 
@@ -339,6 +391,42 @@ $tanpaPadanan = $tanpa_padanan ?? [];
             </table>
         </div>
 
+        <?php /* MODE GANTI.
+                 Hanya ditawarkan bila memang ADA yang bisa dibuang — tanpa itu
+                 centang ini cuma pilihan yang tidak melakukan apa-apa, dan
+                 pilihan semacam itu justru mengundang klik sembarangan.
+
+                 TIDAK ditawarkan bila hasil sync bermuara ke DRAFT REVISI.
+                 Di jalur itu IKU berjalan tidak disentuh sama sekali — yang
+                 diisi adalah arsip revisi — sehingga "membuang isi IKU" tidak
+                 punya arti di sana. Menampilkannya berarti menawarkan tombol
+                 yang diam-diam tidak mengerjakan apa pun. */ ?>
+        <?php if ($gantiTampil): ?>
+            <div class="border rounded p-3 mt-4 bg-light">
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="ganti" value="1" id="sync-ganti">
+                    <label class="form-check-label" for="sync-ganti">
+                        <strong>Ganti</strong> &mdash; samakan IKU dengan <?= esc($sumber_label) ?>,
+                        buang yang tidak ada di sana.
+                    </label>
+                </div>
+                <div class="small text-muted mt-2">
+                    Tanpa centang ini, sync hanya <strong>menambah dan memperbarui</strong>;
+                    tidak ada yang dihapus.
+                    <?php if ($akanDibuang > 0): ?>
+                        Dengan centang ini, <strong><?= $akanDibuang ?> indikator</strong> yang tidak
+                        ada di <?= esc($sumber_label) ?> akan dibuang beserta targetnya.
+                    <?php endif; ?>
+                    <?php if ($dipertahankan !== []): ?>
+                        <strong><?= count($dipertahankan) ?></strong> lainnya tetap dipertahankan
+                        karena sudah dipakai &mdash; lihat peringatan di atas.
+                    <?php endif; ?>
+                    Definisi, rumusan, sumber data, dan penanggung jawab pada indikator yang
+                    <em>tetap ada</em> tidak ikut tertimpa.
+                </div>
+            </div>
+        <?php endif; ?>
+
         <div class="d-flex justify-content-between mt-4">
             <a href="<?= esc($back_url, 'attr') ?>" class="btn btn-secondary">
                 <i class="fas fa-arrow-left me-1"></i> Kembali
@@ -348,6 +436,25 @@ $tanpaPadanan = $tanpa_padanan ?? [];
             </button>
         </div>
     </form>
+
+    <?php if (! $keRevisi && ($akanDibuang > 0 || $dipertahankan !== [])): ?>
+        <script>
+            // Menghapus tidak boleh terjadi karena salah klik.
+            document.getElementById('sync-form')?.addEventListener('submit', function (e) {
+                var ganti = document.getElementById('sync-ganti');
+                if (!ganti || !ganti.checked) return;
+
+                var jml = <?= (int) $akanDibuang ?>;
+                if (!confirm('Mode Ganti aktif.\n\n' + jml + ' indikator IKU yang tidak ada di '
+                    + <?= json_encode((string) $sumber_label) ?>
+                    + ' akan DIBUANG beserta targetnya.\n'
+                    + 'Indikator yang sudah dipakai (cascading / LAKIP / arsip revisi) tetap dipertahankan.\n\n'
+                    + 'Lanjutkan?')) {
+                    e.preventDefault();
+                }
+            });
+        </script>
+    <?php endif; ?>
 
 
 <?php endif; ?>

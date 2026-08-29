@@ -4,6 +4,45 @@
  * Butuh: $rows, $rowspan, $firstShow.
  */
 ?>
+<?php
+/* Keterangan sumber data, dikumpulkan SEKALI di atas tabel.
+   Sengaja diletakkan di dalam partial ini, bukan di halaman induk: tabelnya
+   dimuat ulang lewat AJAX saat periode diganti, dan keterangan yang tinggal
+   di luar akan tetap menampilkan angka periode sebelumnya. */
+// `es2_source_type` berasal dari BARIS CASCADING-nya, bukan dari indikator
+// Eselon II. Maka NULL di situ TIDAK berarti "membaca Renstra" — melainkan
+// "belum punya baris cascading sama sekali", keadaan yang wajar dan bukan
+// masalah. Hanya nilai 'renstra' yang tegas yang dihitung; tanpa syarat
+// `es3_id` ini, tiap indikator yang belum di-cascade ikut terhitung dan
+// spanduknya berbohong.
+$barisRenstra     = 0;
+$indikatorRenstra = [];
+if ($jangkarIkuAda ?? false) {
+    foreach ($rows as $__r) {
+        if (! empty($__r['es3_id'])
+            && ($__r['es2_source_type'] ?? '') === 'renstra'
+            && is_numeric($__r['indikator_id'] ?? null)) {
+            $barisRenstra++;
+            $indikatorRenstra[$__r['indikator_id']] = true;
+        }
+    }
+}
+?>
+<?php if ($barisRenstra > 0): ?>
+    <div class="alert alert-warning d-flex align-items-start gap-2 py-2 px-3 mb-3" style="font-size:.85rem">
+        <i class="fas fa-triangle-exclamation mt-1"></i>
+        <div>
+            <strong><?= count($indikatorRenstra) ?> indikator</strong>
+            (<?= $barisRenstra ?> baris) pada tabel ini <strong>masih membaca Renstra</strong>, bukan IKU.
+            <div class="text-muted mt-1">
+                Datanya tetap tampil dan tidak ada yang hilang. Penyebabnya: IKU periode ini
+                belum disusun, atau teks sasaran/indikatornya berbeda dengan Renstra sehingga
+                tidak bisa dipasangkan. Perbaiki lewat menu <em>IKU &rarr; Sync dari Renstra</em>,
+                atau samakan redaksinya.
+            </div>
+        </div>
+    </div>
+<?php endif; ?>
 <table class="table table-bordered text-center align-middle casc-table mb-0">
     <thead class="text-center">
         <tr>
@@ -129,6 +168,11 @@
                                       title="<?= esc($tv[3]) ?>"><?= esc($tv[2]) ?></span>
                             </div>
                         <?php endif; ?>
+
+                        <?php /* Sumber teks baris ini TIDAK ditandai per baris — keterangannya
+                                 dikumpulkan sekali di atas tabel (lihat cascading.php). Menandai
+                                 tiap baris membuat kolom ini penuh lencana yang mengulang satu
+                                 pesan yang sama. */ ?>
                     </td>
                 <?php endif; ?>
                 <?php if (empty($r['es3_id'])): ?>

@@ -1,27 +1,27 @@
+<?php
+
+/**
+ * Sunting KETERANGAN indikator IKU Kabupaten.
+ *
+ * Isinya sengaja SATU berkas dengan layar OPD
+ * (templates/iku/_edit_keterangan) supaya aturannya tidak bercabang: yang
+ * boleh disunting hanya keterangan tiap indikator dan redaksi sasaran.
+ *
+ * Nama indikator, satuan, dan target datang dari RPJMD lewat sync, dan
+ * perubahannya berjalan lewat Versi IKU supaya tercatat dan disahkan.
+ * Pembatasannya bukan hanya di layar: `AdminKab\IkuController::update()`
+ * hanya menulis kolom yang disebut namanya di sana.
+ */
+$title = $title ?? 'Edit IKU Kabupaten';
+?>
 <!DOCTYPE html>
 <html lang="id">
 
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title><?= esc($title ?? 'Edit IKU Kabupaten') ?></title>
+    <title><?= esc($title) ?></title>
     <?= $this->include('adminKabupaten/templates/style.php'); ?>
-    <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet">
-    <style>
-        .select2-container { width: 100% !important; }
-        .select2-container--default .select2-selection--single {
-            height: 38px;
-            padding: 6px 12px;
-            border: 1px solid #ced4da;
-            border-radius: .375rem;
-            display: flex;
-            align-items: center;
-            background-color: #fff;
-        }
-        .select2-selection__rendered { padding-left: 0 !important; color: #495057; }
-        .select2-selection__arrow { height: 100% !important; }
-        .select2-results__option--highlighted { background-color: #00743e !important; color: #fff; }
-    </style>
 </head>
 
 <body class="bg-light min-vh-100 d-flex flex-column position-relative">
@@ -30,23 +30,15 @@
         <?= $this->include('adminKabupaten/templates/header.php'); ?>
         <?= $this->include('adminKabupaten/templates/sidebar.php'); ?>
 
-        <main class="flex-fill d-flex justify-content-center p-4 mt-2">
-            <div class="bg-white rounded shadow-sm p-4" style="width: 100%; max-width: 1200px;">
-                <h2 class="h3 fw-bold text-center mb-4" style="color: #00743e;">Edit IKU Kabupaten</h2>
-
-                <?php if (session()->getFlashdata('error')): ?>
-                    <div class="alert alert-danger"><?= esc(session()->getFlashdata('error')) ?></div>
-                <?php endif; ?>
-
-                <?php
-                $this->setData([
-                    'is_lintas_opd' => false,
-                    'opd_list'      => [],
-                    'action_url'    => base_url('adminkab/iku/update'),
-                    'back_url'      => base_url('adminkab/iku?mode=kabupaten'),
-                ]);
-                ?>
-                <?= $this->include('templates/iku/_form') ?>
+        <main class="flex-fill p-4 mt-2">
+            <div class="mx-auto" style="width: 100%; max-width: 1200px;">
+                <?php $this->setData([
+                    'action_url'  => base_url('adminkab/iku/update'),
+                    'back_url'    => base_url('adminkab/iku?mode=kabupaten'),
+                    'labelSumber' => 'RPJMD',
+                    'labelDampak' => 'kolom Sasaran pada Cascading Kabupaten',
+                ]); ?>
+                <?= $this->include('templates/iku/_edit_keterangan') ?>
             </div>
         </main>
 

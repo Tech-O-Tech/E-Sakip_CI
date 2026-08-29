@@ -540,12 +540,14 @@ $filterQs = http_build_query(array_filter([
                                     $lines = preg_split('/\r\n|\r|\n/', $text);
                                     return array_values(array_filter(array_map('trim', $lines), fn($l) => $l !== ''));
                                 };
-                                // Tinggi baris 1 indikator = jumlah butir rencana aksi, di mana tiap butir
-                                // sendiri setinggi jumlah sub rencana aksinya (min 1). Ini yang membuat
-                                // 1 Rencana Aksi bisa membentang atas Sub 1, 2, 3.
-                                // Tinggi 1 indikator ditentukan HANYA oleh rencana aksi:
-                                // tiap butir setinggi jumlah sub-nya (min 1). Unit & anggaran
-                                // menempel ke indikator (digabung setinggi $n), bukan menambah baris.
+                                // Tinggi 1 indikator = yang TERTINGGI antara dua sisi yang tidak
+                                // saling berhubungan:
+                                //   * sisi rencana aksi -> tiap butir setinggi jumlah sub-nya (min 1);
+                                //     inilah yang membuat 1 Rencana Aksi membentang atas Sub 1, 2, 3;
+                                //   * sisi unit         -> jumlah Program/Kegiatan/Sub Kegiatan.
+                                // Yang lebih pendek DIREGANGKAN mengisi tinggi itu lewat rowspan
+                                // (pk_bagi_baris untuk unit, pk_bagi_renaksi untuk rencana aksi),
+                                // sehingga tidak ada sisi yang menyisakan sel menganga.
                                 $subMap     = $subMap ?? [];
                                 $programMap = $programMap ?? [];
                                 $barisFor = function ($row) use ($splitAksi, $subMap, $programMap) {
@@ -701,7 +703,7 @@ $filterQs = http_build_query(array_filter([
                                         ?>
                                         <?php foreach ($rows as $ri => $row): ?>
                                             <?php
-                                            [$items, $barisButir, $n, $barisRenaksi] = $barisFor($row);
+                                            [$items, $barisButir, $n] = $barisFor($row);
                                             $subsRow  = ($subMap[(int) ($row['target_id'] ?? 0)] ?? []);
                                             // "Unit" = Program / Kegiatan / Sub Kegiatan, tergantung pk.jenis baris ini.
                                             $units    = array_values($programMap[(int) ($row['pk_indikator_id'] ?? 0)] ?? []);
@@ -717,10 +719,16 @@ $filterQs = http_build_query(array_filter([
                                             // supaya tidak ada sel Unit/Anggaran yang menganga kosong.
                                             // Contoh: 4 baris & 2 unit -> rowspan 2 dan 2.
                                             [$spanUnit, $mulaiUnit] = pk_bagi_baris($units, $n);
+
+                                            // Baris rencana aksi dibagi rata dengan cara yang sama, supaya
+                                            // sisa tinggi ketika unit lebih banyak TIDAK jadi blok kosong.
+                                            [$spanBaris, $mulaiBaris, $spanButir] = pk_bagi_renaksi($barisRender, $n);
                                             ?>
                                             <?php for ($k = 0; $k < $n; $k++): ?>
                                                 <?php
-                                                [$butirIdx, $subIdx] = $barisRender[$k] ?? [null, null];
+                                                $riBaris             = $mulaiBaris[$k] ?? null;
+                                                [$butirIdx, $subIdx] = $riBaris !== null ? $barisRender[$riBaris] : [null, null];
+                                                $spanRow             = $riBaris !== null ? ($spanBaris[$riBaris] ?? 1) : 1;
                                                 // Penanda awal kelompok -> garis pemisah lebih tegas.
                                                 $awalOpd  = ($showOpd && $newOpd);
                                                 $trClass  = $awalOpd ? 'rk-grp rk-grp-opd' : (!$noPrinted ? 'rk-grp' : '');
@@ -784,17 +792,11 @@ $filterQs = http_build_query(array_filter([
                                                         </td>
                                                     <?php endif; ?>
 
-                                                    <?php if ($butirIdx === null): ?>
-                                                        <?php // Sisa baris ketika unit lebih banyak dari baris rencana aksi 
-                                                        ?>
-                                                        <?php if ($k === $barisRenaksi): ?>
-                                                            <td colspan="6" rowspan="<?= $n - $barisRenaksi ?>"></td>
-                                                        <?php endif; ?>
-                                                    <?php else: ?>
-                                                        <?php // Rencana Aksi membentang setinggi sub rencana aksinya 
+                                                    <?php if ($butirIdx !== null): ?>
+                                                        <?php // Rencana Aksi membentang setinggi seluruh sub rencana aksinya
                                                         ?>
                                                         <?php if ($subIdx === 0): ?>
-                                                            <td rowspan="<?= $barisButir[$butirIdx] ?? 1 ?>" class="text-start va-top c-renaksi">
+                                                            <td rowspan="<?= $spanButir[$butirIdx] ?? 1 ?>" class="text-start va-top c-renaksi">
                                                                 <?php
                                                                 $txt = $items[$butirIdx] ?? '';
                                                                 echo ($txt !== '') ? esc(($butirIdx + 1) . '. ' . $txt) : '<span class="text-muted">-</span>';
@@ -803,7 +805,7 @@ $filterQs = http_build_query(array_filter([
                                                         <?php endif; ?>
 
                                                         <?php $sub = $subsRow[$butirIdx][$subIdx] ?? null; ?>
-                                                        <td class="text-start sub-cell va-top c-sub">
+                                                        <td rowspan="<?= $spanRow ?>" class="text-start sub-cell va-top c-sub">
                                                             <?= $sub !== null ? esc(($subIdx + 1) . '. ' . $sub['teks']) : '<span class="text-muted">-</span>' ?>
                                                         </td>
 
@@ -811,7 +813,7 @@ $filterQs = http_build_query(array_filter([
                                                         ?>
                                                         <?php foreach ([1, 2, 3, 4] as $q): ?>
                                                             <?php $nilaiTw = $sub['tw'][$q] ?? null; ?>
-                                                            <td class="tw-cell va-top c-tw<?= $q ?>"><?= ($nilaiTw !== null && $nilaiTw !== '') ? esc($nilaiTw) : '<span class="text-muted">-</span>' ?></td>
+                                                            <td rowspan="<?= $spanRow ?>" class="tw-cell va-top c-tw<?= $q ?>"><?= ($nilaiTw !== null && $nilaiTw !== '') ? esc($nilaiTw) : '<span class="text-muted">-</span>' ?></td>
                                                         <?php endforeach; ?>
                                                     <?php endif; ?>
 

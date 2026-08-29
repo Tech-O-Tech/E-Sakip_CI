@@ -1954,13 +1954,28 @@ class OpdDashboardService
      * dokumen lain (lakip.status, renstra/rpjmd status draft|selesai,
      * iku_indikator.status).
      *
-     * Maka seluruh capaian dilaporkan apa adanya sebagai "Sementara" dan
-     * TIDAK ada nilai yang diklaim terverifikasi. Struktur datanya sudah siap
-     * menampung label "Terverifikasi": begitu mekanisme verifikasi dibuat
+     * Maka TIDAK ada nilai yang diklaim terverifikasi. Struktur datanya sudah
+     * siap menampung label "Terverifikasi": begitu mekanisme verifikasi dibuat
      * (mis. kolom `monev.status_verifikasi` + siapa/kapan), cukup ubah fungsi
      * ini menjadi membaca kolom tersebut — kartu, grafik, dan drawer otomatis
      * ikut. Penambahan kolom itu SENGAJA belum dilakukan karena berada di luar
      * lingkup dashboard dan berdampak ke modul MONEV (form, simpan, cetak).
+     *
+     * `available` ADALAH SAKLARNYA. Selama false, SELURUH tampilan status
+     * verifikasi disembunyikan — baris "Sementara — N indikator belum
+     * diverifikasi" pada kartu Capaian (dashboard OPD, Kabupaten, Bupati),
+     * lencana "Sementara" di drawer indikator, keterangan di bawah donat
+     * Distribusi Status, segmen "Belum Terverifikasi" pada donat itu, dan
+     * butir "Status verifikasi capaian" di Prioritas Tindak Lanjut.
+     *
+     * Alasannya: selama mekanismenya belum ada, `belum_verifikasi` SELALU sama
+     * dengan jumlah indikator valid, sehingga barisnya terbaca sebagai
+     * tunggakan pekerjaan padahal tidak ada yang bisa dikerjakan operator.
+     * Melaporkan status yang tidak bisa ditentukan sistem lebih menyesatkan
+     * daripada tidak melaporkannya sama sekali.
+     *
+     * Begitu `available` menjadi true, semuanya muncul kembali dengan
+     * sendirinya — tidak ada tampilan yang perlu disunting ulang.
      *
      * @return array{code: string, label: string, available: bool, note: string}
      */

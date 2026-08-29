@@ -186,6 +186,17 @@
                                    title="Ambil sasaran, indikator, dan target dari Renstra OPD ini">
                                     <i class="fas fa-sync-alt me-1"></i> Sync dari Renstra
                                 </a>
+
+                                <?php /* SASARAN MANDIRI — jalan kedua, sengaja diletakkan
+                                         SESUDAH Sync dan bergaya lebih redup: Sync tetap cara
+                                         yang benar untuk sasaran yang ada di Renstra, dan yang
+                                         ini hanya untuk yang memang belum ada di sana. */ ?>
+                                <a href="<?= base_url('adminopd/iku/tambah' . (! empty($selected_periode)
+                                       ? '?periode=' . urlencode((string) $selected_periode) : '')) ?>"
+                                   class="btn btn-outline-secondary"
+                                   title="Sasaran yang belum ada di Renstra; wajib memilih tujuan Renstra-nya">
+                                    <i class="fas fa-plus me-1"></i> Sasaran Mandiri
+                                </a>
                             <?php endif; ?>
                         <?php endif; ?>
                         <?php if (!empty($selected_periode)): ?>

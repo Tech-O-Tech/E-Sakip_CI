@@ -32,15 +32,31 @@
 
         <main class="flex-fill d-flex justify-content-center p-4 mt-2">
             <div class="bg-white rounded shadow-sm p-4" style="width: 100%; max-width: 1200px;">
-                <h2 class="h3 fw-bold text-center mb-4" style="color: #00743e;">Tambah IKU</h2>
+                <h2 class="h3 fw-bold text-center mb-2" style="color: #00743e;">Tambah Sasaran Mandiri</h2>
+                <p class="text-center text-muted small mb-4">
+                    Sasaran yang <strong>lahir di IKU</strong> &mdash; belum ada di Renstra.
+                </p>
 
                 <?php if (session()->getFlashdata('error')): ?>
                     <div class="alert alert-danger"><?= esc(session()->getFlashdata('error')) ?></div>
                 <?php endif; ?>
 
+                <div class="alert alert-light border small">
+                    <i class="fas fa-circle-info me-1"></i>
+                    Pakai layar ini hanya bila sasarannya <strong>belum ada di Renstra</strong> &mdash;
+                    mengubah Renstra menuntut proses tersendiri, IKU tidak.
+                    Kalau sasarannya sudah ada di Renstra, ambil lewat tombol
+                    <strong>Sync</strong> supaya silsilahnya ikut tersimpan.
+                    <br>
+                    Tujuan Renstra wajib dipilih: di Cascading, setiap Sasaran ESS II
+                    bernaung di bawah satu Tujuan Renstra.
+                </div>
+
                 <?php
+                // $iku sengaja TIDAK dikosongkan: controller mengisinya dengan
+                // periode aktif supaya Tahun Mulai/Akhir sudah terisi, dan
+                // daftar tujuannya memang disusun untuk periode itu.
                 $this->setData([
-                    'iku'        => null,
                     'action_url' => base_url('adminopd/iku/save'),
                     'back_url'   => base_url('adminopd/iku'),
                 ]);

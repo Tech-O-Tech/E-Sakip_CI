@@ -570,6 +570,12 @@ class PkRenaksiController extends BaseController
             'opdList'    => ($jenis === 'bupati') ? $this->opdOptions() : [],
             'subRencana' => [],
             'skala'      => $this->skalaSatuan($ctx),
+            // Daftar satuan untuk tiap SUB rencana aksi. Disodorkan sebagai
+            // pilihan, bukan diketik bebas, supaya penulisannya seragam
+            // ("%" vs "persen" vs "Persen") — nilainya sendiri disimpan
+            // sebagai teks agar rencana lama tidak ikut berubah bila master
+            // satuan kelak diubah.
+            'satuanOptions' => $this->satuan->getAllSatuan(),
             'programPk'  => $unitPk,
             'units'      => $unitPk,
             'labelUnitHeader'   => pk_unit_label($ctx['pk_jenis'] ?? null),
@@ -667,6 +673,7 @@ class PkRenaksiController extends BaseController
             'opdList'    => ($jenis === 'bupati') ? $this->opdOptions() : [],
             'subRencana' => $this->targets->getSubRencanaByTarget((int) $id),
             'skala'      => $this->skalaSatuan($detail),
+            'satuanOptions' => $this->satuan->getAllSatuan(),
             // unit anggaran indikator ini (tingkatnya mengikuti pk.jenis)
             'programPk'  => $unitPk,
             'units'      => $unitPk,
@@ -805,11 +812,26 @@ class PkRenaksiController extends BaseController
                     $tw[$q] = $nilai;
                 }
 
+                // Satuan target triwulan sub ini. Disaring dengan pola yang
+                // sama seperti teks lainnya — nilainya datang dari dropdown,
+                // tetapi POST bisa dikarang tanpa membuka form mana pun.
+                $satuan = is_array($item) ? ($item['satuan'] ?? '') : '';
+                $satuan = is_scalar($satuan) ? trim((string) $satuan) : '';
+
+                if ($satuan !== '' && (mb_strlen($satuan) > 50 || ! $aman($satuan))) {
+                    return false;
+                }
+
                 // id sub dipertahankan supaya capaian MONEV yang menempel padanya
                 // tidak putus setiap kali rencana aksi disunting.
                 $idSub = is_array($item) ? (int) ($item['id'] ?? 0) : 0;
 
-                $hasil[$indeksBaris][] = ['id' => max(0, $idSub), 'teks' => $teks, 'tw' => $tw];
+                $hasil[$indeksBaris][] = [
+                    'id'     => max(0, $idSub),
+                    'teks'   => $teks,
+                    'satuan' => $satuan,
+                    'tw'     => $tw,
+                ];
             }
         }
 

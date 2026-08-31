@@ -167,6 +167,42 @@ class IzinSuntingService
         return $b->orderBy('i.diminta_pada', 'ASC')->get()->getResultArray();
     }
 
+    /**
+     * Izin yang SUDAH DISETUJUI dan masih terbuka, lintas dokumen.
+     *
+     * =====================================================================
+     * MENGAPA PERLU DAFTAR TERSENDIRI
+     *
+     * `antrean()` hanya memuat yang berstatus `pending`. Begitu sebuah izin
+     * disetujui, ia LENYAP dari layar Admin Kabupaten — padahal `cabut()`
+     * dan rutenya sudah ada sejak awal, hanya tidak pernah punya tempat untuk
+     * ditekan.
+     *
+     * Akibatnya bukan sekadar tidak rapi. Satu dokumen hanya boleh punya satu
+     * permohonan menggantung; izin yang terlanjur disetujui lalu tidak pernah
+     * ditutup akan MEMBLOKIR seluruh lingkup itu dari permohonan baru, tanpa
+     * seorang pun bisa melihat penyebabnya atau mencabutnya.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function berjalanSemua(?string $modul = null): array
+    {
+        if (! $this->siap()) {
+            return [];
+        }
+
+        $b = $this->db->table(self::TABEL . ' i')
+            ->select('i.*, o.nama_opd')
+            ->join('opd o', 'o.id = i.opd_id', 'left')
+            ->where('i.status', self::STATUS_DISETUJUI);
+
+        if ($modul !== null) {
+            $b->where('i.modul', $modul);
+        }
+
+        return $b->orderBy('i.diputus_pada', 'ASC')->get()->getResultArray();
+    }
+
     public function ambil(int $id): ?array
     {
         if (! $this->siap() || $id <= 0) {

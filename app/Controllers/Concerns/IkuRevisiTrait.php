@@ -91,13 +91,19 @@ trait IkuRevisiTrait
      * Karena itu kuncinya hanya boleh dibuka lewat keputusan tercatat —
      * siapa meminta, alasannya apa, siapa yang menyetujui.
      *
-     * YANG TIDAK IKUT TERBUKA
+     * ARSIP (`superseded`) IKUT BISA DIPERBAIKI
      *
-     * Revisi `superseded` tetap terkunci walau ada izin. Ia sudah digantikan
-     * revisi yang lebih baru; menyuntingnya berarti mengoreksi dokumen yang
-     * bukan lagi acuan siapa pun, sementara yang sedang dipakai dibiarkan
-     * salah. Laporan LAKIP yang sudah difinalkan juga tidak ikut berubah —
-     * angkanya sudah disalin ke snapshot, bukan dibaca ulang dari sini.
+     * Ia sempat dikunci permanen dengan alasan "perbaikannya di revisi yang
+     * berlaku". Itu keliru: arsip-lah yang dibaca LAKIP tahun-tahun lampau,
+     * sehingga salah ketik di sana tetap tercetak pada laporan tahun itu dan
+     * membetulkannya di revisi terkini TIDAK mengubah apa pun.
+     *
+     * Yang membedakannya dari revisi berlaku bukan boleh-tidaknya disunting,
+     * melainkan apa yang terjadi sesudahnya: hasil suntingan revisi berlaku
+     * diterapkan ke IKU berjalan, sedangkan arsip berhenti di arsip.
+     *
+     * Laporan LAKIP yang sudah difinalkan tetap tidak ikut berubah — angkanya
+     * sudah disalin ke snapshot, bukan dibaca ulang dari sini.
      * =======================================================*/
 
     /** Lingkup versi untuk satu revisi IKU; null bila revisinya tidak sah. */
@@ -163,13 +169,20 @@ trait IkuRevisiTrait
             return $kosong;
         }
 
-        if ($status === IkuRevisiModel::STATUS_SUPERSEDED) {
-            return array_merge($kosong, [
-                'terkunci' => true,
-                'alasan'   => 'Revisi ini sudah digantikan revisi yang lebih baru, sehingga '
-                    . 'terkunci permanen. Perbaikan dilakukan pada revisi yang sedang berlaku.',
-            ]);
-        }
+        // =============================================================
+        // ARSIP TIDAK LAGI TERKUNCI PERMANEN
+        //
+        // Dulu 'superseded' berhenti di sini dengan alasan "perbaikan
+        // dilakukan pada revisi yang sedang berlaku". Itu keliru: arsip-lah
+        // yang dibaca LAKIP tahun-tahun lampau. Salah ketik pada versi yang
+        // sudah digantikan tetap tercetak di laporan tahun itu, dan
+        // membetulkannya di revisi terkini TIDAK mengubah apa pun di sana.
+        //
+        // Yang tetap berbeda dari revisi berlaku: hasil suntingan arsip
+        // BERHENTI di arsip — ia tidak pernah diterapkan ke IKU berjalan.
+        // Penanda `arsip` di bawah yang membedakannya.
+        // =============================================================
+        $arsip = $status === IkuRevisiModel::STATUS_SUPERSEDED;
 
         $scope = $this->revisiScope($revisi);
 
@@ -193,8 +206,15 @@ trait IkuRevisiTrait
                 'terkunci'         => false,
                 'izin'             => $izin,
                 'sedang_disunting' => true,
-                'alasan'           => 'Izin sunting sudah disetujui Admin Kabupaten. Perbaiki '
-                    . 'seperlunya, lalu sahkan ulang agar IKU berjalan ikut diperbarui.',
+                // Dipakai layar untuk memilih kalimat DAN tombolnya: arsip
+                // tidak punya langkah "terapkan ke IKU berjalan".
+                'arsip'            => $arsip,
+                'alasan'           => $arsip
+                    ? 'Izin perbaikan arsip sudah disetujui Admin Kabupaten. Perbaikan '
+                      . 'tersimpan pada arsip versi ini dan mengubah bacaan LAKIP '
+                      . 'tahun-tahun yang dipayunginya. IKU berjalan TIDAK ikut berubah.'
+                    : 'Izin sunting sudah disetujui Admin Kabupaten. Perbaiki '
+                      . 'seperlunya, lalu sahkan ulang agar IKU berjalan ikut diperbarui.',
             ]);
         }
 
@@ -212,12 +232,17 @@ trait IkuRevisiTrait
             'terkunci'    => true,
             'izin'        => $izin !== null && ! $untukRevisiIni ? null : $izin,
             'boleh_minta' => $this->bolehMintaIzin() && $izin === null,
+            'arsip'       => $arsip,
             'alasan'      => $izin !== null && ! $untukRevisiIni
                 ? 'Sudah ada permohonan izin sunting berjalan untuk periode ini pada revisi '
                   . 'yang lain. Selesaikan dulu permohonan itu.'
+                : ($arsip
+                ? 'Versi ini sudah digantikan versi yang lebih baru, sehingga terkunci. '
+                  . 'Isinya tetap dibaca LAKIP tahun-tahun yang dipayunginya — ajukan izin '
+                  . 'bila ada yang perlu dibetulkan di sana.'
                 : 'Revisi ini sudah berlaku, sehingga terkunci. Ajukan izin sunting bila ada '
                   . 'yang perlu diperbaiki; setelah disetujui Admin Kabupaten, revisi ini bisa '
-                  . 'disunting seperti biasa.',
+                  . 'disunting seperti biasa.'),
         ]);
     }
 
@@ -456,20 +481,33 @@ trait IkuRevisiTrait
                 ->with('error', 'Tidak ada izin sunting berjalan untuk revisi ini.');
         }
 
+        // ARSIP BERHENTI DI ARSIP. Menerapkan isi versi yang sudah digantikan
+        // ke IKU berjalan berarti memundurkan dokumen yang sedang dipakai ke
+        // keadaan lama — persis kebalikan dari yang dikehendaki. Yang berubah
+        // dari perbaikan arsip hanyalah bacaan LAKIP tahun-tahun yang
+        // dipayunginya, dan itu memang sudah terjadi saat disimpan.
+        $arsip = $revisi['status'] === IkuRevisiModel::STATUS_SUPERSEDED;
+
         try {
             // Urutannya penting: terapkan DULU, tutup izin belakangan. Kalau
             // terbalik dan penerapan gagal, izinnya sudah tertutup sementara
             // arsip dan IKU berjalan berbeda isi — dan tidak ada lagi jalan
             // membetulkannya tanpa memohon izin baru.
-            $this->revisi()->terapkanUlang((int) $id);
+            if (! $arsip) {
+                $this->revisi()->terapkanUlang((int) $id);
+            }
+
             $this->izin()->selesaikan($this->revisiScope($revisi));
         } catch (Throwable $e) {
             return redirect()->to($kembali)->with('error', $e->getMessage());
         }
 
-        return redirect()->to($kembali)->with('success',
-            'Perbaikan diterapkan ke IKU berjalan dan izin sunting ditutup. Laporan LAKIP '
-            . 'yang sudah difinalkan tidak ikut berubah.');
+        return redirect()->to($kembali)->with('success', $arsip
+            ? 'Perbaikan arsip disimpan dan izin ditutup. IKU berjalan TIDAK berubah — '
+              . 'yang menyesuaikan hanyalah bacaan LAKIP tahun-tahun yang dipayungi versi ini. '
+              . 'Laporan LAKIP yang sudah difinalkan tetap memakai angka snapshot-nya.'
+            : 'Perbaikan diterapkan ke IKU berjalan dan izin sunting ditutup. Laporan LAKIP '
+              . 'yang sudah difinalkan tidak ikut berubah.');
     }
 
     private function penggunaRevisi(): ?int
@@ -524,6 +562,27 @@ trait IkuRevisiTrait
                 $konflik[$tahun] = $hasil['pesan'];
             }
         }
+
+        // =============================================================
+        // KEADAAN IZIN IKUT KE DAFTAR
+        //
+        // Panel "Ajukan Izin Sunting" selama ini HANYA ada di halaman detail.
+        // Dari daftar ini, baris berstatus 'berlaku' tidak menawarkan apa pun
+        // selain "Lihat" — sehingga jalan untuk meminta izin tidak pernah
+        // terlihat, dan tampak seolah menu ini memang tidak menyediakannya.
+        //
+        // Dihitung per baris di sini, bukan di view: view tidak boleh
+        // memanggil service, dan aturan "siapa boleh meminta" harus tinggal
+        // di satu tempat yang sama dengan halaman detail.
+        //
+        // Jumlah revisi per lingkup hanya segelintir (satu periode, beberapa
+        // nomor), jadi perulangan ini tidak menimbulkan beban berarti.
+        // =============================================================
+        foreach ($daftar as &$baris) {
+            $baris['izin_keadaan']  = $this->revisiKeadaanIzin($baris);
+            $baris['hapus_keadaan'] = $this->revisiKeadaanHapus($baris);
+        }
+        unset($baris);
 
         return view('iku/revisi_index', [
             'title'          => 'Revisi IKU',
@@ -589,11 +648,37 @@ trait IkuRevisiTrait
             $opsi[$kunci]['bebas']    = $this->revisi()->tahunBerlakuBebas($opdId, $tm, $ta);
         }
 
+        // =============================================================
+        // PILIHAN SYNC LANGSUNG DI FORM PEMBUATAN
+        //
+        // Alur lamanya memutar: buka layar Sync -> ditolak "belum ada draft
+        // yang bisa menampungnya" -> buat revisi -> kembali ke Sync -> pilih
+        // draft tujuan. Empat langkah untuk satu niat, dan langkah pertamanya
+        // adalah penolakan.
+        //
+        // Versi Renstra disodorkan per periode, karena periodenya baru
+        // dipilih di layar (JS yang menyaringnya). Daftarnya hanya versi
+        // `published` — arsip yang memang boleh jadi sumber.
+        //
+        // Lingkup KABUPATEN tidak punya Renstra, jadi tidak ada yang
+        // ditawarkan di sana; layar menyembunyikan bloknya sendiri.
+        // =============================================================
+        $versiRenstra = [];
+
+        if ($opdId !== null) {
+            foreach ($opsi as $kunci => $p) {
+                $versiRenstra[$kunci] = $this->ikuModel->versiRenstraTersedia(
+                    $opdId, (int) $p['tahun_mulai'], (int) $p['tahun_akhir']
+                );
+            }
+        }
+
         return view('iku/revisi_form', [
-            'title'       => 'Buat Revisi IKU',
-            'role'        => session()->get('role'),
-            'periodeOpsi' => $opsi,
-            'baseUrl'     => $this->revisiBaseUrl(),
+            'title'        => 'Buat Revisi IKU',
+            'role'         => session()->get('role'),
+            'periodeOpsi'  => $opsi,
+            'versiRenstra' => $versiRenstra,
+            'baseUrl'      => $this->revisiBaseUrl(),
         ]);
     }
 
@@ -639,14 +724,89 @@ trait IkuRevisiTrait
                 'dibuat_oleh'         => (int) session()->get('user_id') ?: null,
             ]);
 
-            return redirect()->to($this->urlRevisi('/sunting/' . $id))->with(
-                'success',
-                'Draft revisi dibuat berisi salinan IKU yang berlaku sekarang. '
-                . 'IKU berjalan BELUM berubah — silakan sunting lalu sahkan.'
-            );
+            $pesan = 'Draft revisi dibuat berisi salinan IKU yang berlaku sekarang. '
+                . 'IKU berjalan BELUM berubah — silakan sunting lalu sahkan.';
+
+            // Sync menyusul DI DALAM permintaan yang sama bila diminta, supaya
+            // pemakai tidak perlu berpindah layar hanya untuk melakukan hal
+            // yang sudah ia nyatakan niatnya di sini.
+            //
+            // Kegagalannya SENGAJA tidak membatalkan draft: draft-nya sendiri
+            // sudah sah dan berguna. Yang gagal hanya penyalinannya, dan itu
+            // dikatakan apa adanya supaya pemakai tahu harus mengulang lewat
+            // menu Sync — bukan mengira isinya sudah masuk.
+            if ($this->request->getPost('sync_renstra')) {
+                try {
+                    $stat   = $this->syncRenstraKeDraft($id, (int) $periode[0], (int) $periode[1]);
+                    $pesan .= ' ' . $this->pesanHasilSync($stat);
+                } catch (Throwable $e) {
+                    return redirect()->to($this->urlRevisi('/sunting/' . $id))
+                        ->with('success', $pesan)
+                        ->with('warning', 'Draft dibuat, TETAPI penyalinan dari Renstra gagal: '
+                            . $e->getMessage() . ' Ulangi lewat menu Sync dari Renstra.');
+                }
+            }
+
+            return redirect()->to($this->urlRevisi('/sunting/' . $id))->with('success', $pesan);
         } catch (Throwable $e) {
             return redirect()->back()->withInput()->with('error', $e->getMessage());
         }
+    }
+
+    /**
+     * Salin isi Renstra ke sebuah draft revisi yang baru saja dibuat.
+     *
+     * Memakai mesin yang SAMA dengan layar Sync — `getKandidatSync()` untuk
+     * membandingkan, `keranjangSyncPenuh()` untuk memilah baru/berubah, dan
+     * `imporKandidat()` untuk menuliskannya. Menyalin logikanya ke sini akan
+     * melahirkan dua aturan sync yang diam-diam bisa menyimpang.
+     *
+     * Versi Renstra sumber DIVALIDASI terhadap daftar yang sah, bukan
+     * dipercaya dari form: id karangan tidak boleh membuka arsip OPD lain.
+     *
+     * @return array<string,int> statistik untuk pesan hasil
+     */
+    private function syncRenstraKeDraft(int $draftId, int $tahunMulai, int $tahunAkhir): array
+    {
+        $opdId = $this->revisiOpdId();
+
+        if ($opdId === null) {
+            throw new \RuntimeException(
+                'Lingkup kabupaten tidak bersumber dari Renstra, jadi tidak ada yang bisa disalin.'
+            );
+        }
+
+        $tersedia = $this->ikuModel->versiRenstraTersedia($opdId, $tahunMulai, $tahunAkhir);
+
+        if ($tersedia === []) {
+            throw new \RuntimeException(
+                'Belum ada versi Renstra yang ditetapkan pada periode ' . $tahunMulai . '-' . $tahunAkhir . '.'
+            );
+        }
+
+        $diminta = (int) ($this->request->getPost('renstra_versi') ?? 0);
+        $versi   = null;
+
+        foreach ($tersedia as $v) {
+            if ((int) $v['id'] === $diminta) {
+                $versi = $v;
+            }
+        }
+
+        // Tanpa pilihan yang sah, dipakai versi TERBARU — daftarnya sudah
+        // diurutkan version_no DESC. Menolak di sini hanya memaksa pemakai
+        // mengulang form demi memilih yang toh jadi bawaannya.
+        $versi ??= $tersedia[0];
+
+        $kandidat = $this->ikuModel->getKandidatSync(
+            'renstra', $opdId, $tahunMulai, $tahunAkhir, (int) $versi['id']
+        );
+
+        [$pilihan, $perbarui] = $this->keranjangSyncPenuh($kandidat);
+
+        return $this->revisi()->imporKandidat(
+            $draftId, $kandidat, $pilihan, 'renstra', (int) $versi['id'], $perbarui
+        );
     }
 
     /* =========================================================

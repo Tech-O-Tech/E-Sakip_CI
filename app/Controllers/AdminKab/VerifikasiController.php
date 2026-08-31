@@ -140,6 +140,11 @@ class VerifikasiController extends BaseController
             'antrean'      => $antrean,
             'koreksi'      => $koreksi,
             'izinSunting'  => $izin,
+            // Izin yang SUDAH disetujui dan masih terbuka. Tanpa daftar
+            // ini ia lenyap dari layar begitu diputus, dan izin yang tak
+            // pernah ditutup memblokir lingkupnya dari permohonan baru
+            // tanpa seorang pun bisa melihat penyebabnya.
+            'izinBerjalan' => (new IzinSuntingService())->berjalanSemua(),
             'ikuRevisi'    => $ikuRevisi,
             'modulBoleh'   => $modulBoleh,
         ]);

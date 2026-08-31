@@ -358,6 +358,58 @@ class CrosscheckPerubahan extends BaseCommand
         $this->cek('sesudah lompatan, tiap tahun dipayungi tepat satu revisi',
             $kosong === [], implode(',', $kosong));
 
+        // =============================================================
+        // PENGESAHAN DI LUAR URUTAN TAHUN
+        //
+        // sahkan() dulu hanya melihat baris ber-status 'berlaku' dan hanya
+        // menurunkan yang mulai berlakunya LEBIH AWAL — benar selama revisi
+        // disahkan berurutan, runtuh sejak tahun berlaku boleh dipilih bebas.
+        // Mengesahkan revisi yang mulai LEBIH AWAL dari yang sudah berlaku
+        // meninggalkan DUA baris 'berlaku', dan jendela warisan yang tidak
+        // dihitung ulang membuat tahunnya tumpang tindih.
+        //
+        // Terlihat di layar sebagai "Konflik masa berlaku revisi".
+        // =============================================================
+        $bebasLuar = $rev->tahunBerlakuBebas($opd, $TM, $TA);
+
+        if ($bebasLuar !== []) {
+            $lebihAwal = min($bebasLuar);
+
+            $x = $rev->buatDraft(['opd_id' => $opd, 'tahun_mulai' => $TM, 'tahun_akhir' => $TA,
+                'nama' => 'CEK luar urutan', 'berlaku_mulai_tahun' => $lebihAwal]);
+            $rev->ajukan($x, null);
+            $rev->sahkan($x, null);
+
+            $this->cek('sesudah sahkan di luar urutan: tepat SATU revisi berlaku',
+                $this->db->table('iku_revisi')->where('opd_key', $opd)
+                    ->where('tahun_mulai', $TM)->where('tahun_akhir', $TA)
+                    ->where('status', 'berlaku')->countAllResults() === 1);
+
+            $bentrok = [];
+
+            foreach (range($TM, $TA) as $th) {
+                if ($rev->resolveEfektif($opd, $th)['konflik'] !== []) {
+                    $bentrok[] = $th;
+                }
+            }
+
+            $this->cek('  tidak ada tahun yang tumpang tindih',
+                $bentrok === [], implode(',', $bentrok));
+
+            // Yang terkini harus yang mulai berlakunya PALING AKHIR.
+            $terkini = $this->db->table('iku_revisi')->where('opd_key', $opd)
+                ->where('tahun_mulai', $TM)->where('tahun_akhir', $TA)
+                ->where('status', 'berlaku')->get()->getRowArray();
+
+            $paling = $this->db->table('iku_revisi')->where('opd_key', $opd)
+                ->where('tahun_mulai', $TM)->where('tahun_akhir', $TA)
+                ->whereIn('status', ['berlaku', 'superseded'])
+                ->orderBy('berlaku_mulai_tahun', 'DESC')->get()->getRowArray();
+
+            $this->cek('  yang berlaku adalah yang mulai paling akhir',
+                (int) $terkini['id'] === (int) $paling['id']);
+        }
+
         $this->ujiHapus = ['opd' => $opd, 'd1' => $d1, 'd2' => $d2, 'awal' => $awal];
     }
 
@@ -553,6 +605,46 @@ class CrosscheckPerubahan extends BaseCommand
                 $this->db->table('iku_revisi')->where('opd_key', $opd)
                     ->where('tahun_mulai', 2025)->where('tahun_akhir', 2029)
                     ->where('status', 'berlaku')->countAllResults() === 1);
+        }
+
+        // =============================================================
+        // MENGHAPUS VERSI YANG SEDANG BERLAKU
+        //
+        // Jalur ini sempat lolos dari uji: fixture sebelumnya kebetulan selalu
+        // menghapus revisi 'superseded', sehingga cabang yang menerapkan
+        // penerus ke tabel live TIDAK PERNAH dijalankan — dan cabang itu
+        // membuka transaksi bersarang yang ditolak TransaksiAman.
+        //
+        // Sekarang dipaksa: bangun revisi, sahkan sampai BERLAKU, lalu hapus.
+        // =============================================================
+        // Sasarannya adalah revisi yang MEMANG sedang berlaku — bukan yang
+        // baru dibuat lalu diandaikan berlaku. Sejak garis waktu dijahit ulang
+        // sesudah pengesahan, revisi baru belum tentu jadi yang terkini: yang
+        // terkini adalah yang mulai berlakunya paling akhir, siapa pun itu.
+        $berlakuKini = $this->db->table('iku_revisi')->where('opd_key', $opd)
+            ->where('tahun_mulai', 2025)->where('tahun_akhir', 2029)
+            ->where('status', 'berlaku')->get()->getRowArray();
+
+        if ($berlakuKini !== null && $rev->penghalangHapus((int) $berlakuKini['id']) === []) {
+            $b = (int) $berlakuKini['id'];
+
+            $this->cek('revisi uji benar-benar BERLAKU sebelum dihapus',
+                $berlakuKini['status'] === 'berlaku', $berlakuKini['status']);
+
+            $g = $this->galat(fn () => $rev->hapusRevisi($b));
+            $this->cek('menghapus revisi BERLAKU tidak melempar galat', $g === '', mb_substr($g, 0, 60));
+            $this->cek('  versinya benar-benar terhapus',
+                $this->db->table('iku_revisi')->where('id', $b)->countAllResults() === 0);
+            $this->cek('  penerusnya diangkat jadi berlaku',
+                $this->db->table('iku_revisi')->where('opd_key', $opd)
+                    ->where('tahun_mulai', 2025)->where('tahun_akhir', 2029)
+                    ->where('status', 'berlaku')->countAllResults() === 1);
+
+            // IKU berjalan harus tetap punya isi — penerapan penerus ke live
+            // berjalan, bukan gagal diam-diam.
+            $this->cek('  IKU berjalan tetap berisi sesudah penghapusan',
+                $this->db->table('iku_sasaran')->where('opd_id', $opd)
+                    ->where('tahun_mulai', 2025)->countAllResults() > 0);
         }
 
         // Revisi 'menunggu' ditolak.

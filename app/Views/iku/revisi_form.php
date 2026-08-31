@@ -95,6 +95,64 @@ $tahunIni = (int) date('Y');
                       placeholder="Alasan revisi, ringkasan perubahan, dsb."><?= esc(old('catatan') ?? '') ?></textarea>
         </div>
 
+        <?php /* =====================================================================
+                 SYNC DARI RENSTRA, LANGSUNG DI SINI
+
+                 Alur lamanya memutar: buka layar Sync -> ditolak "belum ada draft
+                 yang bisa menampungnya" -> buat revisi -> kembali ke Sync -> pilih
+                 draft tujuan. Empat langkah untuk satu niat, dan langkah pertamanya
+                 adalah penolakan.
+
+                 Blok ini hanya dirender bila memang ADA versi Renstra yang bisa
+                 disalin. Lingkup kabupaten tidak bersumber dari Renstra, jadi di
+                 sana ia tidak muncul sama sekali.
+            ===================================================================== */ ?>
+        <?php $versiRenstra = $versiRenstra ?? []; ?>
+        <?php $adaVersi = array_filter($versiRenstra); ?>
+
+        <?php if (! empty($adaVersi)): ?>
+            <div class="col-12">
+                <div class="border rounded p-3 bg-light">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" value="1"
+                               name="sync_renstra" id="sync_renstra"
+                               <?= old('sync_renstra') ? 'checked' : '' ?>>
+                        <label class="form-check-label fw-semibold" for="sync_renstra">
+                            Sekalian salin isi Renstra ke draft ini
+                        </label>
+                    </div>
+                    <div class="form-text mb-2">
+                        Sasaran, indikator, satuan, dan target diambil dari versi Renstra yang
+                        Anda pilih. Keterangan yang sudah Anda ketik di IKU — definisi operasional,
+                        rumusan, sumber data, penanggung jawab — <strong>tidak ikut tertimpa</strong>.
+                        Hasilnya masuk ke draft ini, bukan ke IKU berjalan.
+                    </div>
+
+                    <label class="form-label fw-semibold mb-1">Versi Renstra yang disalin</label>
+                    <select name="renstra_versi" id="renstra_versi" class="form-select" disabled>
+                        <option value="">— tidak ada versi pada periode ini —</option>
+                    </select>
+                    <div class="form-text">
+                        IKU disalin <strong>sekali</strong> dari sumber ini lalu hidup sendiri —
+                        Renstra yang berubah kemudian tidak ikut mengubah IKU.
+                    </div>
+                </div>
+            </div>
+
+            <?php /* Peta versi per periode, dibaca JS saat periodenya berganti.
+                     Ditaruh sebagai data JSON, bukan dirangkai ke dalam skrip:
+                     label versi berisi teks bebas dari pengguna. */ ?>
+            <script type="application/json" id="peta-versi-renstra">
+                <?= json_encode(array_map(static function (array $daftar): array {
+                    return array_map(static fn (array $v): array => [
+                        'id'    => (int) $v['id'],
+                        'label' => 'V' . $v['version_no'] . ' — ' . (string) $v['label']
+                            . ' (' . (int) $v['jumlah_sasaran'] . ' sasaran)',
+                    ], $daftar);
+                }, $versiRenstra), JSON_UNESCAPED_UNICODE) ?>
+            </script>
+        <?php endif; ?>
+
         <div class="col-12 d-flex gap-2">
             <button class="btn btn-success">
                 <i class="fa-solid fa-floppy-disk me-1"></i>Simpan sebagai Draft
@@ -164,6 +222,55 @@ $tahunIni = (int) date('Y');
 
             periode.addEventListener('change', isiTahun);
             isiTahun();
+
+            // Daftar versi Renstra mengikuti periode yang dipilih. Tanpa ini,
+            // pemakai bisa mengirim versi milik periode LAIN — dan meski server
+            // menolaknya (versiRenstraTersedia disaring per periode), penolakan
+            // itu datang sesudah seluruh form diisi.
+            const petaEl = document.getElementById('peta-versi-renstra');
+            const pilihVersi = document.getElementById('renstra_versi');
+            const centang = document.getElementById('sync_renstra');
+
+            if (petaEl && pilihVersi) {
+                let peta = {};
+                try { peta = JSON.parse(petaEl.textContent) || {}; } catch (e) { peta = {}; }
+
+                function isiVersi() {
+                    const kunci = periode.value;
+                    const daftar = peta[kunci] || [];
+
+                    pilihVersi.innerHTML = '';
+
+                    if (!daftar.length) {
+                        const o = document.createElement('option');
+                        o.value = '';
+                        o.textContent = '— tidak ada versi Renstra pada periode ini —';
+                        pilihVersi.appendChild(o);
+                        pilihVersi.disabled = true;
+                        if (centang) { centang.checked = false; centang.disabled = true; }
+                        return;
+                    }
+
+                    daftar.forEach(function (v) {
+                        const o = document.createElement('option');
+                        o.value = v.id;
+                        o.textContent = v.label;
+                        pilihVersi.appendChild(o);
+                    });
+
+                    if (centang) centang.disabled = false;
+                    // Dropdown baru bisa dipakai saat penyalinannya memang dicentang.
+                    pilihVersi.disabled = centang ? !centang.checked : false;
+                }
+
+                periode.addEventListener('change', isiVersi);
+                if (centang) {
+                    centang.addEventListener('change', function () {
+                        pilihVersi.disabled = !centang.checked;
+                    });
+                }
+                isiVersi();
+            }
         })();
     </script>
 <?php endif; ?>

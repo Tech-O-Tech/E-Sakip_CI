@@ -132,15 +132,22 @@ $aksiIzin    = base_url($baseUrl . '/revisi/izin');
 ?>
 
 <?php if (! empty($keadaanIzin['sedang_disunting'])): ?>
+    <?php /* Arsip dan revisi berlaku sama-sama boleh diperbaiki di bawah izin,
+             tetapi AKIBATNYA berbeda tegas — dan tombolnya harus jujur soal itu.
+             Arsip tidak pernah diterapkan ke IKU berjalan; menerapkannya justru
+             memundurkan dokumen yang sedang dipakai ke keadaan lama. */ ?>
+    <?php $izinArsip = ! empty($keadaanIzin['arsip']); ?>
     <div class="alert alert-warning">
         <div class="fw-semibold mb-1">
-            <i class="fa-solid fa-unlock me-1"></i>Revisi ini sedang terbuka untuk diperbaiki
+            <i class="fa-solid fa-unlock me-1"></i>
+            <?= $izinArsip
+                ? 'Arsip versi ini sedang terbuka untuk dibetulkan'
+                : 'Revisi ini sedang terbuka untuk diperbaiki' ?>
         </div>
         <div class="small mb-2"><?= esc($keadaanIzin['alasan'] ?? '') ?></div>
 
         <?php /* Dua langkah terpisah dengan sengaja: menyimpan boleh berkali-kali,
-                 sedangkan menerapkan ke IKU berjalan adalah keputusan tersendiri
-                 yang menutup izinnya. */ ?>
+                 sedangkan menutup izin adalah keputusan tersendiri. */ ?>
         <div class="d-flex flex-wrap gap-2">
             <a class="btn btn-primary btn-sm"
                href="<?= base_url($baseUrl . '/revisi/sunting/' . (int) $revisi['id']) ?>">
@@ -148,10 +155,20 @@ $aksiIzin    = base_url($baseUrl . '/revisi/izin');
             </a>
 
             <form method="post" action="<?= $aksiIzin . '/selesai/' . (int) $revisi['id'] ?>"
-                  onsubmit="return confirm('Terapkan perbaikan ke IKU berjalan dan tutup izin sunting?\n\nIKU berjalan akan mengikuti isi arsip revisi ini. Laporan LAKIP yang sudah difinalkan tidak ikut berubah.');">
+                  <?php /* Pesannya disusun di PHP lalu di-json_encode, bukan dirangkai
+                           langsung di dalam atribut: "\n" pada string PHP berkutip ganda
+                           menghasilkan baris baru sungguhan untuk confirm(), dan
+                           json_encode yang mengurus kutip serta escape-nya. */ ?>
+                  onsubmit="return confirm(<?= json_encode($izinArsip
+                      ? "Tutup izin perbaikan arsip ini?\n\nIKU berjalan TIDAK berubah."
+                        . " Yang menyesuaikan hanyalah bacaan LAKIP tahun-tahun yang dipayungi versi ini."
+                      : "Terapkan perbaikan ke IKU berjalan dan tutup izin sunting?\n\nIKU berjalan"
+                        . " akan mengikuti isi arsip revisi ini. Laporan LAKIP yang sudah difinalkan"
+                        . " tidak ikut berubah.") ?>);">
                 <?= csrf_field() ?>
                 <button class="btn btn-success btn-sm">
-                    <i class="fa-solid fa-check me-1"></i>Selesai &amp; Terapkan ke IKU Berjalan
+                    <i class="fa-solid fa-check me-1"></i>
+                    <?= $izinArsip ? 'Selesai &amp; Tutup Izin' : 'Selesai &amp; Terapkan ke IKU Berjalan' ?>
                 </button>
             </form>
         </div>

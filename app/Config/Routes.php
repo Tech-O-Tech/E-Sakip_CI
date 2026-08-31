@@ -197,6 +197,10 @@ $routes->group(
         $routes->post('iku/revisi/izin/tarik/(:num)', 'AdminKab\IkuController::revisiTarikIzin/$1');
         $routes->post('iku/revisi/izin/selesai/(:num)', 'AdminKab\IkuController::revisiSelesaikanIzin/$1');
 
+        // Permohonan HAPUS versi. Keputusannya di antrean verifikasi yang
+        // sama dengan izin sunting; menyetujui berarti menghapus.
+        $routes->post('iku/revisi/hapus/ajukan/(:num)', 'AdminKab\IkuController::revisiMintaHapus/$1');
+
         $routes->post('iku/revisi/berlaku/(:num)', 'AdminKab\IkuController::revisiUbahBerlaku/$1');
         $routes->post('iku/revisi/tarik/(:num)', 'AdminKab\IkuController::revisiTarik/$1');
         $routes->post('iku/ajukan-pengesahan', 'AdminKab\IkuController::ajukanPengesahan');
@@ -524,6 +528,7 @@ $routes->group('adminopd', ['filter' => 'auth:admin_opd,admin,admin_kecamatan'],
 
     // Izin sunting revisi IKU yang sudah berlaku (lihat catatan di blok AdminKab).
     $routes->post('iku/revisi/izin/ajukan/(:num)', 'AdminOpd\IkuController::revisiMintaIzin/$1');
+    $routes->post('iku/revisi/hapus/ajukan/(:num)', 'AdminOpd\IkuController::revisiMintaHapus/$1');
     $routes->post('iku/revisi/izin/tarik/(:num)', 'AdminOpd\IkuController::revisiTarikIzin/$1');
     $routes->post('iku/revisi/izin/selesai/(:num)', 'AdminOpd\IkuController::revisiSelesaikanIzin/$1');
 

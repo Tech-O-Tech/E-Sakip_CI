@@ -697,6 +697,65 @@ class VersiRenderCheck extends BaseCommand
                         'keadaanIzin' => $keadaanKosong,
                     ]);
 
+                // ---------------------------------------------------------
+                // Blok-blok yang lahir 2026-08-31. Sama seperti panel izin di
+                // atas: tanpa fixture sendiri, ketiganya TIDAK tersentuh
+                // render mana pun, karena masing-masing hanya muncul saat satu
+                // variabel tertentu terisi.
+                // ---------------------------------------------------------
+
+                // "Tambah Sasaran" hanya dirender bila ada Tujuan Renstra yang
+                // bisa dipilih; fixture lain tidak memasoknya sama sekali.
+                $uji['iku revisi (sunting + tambah sasaran)'] = ['__view' => 'iku/revisi_sunting']
+                    + array_merge($uji['iku revisi (sunting draft)'], [
+                        'tujuanOptions' => [
+                            ['id' => 3, 'tujuan' => 'Meningkatnya tata kelola pemerintahan'],
+                        ],
+                    ]);
+
+                // Pemilih "Ubah Tahun" beserta tahun yang sudah terpakai.
+                $uji['iku revisi (ubah tahun berlaku)'] = ['__view' => 'iku/revisi_lihat']
+                    + array_merge($dasarLihat, [
+                        'keadaanIzin'      => $keadaanKosong,
+                        'bolehUbahBerlaku' => true,
+                        'tahunBebas'       => [2027, 2028],
+                        'tahunTerpakai'    => [
+                            2026 => ['id' => 5, 'nomor' => '1', 'nama' => 'Revisi ke-1', 'status' => 'berlaku'],
+                        ],
+                    ]);
+
+                $uji['iku revisi (boleh minta hapus)'] = ['__view' => 'iku/revisi_lihat']
+                    + array_merge($dasarLihat, [
+                        'keadaanIzin'  => $keadaanKosong,
+                        'keadaanHapus' => [
+                            'boleh_minta' => true, 'permohonan' => null,
+                            'penghalang' => [], 'boleh_tarik' => false,
+                            'alasan' => 'Penghapusan versi tidak bisa dibatalkan.',
+                        ],
+                    ]);
+
+                $uji['iku revisi (permohonan hapus menunggu)'] = ['__view' => 'iku/revisi_lihat']
+                    + array_merge($dasarLihat, [
+                        'keadaanIzin'  => $keadaanKosong,
+                        'keadaanHapus' => [
+                            'boleh_minta' => false,
+                            'permohonan'  => $izinContoh + ['status' => 'pending'],
+                            'penghalang'  => [], 'boleh_tarik' => true,
+                            'alasan' => 'Menunggu keputusan Admin Kabupaten.',
+                        ],
+                    ]);
+
+                $uji['iku revisi (hapus terhalang rujukan)'] = ['__view' => 'iku/revisi_lihat']
+                    + array_merge($dasarLihat, [
+                        'keadaanIzin'  => $keadaanKosong,
+                        'keadaanHapus' => [
+                            'boleh_minta' => false, 'permohonan' => null,
+                            'penghalang'  => ['baris realisasi LAKIP' => 4],
+                            'boleh_tarik' => false,
+                            'alasan' => 'Belum bisa dihapus — masih dirujuk: 4 baris realisasi LAKIP.',
+                        ],
+                    ]);
+
                 // Layar sync: tiga keadaan yang perilakunya berbeda tegas.
                 // Yang ketiga (sudah ada revisi berlaku) mengubah muara hasil
                 // sync dari tabel berjalan menjadi draft revisi — cabang yang

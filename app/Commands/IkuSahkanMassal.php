@@ -63,11 +63,24 @@ class IkuSahkanMassal extends BaseCommand
         CLI::write('Mode       : ' . ($kerjakan ? CLI::color('KERJAKAN', 'red') : CLI::color('pratinjau', 'yellow')));
         CLI::newLine();
 
+        // =============================================================
+        // LINGKUP KABUPATEN IKUT DIBEKUKAN
+        //
+        // Kueri ini semula meng-INNER-join `opd` dan menyaring
+        // `s.opd_id IS NOT NULL`, sehingga lingkup KABUPATEN — yang justru
+        // ditandai `iku_sasaran.opd_id IS NULL` — tidak pernah masuk daftar.
+        // Akibatnya `opd_key = 0` tidak punya satu pun revisi, dan karena
+        // LakipSourceService::pilihanVersiIku() mencari revisi ber-opd_key 0
+        // untuk mode kabupaten, LAKIP Kabupaten SELAMANYA jatuh ke RPJMD:
+        // IKU Kabupaten tersusun lengkap tapi tidak pernah bisa dinilai.
+        //
+        // Join dilonggarkan jadi LEFT dan saringannya dibuang; nama lingkup
+        // kabupaten diisi di bawah karena tidak ada barisnya di tabel `opd`.
+        // =============================================================
         $b = $db->table('iku_sasaran s')
             ->select('s.opd_id, o.nama_opd, COUNT(DISTINCT s.id) AS sasaran, COUNT(i.id) AS indikator', false)
-            ->join('opd o', 'o.id = s.opd_id')
+            ->join('opd o', 'o.id = s.opd_id', 'left')
             ->join('iku_indikator i', 'i.iku_sasaran_id = s.id AND i.dihentikan_pada IS NULL', 'left', false)
-            ->where('s.opd_id IS NOT NULL', null, false)
             ->where('s.tahun_mulai', $tm)
             ->where('s.tahun_akhir', $ta)
             ->where('s.dihentikan_pada IS NULL', null, false)
@@ -95,10 +108,15 @@ class IkuSahkanMassal extends BaseCommand
         $dibuat = 0; $dilewati = 0; $kosong = 0;
 
         foreach ($daftar as $d) {
-            $opdId = (int) $d['opd_id'];
-            $nama  = mb_substr($d['nama_opd'], 0, 42);
+            // opd_id NULL = lingkup KABUPATEN. Dibedakan dari 0 dengan sengaja:
+            // pastikanBaseline() memakai null sebagai penanda kabupaten, dan
+            // (int) NULL menghasilkan 0 yang akan dibaca sebagai "OPD nomor 0".
+            $opdId = $d['opd_id'] !== null ? (int) $d['opd_id'] : null;
+            $nama  = mb_substr($d['nama_opd'] ?? 'IKU Kabupaten', 0, 42);
 
-            $sudah = $db->table('iku_revisi')->where('opd_key', $opdId)->countAllResults();
+            $sudah = $db->table('iku_revisi')
+                ->where('opd_key', $opdId ?? 0)
+                ->countAllResults();
 
             if ($sudah > 0) {
                 CLI::write(sprintf('  %-44s %s', $nama, CLI::color('sudah punya revisi — dilewati', 'dark_gray')));

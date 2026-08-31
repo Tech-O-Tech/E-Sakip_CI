@@ -274,6 +274,135 @@ trait IkuRevisiTrait
             . 'bisa disunting seperti biasa.');
     }
 
+    /**
+     * Keadaan permohonan HAPUS pada sebuah revisi.
+     *
+     * Dipisah dari revisiKeadaanIzin() dengan sengaja: yang itu menjawab
+     * "boleh disunting atau tidak", yang ini "boleh dihapus atau tidak".
+     * Menggabungkannya berarti satu keputusan menjawab dua pertanyaan.
+     *
+     * @return array{boleh_minta:bool, permohonan:?array, penghalang:array, alasan:?string}
+     */
+    private function revisiKeadaanHapus(?array $revisi): array
+    {
+        $kosong = ['boleh_minta' => false, 'permohonan' => null, 'penghalang' => [], 'alasan' => null];
+
+        if ($revisi === null || ! $this->izin()->siap()) {
+            return $kosong;
+        }
+
+        // Draft milik penyusunnya sendiri dan belum pernah mengikat siapa pun;
+        // membuangnya sudah dilayani tombol "Batalkan" tanpa perlu izin.
+        if ($revisi['status'] === IkuRevisiModel::STATUS_DRAFT) {
+            return array_merge($kosong, [
+                'alasan' => 'Draft dibatalkan lewat tombol Batalkan — tidak perlu izin Admin Kabupaten.',
+            ]);
+        }
+
+        if ($revisi['status'] === IkuRevisiModel::STATUS_MENUNGGU) {
+            return array_merge($kosong, [
+                'alasan' => 'Revisi ini sedang menunggu keputusan Admin Kabupaten. '
+                    . 'Tarik pengajuannya dulu.',
+            ]);
+        }
+
+        $scope = $this->revisiScope($revisi);
+
+        if ($scope === null) {
+            return $kosong;
+        }
+
+        $hapus = $this->izin()->berjalan($scope, IzinSuntingService::JENIS_HAPUS);
+
+        $untukRevisiIni = $hapus !== null
+            && (int) ($hapus['version_id'] ?? 0) === (int) $revisi['id'];
+
+        if ($untukRevisiIni) {
+            return array_merge($kosong, [
+                'permohonan' => $hapus,
+                // Yang boleh menarik adalah pihak yang boleh mengajukan —
+                // bukan disandarkan pada kewenangan lain yang kebetulan ada
+                // di layar yang sama.
+                'boleh_tarik' => $this->bolehMintaIzin()
+                    && $hapus['status'] === IzinSuntingService::STATUS_PENDING,
+                'alasan'      => 'Permohonan penghapusan sedang menunggu keputusan Admin Kabupaten.',
+            ]);
+        }
+
+        // Penghalang dihitung SEKARANG, bukan nanti saat disetujui: memohon
+        // penghapusan yang sudah pasti ditolak hanya membuang waktu dua orang.
+        $penghalang = $this->revisi()->penghalangHapus((int) $revisi['id']);
+
+        if ($penghalang !== []) {
+            $rinci = [];
+
+            foreach ($penghalang as $apa => $n) {
+                $rinci[] = $n . ' ' . $apa;
+            }
+
+            return array_merge($kosong, [
+                'penghalang' => $penghalang,
+                'alasan'     => 'Belum bisa dihapus — masih dirujuk: ' . implode('; ', $rinci) . '.',
+            ]);
+        }
+
+        // Permohonan lain (mis. izin sunting) yang masih menggantung menutup
+        // pintu ini: satu dokumen, satu keputusan pada satu waktu.
+        $lain = $this->izin()->berjalan($scope, null);
+
+        if ($lain !== null) {
+            return array_merge($kosong, [
+                'alasan' => 'Masih ada permohonan lain yang berjalan pada periode ini. '
+                    . 'Selesaikan dulu permohonan itu.',
+            ]);
+        }
+
+        return array_merge($kosong, [
+            'boleh_minta' => $this->bolehMintaIzin(),
+            'alasan'      => 'Penghapusan versi tidak bisa dibatalkan, jadi harus disetujui '
+                . 'Admin Kabupaten lebih dulu.',
+        ]);
+    }
+
+    /** POST: OPD memohon sebuah versi IKU dihapus. */
+    public function revisiMintaHapus($id = null)
+    {
+        if (! $this->bolehMintaIzin()) {
+            return redirect()->to($this->urlRevisi())
+                ->with('error', 'Anda tidak berwenang mengajukan penghapusan versi IKU.');
+        }
+
+        $revisi = $this->revisi()->ambil((int) $id);
+
+        if (! $this->revisiMilikLingkup($revisi)) {
+            return redirect()->to($this->urlRevisi())->with('error', 'Revisi tidak ditemukan.');
+        }
+
+        $kembali = $this->urlRevisi('/lihat/' . (int) $id);
+        $keadaan = $this->revisiKeadaanHapus($revisi);
+
+        if (empty($keadaan['boleh_minta'])) {
+            return redirect()->to($kembali)->with('error',
+                $keadaan['alasan'] ?? 'Versi ini tidak dalam keadaan bisa dimohonkan penghapusan.');
+        }
+
+        try {
+            $this->izin()->ajukan(
+                $this->revisiScope($revisi),
+                trim((string) $this->request->getPost('alasan')),
+                $this->penggunaRevisi(),
+                (int) $revisi['id'],
+                IzinSuntingService::JENIS_HAPUS
+            );
+        } catch (Throwable $e) {
+            return redirect()->to($kembali)->with('error', $e->getMessage());
+        }
+
+        return redirect()->to($kembali)->with('success',
+            'Permohonan penghapusan dikirim. Versi ini baru akan dihapus setelah '
+            . 'disetujui Admin Kabupaten.');
+    }
+
     /** POST: menarik kembali permohonan yang belum diputus. */
     public function revisiTarikIzin($id = null)
     {
@@ -435,12 +564,35 @@ trait IkuRevisiTrait
                 ->with('error', 'Anda tidak berwenang membuat revisi IKU.');
         }
 
-        $opdId = $this->revisiOpdId();
+        $opdId  = $this->revisiOpdId();
+        $opsi   = $this->ikuModel->getPeriodeOptions($opdId === null ? 'kabupaten' : 'opd', $opdId);
+
+        // =============================================================
+        // TAHUN YANG SUDAH TERPAKAI IKUT DIKIRIM KE LAYAR
+        //
+        // Model sudah lama menyediakan tahunBerlakuTerpakai() justru untuk
+        // ini — "menyodorkan tahun yang masih kosong, dan menyebut revisi mana
+        // yang menghalangi" — tetapi layarnya tidak pernah memanggilnya.
+        // Akibatnya daftar tahun tampak bebas seluruhnya, pemakai memilih
+        // tahun yang ternyata sudah dipakai, dan baru ditolak SESUDAH seluruh
+        // form diisi.
+        //
+        // Tahun PERTAMA periode selalu jatah "Kondisi Awal" dan tidak pernah
+        // bisa dipakai revisi bernomor; itu pun ditandai di layar, bukan
+        // dibiarkan jadi pilihan yang pasti gagal.
+        // =============================================================
+        foreach ($opsi as $kunci => $p) {
+            $tm = (int) $p['tahun_mulai'];
+            $ta = (int) $p['tahun_akhir'];
+
+            $opsi[$kunci]['terpakai'] = $this->revisi()->tahunBerlakuTerpakai($opdId, $tm, $ta);
+            $opsi[$kunci]['bebas']    = $this->revisi()->tahunBerlakuBebas($opdId, $tm, $ta);
+        }
 
         return view('iku/revisi_form', [
             'title'       => 'Buat Revisi IKU',
             'role'        => session()->get('role'),
-            'periodeOpsi' => $this->ikuModel->getPeriodeOptions($opdId === null ? 'kabupaten' : 'opd', $opdId),
+            'periodeOpsi' => $opsi,
             'baseUrl'     => $this->revisiBaseUrl(),
         ]);
     }
@@ -523,11 +675,25 @@ trait IkuRevisiTrait
             'years'   => range((int) $revisi['tahun_mulai'], (int) $revisi['tahun_akhir']),
             'baseUrl' => $this->revisiBaseUrl(),
             'keadaanIzin'    => $this->revisiKeadaanIzin($revisi),
-            // Kondisi Awal (nomor 0) adalah jangkar awal periode; tahun
-            // berlakunya tidak pernah bisa digeser.
+            'keadaanHapus'   => $this->revisiKeadaanHapus($revisi),
+            // Tahun berlaku bisa diubah pada revisi mana pun yang masih hidup
+            // — draft maupun yang sedang berlaku, Kondisi Awal termasuk.
+            //
+            // SENGAJA tidak memakai revisiBolehDisunting(): izin sunting
+            // menjaga ISI arsip, dan tahun berlaku bukan isi. Ia keterangan
+            // "dokumen ini menilai tahun yang mana" — pernyataan administratif
+            // yang justru sering perlu dibetulkan tanpa membongkar arsipnya.
+            // Salah tahun tetap tertahan di satu tempat: pemeriksaan bentrok
+            // saat disimpan.
             'bolehUbahBerlaku' => $this->bolehRevisi()
-                && (int) $revisi['nomor'] !== 0
-                && $this->revisiBolehDisunting($revisi),
+                && in_array($revisi['status'], [
+                    IkuRevisiModel::STATUS_DRAFT,
+                    IkuRevisiModel::STATUS_BERLAKU,
+                    // Versi lama tetap dokumen resmi bagi tahun yang
+                    // dipayunginya; masa berlakunya yang telanjur salah harus
+                    // bisa dibetulkan. Lihat ubahTahunBerlaku().
+                    IkuRevisiModel::STATUS_SUPERSEDED,
+                ], true),
 
             // Tahun yang masih kosong pada lingkup ini + siapa memakai yang
             // lain. Dropdown hanya menawarkan yang bebas, jadi bentrok
@@ -578,11 +744,41 @@ trait IkuRevisiTrait
             'years'          => range((int) $revisi['tahun_mulai'], (int) $revisi['tahun_akhir']),
             'satuan_options' => $this->ikuModel->getSatuanOptions(),
             'indikatorLive'  => $this->indikatorLiveUntukLineage($revisi),
+            // Untuk kartu "Sasaran baru": sasaran mandiri WAJIB menyebut
+            // tujuan Renstra penaungnya. Lingkup kabupaten tidak punya Renstra
+            // sehingga daftarnya kosong — dan kartu sasaran baru pun tidak
+            // ditawarkan di sana.
+            'tujuanOptions'  => $this->tujuanUntukSasaranBaru($revisi),
             'bolehSahkan'    => $this->bolehSahkanRevisi(),
             'perluVerifikasi' => $this->revisiPerluVerifikasi(),
             'baseUrl'        => $this->revisiBaseUrl(),
             'keadaanIzin'    => $keadaanIzin,
         ]);
+    }
+
+    /**
+     * Tujuan Renstra penaung sasaran mandiri yang lahir di dalam revisi ini.
+     *
+     * Kosong untuk lingkup KABUPATEN: IKU Kabupaten bersandar pada RPJMD, dan
+     * `tujuanRenstraOpd()` mencapai kepemilikan lewat `renstra_sasaran.opd_id`
+     * yang di sana memang tidak ada. Layar membaca daftar kosong ini sebagai
+     * "kartu sasaran baru tidak ditawarkan", bukan sebagai galat.
+     *
+     * @return array<int, array{id:int, tujuan:string}>
+     */
+    private function tujuanUntukSasaranBaru(array $revisi): array
+    {
+        $opd = $this->revisiOpdId();
+
+        if ($opd === null) {
+            return [];
+        }
+
+        return $this->ikuModel->tujuanRenstraOpd(
+            $opd,
+            (int) $revisi['tahun_mulai'],
+            (int) $revisi['tahun_akhir']
+        );
     }
 
     /**
@@ -639,11 +835,37 @@ trait IkuRevisiTrait
         $baris = (array) ($this->request->getPost('baris') ?? []);
 
         try {
+            $sasaranBaru = (array) ($this->request->getPost('sasaran_baru') ?? []);
+
+            // Sasaran yang teksnya sudah ada di RENSTRA periode ini ditolak di
+            // sini, bukan di model: penjaganya milik IkuModel, dan alasannya
+            // sama dengan pintu mandiri lama — kalau sasarannya memang ada di
+            // Renstra, jalan yang benar adalah Sync, sebab Sync-lah yang
+            // menyimpan silsilahnya. Mengetiknya di sini melahirkan sasaran
+            // kembar tanpa jejak asal.
+            if ($sasaranBaru !== [] && ($opd = $this->revisiOpdId()) !== null) {
+                foreach ($sasaranBaru as $satu) {
+                    $teks = trim((string) ($satu['sasaran'] ?? ''));
+
+                    if ($teks !== '' && $this->ikuModel->sasaranAdaDiRenstra(
+                        $opd, (int) $revisi['tahun_mulai'], (int) $revisi['tahun_akhir'], $teks
+                    )) {
+                        return redirect()->back()->withInput()->with(
+                            'error',
+                            'Sasaran "' . mb_substr($teks, 0, 60) . '" SUDAH ADA di Renstra periode ini. '
+                            . 'Ambil lewat tombol Sync supaya silsilahnya ikut tersimpan — '
+                            . 'mengetiknya di sini akan melahirkan sasaran kembar.'
+                        );
+                    }
+                }
+            }
+
             $this->revisi()->simpanSuntinganDraft(
                 $revisiId,
                 $baris,
                 $this->request->getPost('baru') ?? [],
-                $bawahIzin
+                $bawahIzin,
+                $sasaranBaru
             );
 
             // Menyunting di bawah izin TIDAK langsung mengubah IKU berjalan.
@@ -692,13 +914,10 @@ trait IkuRevisiTrait
             return redirect()->to($this->urlRevisi())->with('error', 'Revisi tidak ditemukan.');
         }
 
-        if (! $this->revisiBolehDisunting($revisi)) {
-            $alasan = $this->revisiKeadaanIzin($revisi)['alasan']
-                ?? 'Revisi ini terkunci. Ajukan izin sunting dulu untuk mengubah tahun berlakunya.';
-
-            return redirect()->to($this->urlRevisi('/lihat/' . $revisiId))->with('error', $alasan);
-        }
-
+        // Izin sunting SENGAJA tidak diminta di sini — lihat catatan pada
+        // 'bolehUbahBerlaku' di revisiLihat(). Yang dijaga izin adalah isi
+        // arsip; tahun berlaku bukan isi. Revisi yang sudah tidak hidup
+        // (superseded/batal/menunggu) tetap ditolak oleh model.
         $tahunBaru = (int) $this->request->getPost('berlaku_mulai_tahun');
 
         try {
@@ -708,10 +927,17 @@ trait IkuRevisiTrait
                 ? 'Tahun berlaku tidak berubah.'
                 : 'Tahun mulai berlaku diubah dari ' . $hasil['dari'] . ' menjadi ' . $hasil['ke'] . '.'
                     . ($hasil['digeser'] !== []
-                        ? ' Masa berlaku revisi sebelumnya ikut disesuaikan.'
+                        ? ' Masa berlaku ' . count($hasil['digeser']) . ' revisi lain ikut dijahit ulang.'
                         : '');
 
-            return redirect()->to($this->urlRevisi('/lihat/' . $revisiId))->with('success', $pesan);
+            $keluar = redirect()->to($this->urlRevisi('/lihat/' . $revisiId));
+
+            // Awal periode yang jadi tanpa payung bukan galat — perubahannya
+            // tetap tersimpan — tetapi harus dikatakan, bukan ditemukan sendiri
+            // berbulan kemudian saat LAKIP disusun.
+            return empty($hasil['peringatan'])
+                ? $keluar->with('success', $pesan)
+                : $keluar->with('success', $pesan)->with('warning', $hasil['peringatan']);
         } catch (Throwable $e) {
             return redirect()->to($this->urlRevisi('/lihat/' . $revisiId))->with('error', $e->getMessage());
         }

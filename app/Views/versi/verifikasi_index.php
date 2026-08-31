@@ -151,13 +151,25 @@ $labelModul = static fn (string $m): string => match ($m) {
                     </thead>
                     <tbody>
                         <?php foreach ($izinSunting as $z): ?>
-                            <tr>
+                            <?php
+                            /* Permohonan HAPUS menumpang antrean yang sama.
+                               Ia WAJIB terbaca berbeda: menyetujuinya berarti
+                               MENGHAPUS versi, bukan membuka kunci — dan itu
+                               tidak bisa dibatalkan. */
+                            $iniHapus = ($z['jenis'] ?? 'sunting') === 'hapus';
+                            ?>
+                            <tr class="<?= $iniHapus ? 'table-danger' : '' ?>">
                                 <td>
                                     <div class="fw-semibold"><?= esc($z['nama_opd'] ?? ('OPD #' . (int) $z['opd_key'])) ?></div>
                                     <div class="text-secondary sel-kecil">
                                         <?= esc(strtoupper($z['modul'])) ?>
                                         <?= (int) $z['periode_mulai'] ?>&ndash;<?= (int) $z['periode_akhir'] ?>
                                     </div>
+                                    <?php if ($iniHapus): ?>
+                                        <span class="badge bg-danger mt-1">
+                                            <i class="fa-solid fa-trash me-1"></i>PERMOHONAN HAPUS VERSI
+                                        </span>
+                                    <?php endif; ?>
                                 </td>
                                 <td><?= esc($z['alasan']) ?></td>
                                 <td class="sel-kecil text-secondary">
@@ -172,10 +184,13 @@ $labelModul = static fn (string $m): string => match ($m) {
                                     <form method="post"
                                           action="<?= base_url('adminkab/verifikasi/izin/setujui/' . (int) $z['id']) ?>"
                                           class="mb-2"
-                                          onsubmit="return confirm('Beri izin sunting <?= esc(strtoupper($z['modul']), 'js') ?>? Dokumen OPD ini akan terbuka untuk diperbaiki, sementara arsip versi yang sudah ditetapkan tetap utuh.')">
+                                          onsubmit="return confirm('<?= $iniHapus
+                                              ? 'HAPUS versi ini sekarang? Arsip isinya ikut terhapus dan TIDAK BISA dikembalikan.'
+                                              : 'Beri izin sunting ' . esc(strtoupper($z['modul']), 'js') . '? Dokumen OPD ini akan terbuka untuk diperbaiki, sementara arsip versi yang sudah ditetapkan tetap utuh.' ?>')">
                                         <?= csrf_field() ?>
-                                        <button class="btn btn-success btn-sm w-100">
-                                            <i class="fa-solid fa-unlock me-1"></i>Beri Izin
+                                        <button class="btn btn-sm w-100 <?= $iniHapus ? 'btn-danger' : 'btn-success' ?>">
+                                            <i class="fa-solid <?= $iniHapus ? 'fa-trash' : 'fa-unlock' ?> me-1"></i>
+                                            <?= $iniHapus ? 'Setujui &amp; Hapus' : 'Beri Izin' ?>
                                         </button>
                                     </form>
 

@@ -146,7 +146,9 @@ $tahunIni = (int) date('Y');
                 <?= json_encode(array_map(static function (array $daftar): array {
                     return array_map(static fn (array $v): array => [
                         'id'    => (int) $v['id'],
-                        'label' => 'V' . $v['version_no'] . ' — ' . (string) $v['label']
+                        // Dipakai apa adanya: model sudah menyusunnya lengkap
+                        // dengan nomor versi, tanpa menggandakannya.
+                        'label' => (string) ($v['label_tampil'] ?? $v['label'])
                             . ' (' . (int) $v['jumlah_sasaran'] . ' sasaran)',
                     ], $daftar);
                 }, $versiRenstra), JSON_UNESCAPED_UNICODE) ?>

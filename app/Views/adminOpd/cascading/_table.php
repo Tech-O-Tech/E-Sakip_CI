@@ -4,6 +4,45 @@
  * Butuh: $rows, $rowspan, $firstShow.
  */
 ?>
+<?php
+/* Keterangan sumber data, dikumpulkan SEKALI di atas tabel.
+   Sengaja diletakkan di dalam partial ini, bukan di halaman induk: tabelnya
+   dimuat ulang lewat AJAX saat periode diganti, dan keterangan yang tinggal
+   di luar akan tetap menampilkan angka periode sebelumnya. */
+// `es2_source_type` berasal dari BARIS CASCADING-nya, bukan dari indikator
+// Eselon II. Maka NULL di situ TIDAK berarti "membaca Renstra" — melainkan
+// "belum punya baris cascading sama sekali", keadaan yang wajar dan bukan
+// masalah. Hanya nilai 'renstra' yang tegas yang dihitung; tanpa syarat
+// `es3_id` ini, tiap indikator yang belum di-cascade ikut terhitung dan
+// spanduknya berbohong.
+$barisRenstra     = 0;
+$indikatorRenstra = [];
+if ($jangkarIkuAda ?? false) {
+    foreach ($rows as $__r) {
+        if (! empty($__r['es3_id'])
+            && ($__r['es2_source_type'] ?? '') === 'renstra'
+            && is_numeric($__r['indikator_id'] ?? null)) {
+            $barisRenstra++;
+            $indikatorRenstra[$__r['indikator_id']] = true;
+        }
+    }
+}
+?>
+<?php if ($barisRenstra > 0): ?>
+    <div class="alert alert-warning d-flex align-items-start gap-2 py-2 px-3 mb-3" style="font-size:.85rem">
+        <i class="fas fa-triangle-exclamation mt-1"></i>
+        <div>
+            <strong><?= count($indikatorRenstra) ?> indikator</strong>
+            (<?= $barisRenstra ?> baris) pada tabel ini <strong>masih membaca Renstra</strong>, bukan IKU.
+            <div class="text-muted mt-1">
+                Datanya tetap tampil dan tidak ada yang hilang. Penyebabnya: IKU periode ini
+                belum disusun, atau teks sasaran/indikatornya berbeda dengan Renstra sehingga
+                tidak bisa dipasangkan. Perbaiki lewat menu <em>IKU &rarr; Sync dari Renstra</em>,
+                atau samakan redaksinya.
+            </div>
+        </div>
+    </div>
+<?php endif; ?>
 <table class="table table-bordered text-center align-middle casc-table mb-0">
     <thead class="text-center">
         <tr>
@@ -47,9 +86,36 @@
             }
         }
         ?>
+        <?php
+        /* Penanda versi. Saat cascading dibaca pada VERSI IKU tertentu, tiap
+           baris membawa `es2_versi_status` yang menyatakan apa yang terjadi
+           pada indikator induknya di versi itu. Baris Eselon III/IV/Pelaksana
+           di bawah induk yang BERUBAH atau TIDAK ADA diberi warna dan
+           keterangan — tanpa itu, kolomnya tampak kosong tanpa sebab dan
+           terbaca sebagai data hilang. */
+        $tandaVersi = static function (?string $st): ?array {
+            return match ($st) {
+                'tidak_ada'  => ['#fff4f4', 'bg-danger',            'Tidak ada di versi ini',
+                                 'Indikator induknya tidak dibawa versi IKU ini, sehingga turunannya tidak dinilai pada masa itu.'],
+                'dihentikan' => ['#f6f6f6', 'bg-dark',              'Induk dihentikan',
+                                 'Indikator induknya dinyatakan berhenti mulai versi ini.'],
+                'pengganti'  => ['#fff8ec', 'bg-primary',           'Induk diganti',
+                                 'Indikator induknya digantikan indikator lain pada versi ini.'],
+                'revisi'     => ['#fffbe8', 'bg-info text-dark',    'Induk direvisi',
+                                 'Isi indikator induknya berubah pada versi ini.'],
+                'baru'       => ['#f2fbf4', 'bg-success',           'Induk baru',
+                                 'Indikator induknya baru muncul pada versi ini.'],
+                default      => null,
+            };
+        };
+        ?>
         <?php foreach ($rows as $index => $r): ?>
-            <?php $hasIndikatorEss2 = is_numeric($r['indikator_id'] ?? null); ?>
-            <tr>
+            <?php
+            $hasIndikatorEss2 = is_numeric($r['indikator_id'] ?? null);
+            $tv    = $tandaVersi($r['es2_versi_status'] ?? null);
+            $trBg  = $tv !== null ? ' style="background:' . $tv[0] . '"' : '';
+            ?>
+            <tr<?= $trBg ?>>
                 <?php if ($firstShow['tujuan'][$r['tujuan_id']] == $index): ?>
                     <td rowspan="<?= $rowspan['tujuan'][$r['tujuan_id']] ?>" class="text-start">
                         <?= !empty($r['tujuan_rpjmd']) ? esc($r['tujuan_rpjmd']) : '<span class="text-muted">-</span>' ?>
@@ -92,6 +158,21 @@
                         <?php else: ?>
                             -
                         <?php endif; ?>
+
+                        <?php /* Keterangan versi ditempel pada indikator induknya,
+                                 bukan diulang di tiap turunan — satu sebab, satu
+                                 tempat menjelaskannya. */ ?>
+                        <?php if ($tv !== null): ?>
+                            <div class="mt-1">
+                                <span class="badge <?= $tv[1] ?>" style="font-size:.62rem"
+                                      title="<?= esc($tv[3]) ?>"><?= esc($tv[2]) ?></span>
+                            </div>
+                        <?php endif; ?>
+
+                        <?php /* Sumber teks baris ini TIDAK ditandai per baris — keterangannya
+                                 dikumpulkan sekali di atas tabel (lihat cascading.php). Menandai
+                                 tiap baris membuat kolom ini penuh lencana yang mengulang satu
+                                 pesan yang sama. */ ?>
                     </td>
                 <?php endif; ?>
                 <?php if (empty($r['es3_id'])): ?>

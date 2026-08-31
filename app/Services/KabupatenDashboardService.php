@@ -974,12 +974,20 @@ class KabupatenDashboardService
                 $this->urlFokus($s['opd_id'], $tahun, $triwulan), 'Fokus OPD', ['opd_id' => $s['opd_id']]);
         }
 
-        // 7. Status verifikasi (dilaporkan apa adanya)
+        // 7. Status verifikasi.
+        //
+        // Dulu butir ini justru muncul ketika mekanisme verifikasi BELUM ada —
+        // artinya ia selalu nongol, menyebut seluruh nilai PK Bupati "sementara",
+        // padahal tidak ada satu pun tindakan yang bisa dikerjakan pimpinan untuk
+        // menutupnya. Di daftar Prioritas Tindak Lanjut itu terbaca sebagai
+        // tunggakan palsu. Sekarang butir ini hanya terbit bila mekanismenya ada
+        // dan memang ada yang belum diverifikasi.
+        // Lihat OpdDashboardService::verificationInfo().
         $verifikasi = $this->opd->verificationInfo();
-        if (!$verifikasi['available'] && $pkBupati['valid'] > 0) {
+        if ($verifikasi['available'] && ($pkBupati['belum_verifikasi'] ?? 0) > 0) {
             $out[] = $this->insight(self::SEV_VERIFIKASI, 'verifikasi', 'Status verifikasi capaian',
-                $verifikasi['note'], 'Sementara', 'abu',
-                $pkBupati['valid'] . ' nilai PK Bupati masih berstatus sementara.',
+                $verifikasi['note'], $verifikasi['label'], 'abu',
+                (int) $pkBupati['belum_verifikasi'] . ' nilai PK Bupati belum diverifikasi.',
                 $urlBupatiMonev, 'Buka MONEV', []);
         }
 

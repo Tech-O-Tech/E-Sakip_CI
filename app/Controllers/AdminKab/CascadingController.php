@@ -3,6 +3,7 @@
 namespace App\Controllers\AdminKab;
 
 use App\Controllers\BaseController;
+use App\Controllers\Concerns\CascadingIzinTrait;
 use App\Controllers\Concerns\CascadingOpdMetaTrait;
 use App\Models\CascadingModel;
 
@@ -14,7 +15,54 @@ class CascadingController extends BaseController
      * punya salinan sendiri yang belum mengenal jenjang PELAKSANA, itulah sebab
      * Pelaksana tidak pernah tampil di area admin_kab.
      */
+    use CascadingIzinTrait;
     use CascadingOpdMetaTrait;
+
+    /**
+     * Penjaga izin untuk seluruh aksi Cascading Kabupaten.
+     *
+     * Ditegakkan di satu tempat lewat `_remap()` — lihat CascadingIzinTrait
+     * untuk alasannya dan untuk bukti bahwa tidak ada operator yang kehilangan
+     * akses yang ia punya hari ini.
+     */
+    public function _remap(string $method, ...$params)
+    {
+        if (! $this->metodePublikCascading($method)) {
+            throw \CodeIgniter\Exceptions\PageNotFoundException::forPageNotFound();
+        }
+
+        if ($tolak = $this->tolakBilaTakBerizin($method)) {
+            return $tolak;
+        }
+
+        return $this->$method(...$params);
+    }
+
+    /** @return array<string, string> */
+    protected function petaIzinCascading(): array
+    {
+        return [
+            // BACA — `admin_inspektorat` memegang cascading_kab.view, jadi
+            // seluruh baris ini tetap terbuka baginya.
+            'index'              => 'cascading_kab.view',
+            'excel'              => 'cascading_kab.view',
+            'cetak'              => 'cascading_kab.view',
+            'cetakPohon'         => 'cascading_kab.view',
+            'getPkProgramByOpd'  => 'cascading_kab.view',
+
+            // BUAT
+            'tambah'             => 'cascading_kab.create',
+            'save'               => 'cascading_kab.create',
+
+            // UBAH
+            'saveCsf'            => 'cascading_kab.update',
+        ];
+    }
+
+    protected function izinBacaCascading(): string
+    {
+        return 'cascading_kab.view';
+    }
 
     protected $cascadingModel;
     protected $db;
@@ -28,6 +76,44 @@ class CascadingController extends BaseController
 
     /** Mode tampilan yang valid. */
     private const MODES = ['kabupaten', 'opd', 'keseluruhan'];
+
+    /**
+     * Revisi IKU Kabupaten yang bisa dibaca cascading pada satu periode.
+     * Hanya yang PERNAH RESMI (berlaku/superseded).
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private function versiIkuKabTersedia(int $start, int $end): array
+    {
+        $rev = new \App\Models\Opd\IkuRevisiModel();
+
+        if (! $rev->siap()) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            $rev->daftar(null, $start, $end),
+            static fn ($r) => in_array($r['status'], ['berlaku', 'superseded'], true)
+        ));
+    }
+
+    /** Versi terpilih, divalidasi terhadap daftar yang sah. */
+    private function versiIkuKabDipilih($nilai, array $tersedia): ?int
+    {
+        $id = (int) $nilai;
+
+        if ($id <= 0) {
+            return null;
+        }
+
+        foreach ($tersedia as $v) {
+            if ((int) $v['id'] === $id) {
+                return $id;
+            }
+        }
+
+        return null;
+    }
 
     public function index()
     {
@@ -75,9 +161,17 @@ class CascadingController extends BaseController
             $years = range($start, $end);
 
             if ($mode === 'kabupaten') {
+                // Versi IKU Kabupaten yang dibaca; null = IKU berjalan.
+                // Divalidasi terhadap daftar revisi lingkup kabupaten.
+                $versiIkuList    = $this->versiIkuKabTersedia($start, $end);
+                $versiIkuDipilih = $this->versiIkuKabDipilih(
+                    $this->request->getGet('iku_versi'),
+                    $versiIkuList
+                );
+
                 // Matriks RPJMD penuh (Misi -> Tujuan -> Sasaran -> Indikator -> Program
                 // -> Perangkat Daerah) + target & kondisi akhir — selaras Cetak Cascading.
-                $rows = $this->cascadingModel->getMatrix($start, $end);
+                $rows = $this->cascadingModel->getMatrix($start, $end, $versiIkuDipilih);
                 $tree = $this->cascadingModel->getPohonKinerja($start, $end);
                 $visi = $this->ambilVisi($start, $end);
             } elseif ($mode === 'opd') {
@@ -129,6 +223,11 @@ class CascadingController extends BaseController
             'visi'           => $visi,
             'tahun_mulai'    => $tahunMulai,
             'tahun_akhir'    => $tahunAkhir,
+            'versiIkuList'    => $versiIkuList ?? [],
+            'versiIkuDipilih' => $versiIkuDipilih ?? null,
+            // Penanda "masih dari RPJMD" hanya dicetak bila kolom silsilahnya
+            // memang sudah ada di basis data ini.
+            'silsilahIkuAda'  => $this->cascadingModel->silsilahIkuTersedia(),
             'filters'        => [
                 'periode' => $periode,
             ],
@@ -636,6 +735,16 @@ class CascadingController extends BaseController
         $sasaranId = $this->request->getPost('sasaran_id');
         $csf = $this->request->getPost('csf');
 
+        // Tanpa pemeriksaan ini, siapa pun yang sudah masuk bisa menulis CSF ke
+        // sasaran RPJMD mana pun lewat POST yang dikarang — endpoint-nya hidup
+        // walau tidak ada satu pun elemen layar yang memanggilnya.
+        if (! user_can('cascading_kab.update')) {
+            return $this->response->setStatusCode(403)->setJSON([
+                'status'  => 'error',
+                'message' => 'Anda tidak berwenang mengubah CSF.',
+            ]);
+        }
+
         if (!$sasaranId) {
             return $this->response->setJSON([
                 'status' => 'error',
@@ -643,8 +752,17 @@ class CascadingController extends BaseController
             ]);
         }
 
+        // Diperiksa sebelum menulis, bukan lewat affectedRows(): menyimpan teks
+        // yang sama persis menghasilkan 0 baris tersentuh, dan itu bukan galat.
+        if ($this->db->table('rpjmd_sasaran')->where('id', (int) $sasaranId)->countAllResults() < 1) {
+            return $this->response->setStatusCode(404)->setJSON([
+                'status'  => 'error',
+                'message' => 'Sasaran RPJMD tidak ditemukan.',
+            ]);
+        }
+
         $this->db->table('rpjmd_sasaran')
-            ->where('id', $sasaranId)
+            ->where('id', (int) $sasaranId)
             ->update(['csf' => $csf]);
 
         return $this->response->setJSON([

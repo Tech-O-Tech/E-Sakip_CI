@@ -104,31 +104,56 @@ class IkuController extends BaseController
     /* =========================================================
      * FORM TAMBAH
      * =======================================================*/
+    /** Pintu SASARAN MANDIRI lama — ditutup. Lihat tolakPintuMandiri(). */
     public function tambah()
     {
-        // Pintu tambah manual DITUTUP (bukan sekadar tombolnya disembunyikan):
-        // selama endpoint-nya hidup, tautan lama atau URL yang diketik langsung
-        // tetap bisa melahirkan sasaran kembar di sebelah hasil sync.
+        // =================================================================
+        // PINTU INI DITUTUP — SASARAN MANDIRI KINI LAHIR DI DALAM REVISI
         //
-        // Rutenya sengaja dibiarkan terdaftar supaya tautan lama tidak berujung
-        // 404 tanpa penjelasan — yang datang ke sini diberi tahu jalan yang benar.
-        return redirect()->to(base_url('adminopd/iku'))
-            ->with('error', 'IKU tidak lagi ditambah manual. Sasaran & indikatornya diambil dari Renstra lewat tombol Sync — supaya tidak lahir sasaran kembar dan setiap baris punya jejak asal.');
+        // Jalur lama menulis LANGSUNG ke tabel live lewat createComplete(),
+        // di luar alur revisi. Akibatnya IKU berjalan berubah tanpa revisi dan
+        // tanpa pengesahan, dan sasarannya tidak pernah masuk arsip versi mana
+        // pun — sehingga ia tampil di layar IKU tetapi TIDAK ADA di dokumen
+        // penilaian tahun mana pun, dan LAKIP tidak bisa menilainya.
+        //
+        // Tombolnya sudah dicabut dari layar, tetapi RUTE-nya masih bisa
+        // diketik langsung — dan pintu belakang yang menulis ke tabel live
+        // sama berbahayanya dengan tombol. Karena itu ditutup di controller,
+        // bukan sekadar disembunyikan di view.
+        //
+        // Method save() di bawah ikut ditutup dengan alasan yang sama.
+        // =================================================================
+        return $this->tolakPintuMandiri();
     }
 
-    /* =========================================================
-     * SIMPAN BARU
-     * =======================================================*/
+    /**
+     * Penolakan bersama untuk pintu sasaran mandiri lama.
+     *
+     * Diarahkan ke Versi IKU, bukan sekadar ditolak: pemakai yang sampai ke
+     * sini memang sedang hendak menambah sasaran, dan menyebut tempat barunya
+     * jauh lebih berguna daripada pesan "akses ditolak".
+     */
+    private function tolakPintuMandiri()
+    {
+        return redirect()->to(base_url('adminopd/iku/revisi'))->with(
+            'error',
+            'Menambah sasaran mandiri kini dilakukan di dalam Versi IKU: buat revisi '
+            . '(atau buka draft yang sudah ada), lalu tekan "Tambah Sasaran" di layar '
+            . 'suntingnya. Dengan begitu sasaran barunya ikut diperiksa Admin Kabupaten '
+            . 'dan tercatat pada dokumen penilaian tahun berjalan.'
+        );
+    }
+
+    /**
+     * Penyimpanan sasaran mandiri lama — ditutup bersama tambah().
+     *
+     * Ditutup di sini, bukan sekadar dengan menghapus formnya: POST bisa
+     * dikirim tanpa membuka form mana pun, dan jalur ini menulis LANGSUNG ke
+     * `iku_sasaran`/`iku_indikator` di luar alur revisi.
+     */
     public function save()
     {
-        // Pintu tambah manual DITUTUP (bukan sekadar tombolnya disembunyikan):
-        // selama endpoint-nya hidup, tautan lama atau URL yang diketik langsung
-        // tetap bisa melahirkan sasaran kembar di sebelah hasil sync.
-        //
-        // Rutenya sengaja dibiarkan terdaftar supaya tautan lama tidak berujung
-        // 404 tanpa penjelasan — yang datang ke sini diberi tahu jalan yang benar.
-        return redirect()->to(base_url('adminopd/iku'))
-            ->with('error', 'IKU tidak lagi ditambah manual. Sasaran & indikatornya diambil dari Renstra lewat tombol Sync — supaya tidak lahir sasaran kembar dan setiap baris punya jejak asal.');
+        return $this->tolakPintuMandiri();
     }
 
     /* =========================================================
@@ -247,6 +272,15 @@ class IkuController extends BaseController
             'versi_tersedia' => $versiTersedia,
             'versi_dipilih'  => $versiDipilih,
             'tanpa_padanan'  => $this->ikuModel->ikuTanpaPadananSumber(),
+            // Pratinjau MODE GANTI. Dihitung di sini, bukan saat menyimpan,
+            // supaya operator melihat lebih dulu apa yang akan dibuang DAN apa
+            // yang dipertahankan karena sudah dipakai di tempat lain.
+            'ganti_pratinjau' => $this->ikuModel->buangTanpaPadanan(
+                $opdId,
+                (int) $periode['tahun_mulai'],
+                (int) $periode['tahun_akhir'],
+                false
+            ),
         ] + $this->muaraSync($opdId, $periode));
     }
 
@@ -305,6 +339,40 @@ class IkuController extends BaseController
         [$pilihan, $perbarui] = $this->keranjangSyncPenuh($kandidat);
 
         if (empty($pilihan) && empty($perbarui)) {
+            // "Tidak ada yang perlu DISALIN" bukan berarti tidak ada yang perlu
+            // DIBUANG. Mode Ganti justru paling sering dipakai persis di keadaan
+            // ini: isi IKU sudah sama dengan Renstra, yang tersisa hanya
+            // kelebihan yang tidak ada di sana. Tanpa cabang ini, mencentang
+            // Ganti melapor "tidak ada yang perlu disalin" lalu tidak
+            // mengerjakan apa pun.
+            // `$muara` baru dihitung di bawah; di cabang ini ia ditanyakan
+            // langsung. Mode Ganti tidak berlaku bila hasil sync bermuara ke
+            // draft revisi — di sana IKU berjalan memang tidak disentuh.
+            if ($this->request->getPost('ganti')
+                && ! $this->muaraSync($opdId, $daftarPeriode[$periode])['ke_revisi']) {
+                $buang = $this->ikuModel->buangTanpaPadanan(
+                    $opdId,
+                    (int) $daftarPeriode[$periode]['tahun_mulai'],
+                    (int) $daftarPeriode[$periode]['tahun_akhir'],
+                    true
+                );
+
+                $pesan = 'Mode Ganti: ' . $buang['dibuang_indikator'] . ' indikator';
+
+                if ($buang['dibuang_sasaran'] > 0) {
+                    $pesan .= ' & ' . $buang['dibuang_sasaran'] . ' sasaran kosong';
+                }
+
+                $pesan .= ' dibuang karena tidak ada di Renstra.';
+
+                if ($buang['dipertahankan'] !== []) {
+                    $pesan .= ' ' . count($buang['dipertahankan'])
+                        . ' dipertahankan karena sudah dipakai (cascading / LAKIP / arsip revisi).';
+                }
+
+                return redirect()->to(base_url('adminopd/iku?periode=' . $periode))->with('success', $pesan);
+            }
+
             return redirect()->to(base_url('adminopd/iku/sync?periode=' . $periode))
                 ->with('info', 'IKU sudah sama dengan sumber ini — tidak ada yang perlu disalin.');
         }
@@ -345,8 +413,36 @@ class IkuController extends BaseController
                     . 'dan baru berubah setelah revisi itu diajukan dan disahkan.');
         }
 
+        $pesan = $this->pesanHasilSync($stat);
+
+        // MODE GANTI. Dijalankan SESUDAH penyalinan supaya baris yang baru saja
+        // tertaut lewat tautkanSilsilah() tidak ikut terbuang hanya karena tadi
+        // belum bersilsilah. Baris yang sudah dipakai di tempat lain tidak
+        // pernah dibuang — penjaganya ada di buangTanpaPadanan().
+        if ($this->request->getPost('ganti')) {
+            $buang = $this->ikuModel->buangTanpaPadanan(
+                $opdId,
+                (int) $daftarPeriode[$periode]['tahun_mulai'],
+                (int) $daftarPeriode[$periode]['tahun_akhir'],
+                true
+            );
+
+            $pesan .= ' Mode Ganti: ' . $buang['dibuang_indikator'] . ' indikator';
+
+            if ($buang['dibuang_sasaran'] > 0) {
+                $pesan .= ' & ' . $buang['dibuang_sasaran'] . ' sasaran kosong';
+            }
+
+            $pesan .= ' dibuang karena tidak ada di Renstra.';
+
+            if ($buang['dipertahankan'] !== []) {
+                $pesan .= ' ' . count($buang['dipertahankan'])
+                    . ' dipertahankan karena sudah dipakai (cascading / LAKIP / arsip revisi).';
+            }
+        }
+
         return redirect()->to(base_url('adminopd/iku?periode=' . $periode))
-            ->with('success', $this->pesanHasilSync($stat));
+            ->with('success', $pesan);
     }
 
     
@@ -434,9 +530,22 @@ class IkuController extends BaseController
                 ->with('error', 'Anda tidak memiliki akses ke IKU OPD lain.');
         }
 
+        // Redaksi Renstra ditampilkan berdampingan supaya operator tahu ia
+        // sedang menyimpang dari sumbernya — menyimpang itu sah, tidak
+        // menyadarinya yang tidak.
+        $sasaranRenstra = null;
+
+        if (! empty($sasaran['source_sasaran_id']) && ($sasaran['source_type'] ?? '') === 'renstra') {
+            $sasaranRenstra = \Config\Database::connect()->table('renstra_sasaran')
+                ->select('sasaran')->where('id', (int) $sasaran['source_sasaran_id'])
+                ->get()->getRowArray()['sasaran'] ?? null;
+        }
+
         return view('adminOpd/iku/edit_iku', [
             'title'          => 'Edit IKU',
             'iku'            => $sasaran,
+            'renameBoleh'    => ! $this->renameSasaranDikunci((int) $sasaranId),
+            'sasaranRenstra' => $sasaranRenstra,
             'satuan_options' => $this->ikuModel->getSatuanOptions(),
             'opd_list'       => $opdId === null ? $this->opdModel->orderBy('nama_opd', 'ASC')->findAll() : [],
             'is_lintas_opd'  => $opdId === null,
@@ -502,9 +611,65 @@ class IkuController extends BaseController
                 ->with('error', 'Gagal menyimpan keterangan: ' . $e->getMessage());
         }
 
+        // ---- REDAKSI SASARAN -------------------------------------------
+        //
+        // Dibaca sebagai medan tersendiri, bukan lewat pembacaan form
+        // menyeluruh — mengikuti sikap method ini: yang ditulis hanya kolom
+        // yang disebut namanya di sini, sehingga POST yang dikarang tidak bisa
+        // menyentuh indikator, satuan, atau target.
+        $pesanSasaran = '';
+        $teksSasaran  = $this->request->getPost('sasaran_baru');
+
+        if ($teksSasaran !== null && trim((string) $teksSasaran) !== '') {
+            if ($this->renameSasaranDikunci($sasaranId)) {
+                $pesanSasaran = ' Redaksi sasaran TIDAK diubah: IKU periode ini sudah punya revisi'
+                    . ' yang berlaku, jadi perubahannya harus lewat draft revisi agar tercatat.';
+            } else {
+                $hasil = $this->ikuModel->renameSasaran($sasaranId, (string) $teksSasaran);
+
+                if ($hasil['pesan'] !== '') {
+                    $pesanSasaran = ' ' . $hasil['pesan'];
+                }
+
+                if (! $hasil['ok'] && $hasil['pesan'] !== '') {
+                    return redirect()->back()->withInput()->with('error', $hasil['pesan']);
+                }
+            }
+        }
+
         return redirect()->to(base_url('adminopd/iku'))
             ->with('success', 'Keterangan ' . $jumlah . ' indikator disimpan. '
-                . 'Sasaran, indikator, satuan, dan target tidak tersentuh.');
+                . 'Indikator, satuan, dan target tidak tersentuh.' . $pesanSasaran);
+    }
+
+    /**
+     * Bolehkah redaksi sasaran diubah langsung?
+     *
+     * Aturannya SAMA dengan yang sudah dipakai Sync (lihat
+     * IkuFormTrait::muaraSync()), supaya operator tidak perlu menghafal dua
+     * aturan berbeda untuk satu dokumen yang sama:
+     *
+     *   * belum ada revisi berlaku -> IKU masih disusun, sunting langsung wajar;
+     *   * sudah ada revisi berlaku -> dokumennya sudah disahkan, perubahannya
+     *     harus lewat draft revisi supaya tercatat dan bisa ditelusuri.
+     */
+    private function renameSasaranDikunci(int $sasaranId): bool
+    {
+        $s = \Config\Database::connect()->table('iku_sasaran')
+            ->select('opd_id, tahun_mulai, tahun_akhir')
+            ->where('id', $sasaranId)->get()->getRowArray();
+
+        if ($s === null) {
+            return true;
+        }
+
+        $rev = new \App\Models\Opd\IkuRevisiModel();
+
+        return $rev->siap() && $rev->revisiBerlaku(
+            $s['opd_id'] !== null ? (int) $s['opd_id'] : null,
+            (int) $s['tahun_mulai'],
+            (int) $s['tahun_akhir']
+        ) !== null;
     }
 
     public function delete($sasaranId = null)

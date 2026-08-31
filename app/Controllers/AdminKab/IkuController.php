@@ -223,6 +223,16 @@ class IkuController extends BaseController
             'versi_tersedia'   => $versiTersedia,
             'versi_dipilih'    => $versiDipilih,
             'tanpa_padanan'    => $this->ikuModel->ikuTanpaPadananSumber(),
+            // Pratinjau MODE GANTI — kembaran sisi OPD. Dihitung di sini, bukan
+            // saat menyimpan, supaya operator melihat lebih dulu apa yang akan
+            // dibuang DAN apa yang dipertahankan karena sudah dipakai di
+            // cascading / LAKIP / arsip revisi.
+            'ganti_pratinjau'  => $this->ikuModel->buangTanpaPadanan(
+                null,
+                (int) $periode['tahun_mulai'],
+                (int) $periode['tahun_akhir'],
+                false
+            ),
         ] + $this->muaraSync(null, $periode));
     }
 
@@ -270,6 +280,20 @@ class IkuController extends BaseController
         [$pilihan, $perbarui] = $this->keranjangSyncPenuh($kandidat);
 
         if (empty($pilihan) && empty($perbarui)) {
+            // MODE GANTI tetap dikerjakan walau tidak ada yang perlu disalin —
+            // justru itu keadaan yang paling lazim baginya: isi IKU sudah sama
+            // dengan RPJMD, yang tersisa hanya kelebihan yang tidak ada di sana.
+            // Tanpa cabang ini, mencentang Ganti melapor "tidak ada yang perlu
+            // disalin" lalu tidak mengerjakan apa pun.
+            //
+            // Tidak berlaku bila hasil sync bermuara ke draft revisi: di sana
+            // IKU berjalan memang tidak disentuh.
+            if ($this->request->getPost('ganti')
+                && ! $this->muaraSync(null, $daftarPeriode[$periode])['ke_revisi']) {
+                return redirect()->to(base_url('adminkab/iku?mode=kabupaten&periode=' . $periode))
+                    ->with('success', $this->pesanGanti($daftarPeriode[$periode]));
+            }
+
             return redirect()->to(base_url('adminkab/iku/sync?periode=' . $periode))
                 ->with('info', 'IKU Kabupaten sudah sama dengan RPJMD periode ini — tidak ada yang perlu disalin.');
         }
@@ -322,8 +346,49 @@ class IkuController extends BaseController
                     . 'dan baru berubah setelah revisi itu disahkan.');
         }
 
+        $pesan = $this->pesanHasilSync($stat);
+
+        // Dijalankan SESUDAH penyalinan supaya baris yang baru saja tertaut
+        // lewat tautkanSilsilah() tidak ikut terbuang hanya karena tadi belum
+        // bersilsilah.
+        if ($this->request->getPost('ganti')) {
+            $pesan .= ' ' . $this->pesanGanti($daftarPeriode[$periode]);
+        }
+
         return redirect()->to(base_url('adminkab/iku?mode=kabupaten&periode=' . $periode))
-            ->with('success', $this->pesanHasilSync($stat));
+            ->with('success', $pesan);
+    }
+
+    /**
+     * Kerjakan MODE GANTI untuk lingkup kabupaten, lalu susun laporannya.
+     *
+     * Dipakai dua kali di `syncSimpan()` — jalur normal dan jalur "tidak ada
+     * yang perlu disalin" — jadi teks laporannya tidak perlu ditulis dua kali
+     * dan tidak bisa menyimpang satu sama lain.
+     */
+    private function pesanGanti(array $periode): string
+    {
+        $buang = $this->ikuModel->buangTanpaPadanan(
+            null,
+            (int) $periode['tahun_mulai'],
+            (int) $periode['tahun_akhir'],
+            true
+        );
+
+        $pesan = 'Mode Ganti: ' . $buang['dibuang_indikator'] . ' indikator';
+
+        if ($buang['dibuang_sasaran'] > 0) {
+            $pesan .= ' & ' . $buang['dibuang_sasaran'] . ' sasaran kosong';
+        }
+
+        $pesan .= ' dibuang karena tidak ada di RPJMD.';
+
+        if ($buang['dipertahankan'] !== []) {
+            $pesan .= ' ' . count($buang['dipertahankan'])
+                . ' dipertahankan karena sudah dipakai (cascading / LAKIP / arsip revisi).';
+        }
+
+        return $pesan;
     }
 
     /* =========================================================
@@ -346,15 +411,38 @@ class IkuController extends BaseController
                 ->with('error', 'IKU milik OPD diubah lewat menu IKU pada akun OPD yang bersangkutan.');
         }
 
+        // Redaksi RPJMD ditampilkan berdampingan supaya operator tahu ia
+        // sedang menyimpang dari sumbernya — menyimpang itu sah, tidak
+        // menyadarinya yang tidak.
+        $sasaranRpjmd = null;
+
+        if (! empty($sasaran['source_sasaran_id']) && ($sasaran['source_type'] ?? '') === 'rpjmd') {
+            $sasaranRpjmd = \Config\Database::connect()->table('rpjmd_sasaran')
+                ->select('sasaran_rpjmd')->where('id', (int) $sasaran['source_sasaran_id'])
+                ->get()->getRowArray()['sasaran_rpjmd'] ?? null;
+        }
+
         return view('adminKabupaten/iku/edit_iku', [
             'title'          => 'Edit IKU Kabupaten',
             'iku'            => $sasaran,
+            'renameBoleh'    => ! $this->renameSasaranDikunci((int) $sasaranId),
+            'sasaranSumber'  => $sasaranRpjmd,
             'satuan_options' => $this->ikuModel->getSatuanOptions(),
         ]);
     }
 
     /* =========================================================
      * UPDATE
+     *
+     * Sengaja dibuat sesempit sisi OPD: yang ditulis hanya KETERANGAN tiap
+     * indikator, ditambah redaksi sasaran lewat satu medan tersendiri.
+     *
+     * Sebelumnya method ini memakai bacaFormIku() + updateComplete(), yang
+     * menulis ulang sasaran, indikator, satuan, dan SELURUH target sekaligus.
+     * Di layar kabupaten jalan itu justru paling berbahaya: satu POST yang
+     * dikarang bisa menghapus indikator yang sudah dijangkar Cascading dan
+     * dipakai LAKIP. Perubahan substantif berjalan lewat Versi IKU, tempat ia
+     * tercatat dan disahkan.
      * =======================================================*/
     public function update()
     {
@@ -377,22 +465,73 @@ class IkuController extends BaseController
                 ->with('error', 'IKU milik OPD diubah lewat menu IKU pada akun OPD yang bersangkutan.');
         }
 
-        $data = $this->bacaFormIku($this->request->getPost() ?? []);
+        $keterangan = (array) ($this->request->getPost('keterangan') ?? []);
 
-        if ($error = $this->validasiFormIku($data)) {
-            return redirect()->back()->withInput()->with('error', $error);
+        if ($keterangan === []) {
+            return redirect()->back()->with('error', 'Tidak ada keterangan yang dikirim.');
         }
 
         try {
-            $this->ikuModel->updateComplete($sasaranId, $data);
+            $jumlah = $this->ikuModel->perbaruiKeterangan($sasaranId, $keterangan);
         } catch (\Throwable $e) {
-            log_message('error', '[IKU UPDATE KAB] ' . $e->getMessage());
+            log_message('error', '[IKU KETERANGAN KAB] ' . $e->getMessage());
 
-            return redirect()->back()->withInput()->with('error', 'Gagal mengubah IKU: ' . $e->getMessage());
+            return redirect()->back()->withInput()
+                ->with('error', 'Gagal menyimpan keterangan: ' . $e->getMessage());
+        }
+
+        $pesanSasaran = '';
+        $teksSasaran  = $this->request->getPost('sasaran_baru');
+
+        if ($teksSasaran !== null && trim((string) $teksSasaran) !== '') {
+            if ($this->renameSasaranDikunci($sasaranId)) {
+                $pesanSasaran = ' Redaksi sasaran TIDAK diubah: IKU periode ini sudah punya revisi'
+                    . ' yang berlaku, jadi perubahannya harus lewat draft revisi agar tercatat.';
+            } else {
+                $hasil = $this->ikuModel->renameSasaran($sasaranId, (string) $teksSasaran);
+
+                if ($hasil['pesan'] !== '') {
+                    $pesanSasaran = ' ' . $hasil['pesan'];
+                }
+
+                if (! $hasil['ok'] && $hasil['pesan'] !== '') {
+                    return redirect()->back()->withInput()->with('error', $hasil['pesan']);
+                }
+            }
         }
 
         return redirect()->to(base_url('adminkab/iku?mode=kabupaten'))
-            ->with('success', 'IKU berhasil diperbarui.');
+            ->with('success', 'Keterangan ' . $jumlah . ' indikator disimpan. '
+                . 'Indikator, satuan, dan target tidak tersentuh.' . $pesanSasaran);
+    }
+
+    /**
+     * Bolehkah redaksi sasaran diubah langsung?
+     *
+     * Aturannya SAMA dengan sisi OPD (lihat AdminOpd\IkuController) supaya
+     * satu dokumen tidak punya dua aturan yang berbeda:
+     *
+     *   * belum ada revisi berlaku -> IKU masih disusun, sunting langsung wajar;
+     *   * sudah ada revisi berlaku -> dokumennya sudah disahkan, perubahannya
+     *     harus lewat draft revisi supaya tercatat dan bisa ditelusuri.
+     */
+    private function renameSasaranDikunci(int $sasaranId): bool
+    {
+        $s = \Config\Database::connect()->table('iku_sasaran')
+            ->select('opd_id, tahun_mulai, tahun_akhir')
+            ->where('id', $sasaranId)->get()->getRowArray();
+
+        if ($s === null) {
+            return true;
+        }
+
+        $rev = new \App\Models\Opd\IkuRevisiModel();
+
+        return $rev->siap() && $rev->revisiBerlaku(
+            $s['opd_id'] !== null ? (int) $s['opd_id'] : null,
+            (int) $s['tahun_mulai'],
+            (int) $s['tahun_akhir']
+        ) !== null;
     }
 
     /* =========================================================

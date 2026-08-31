@@ -176,3 +176,41 @@ if (!function_exists('pk_bagi_baris')) {
         return [$span, $mulai];
     }
 }
+
+if (!function_exists('pk_bagi_renaksi')) {
+    /**
+     * Bagi baris Rencana Aksi ke seluruh tinggi satu indikator ($n baris).
+     *
+     * Tinggi indikator adalah max(jumlah baris rencana aksi, jumlah unit).
+     * Ketika unitnya lebih banyak, sisa barisnya dulu dicetak sebagai satu
+     * blok kosong selebar kolom Rencana Aksi + Sub + Triwulan — lubang yang
+     * kelihatan menganga di layar maupun di hasil cetak. Alih-alih itu,
+     * baris rencana aksi kini diregangkan mengisi seluruh tinggi, persis
+     * cara kolom unit dibagi oleh pk_bagi_baris().
+     *
+     * Bila tinggi indikator memang sama dengan jumlah baris rencana aksi
+     * (kasus yang paling umum), setiap baris dapat rowspan 1 dan hasilnya
+     * identik dengan perilaku sebelumnya.
+     *
+     * @param array $barisRender daftar [indeks butir, indeks sub], berurutan
+     * @param int   $n           tinggi indikator dalam baris
+     *
+     * @return array [$spanBaris, $mulaiBaris, $spanButir]
+     *               $spanBaris[$i]       = rowspan sel Sub & Triwulan baris ke-$i
+     *               $mulaiBaris[$barisKe]= indeks barisRender yang mulai di baris ke-$barisKe
+     *               $spanButir[$butir]   = rowspan sel Rencana Aksi butir tsb
+     *                                      (jumlah span seluruh sub miliknya)
+     */
+    function pk_bagi_renaksi(array $barisRender, int $n): array
+    {
+        [$spanBaris, $mulaiBaris] = pk_bagi_baris($barisRender, $n);
+
+        $spanButir = [];
+        foreach ($barisRender as $i => $baris) {
+            $butir             = $baris[0];
+            $spanButir[$butir] = ($spanButir[$butir] ?? 0) + ($spanBaris[$i] ?? 1);
+        }
+
+        return [$spanBaris, $mulaiBaris, $spanButir];
+    }
+}

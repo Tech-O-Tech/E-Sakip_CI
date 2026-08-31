@@ -1014,6 +1014,45 @@ class OpdDashboardService
      *
      * @return array{percentage: float|null, validity: array<string, mixed>}
      */
+    /**
+     * Kalimat penjelas: baris MANA yang menghalangi, dan bagaimana keadaan
+     * baris lain di sekitarnya.
+     *
+     * Kasus yang paling sering menyesatkan: capaian warisan yang masih
+     * tersimpan di tingkat RENCANA AKSI (sub_id = 0) padahal seluruh sub di
+     * bawahnya sudah lengkap. Indikatornya ditandai gagal, dan operator yang
+     * melihat sub-nya sudah terisi menyimpulkan dashboardnya yang keliru.
+     */
+    private function konteksBarisBermasalah(?array $baris, int $subValid, int $subTotal): ?string
+    {
+        if ($baris === null) {
+            return null;
+        }
+
+        $label = trim((string) ($baris['label'] ?? ''));
+        $label = $label === '' ? 'baris ini' : '"' . $label . '"';
+
+        if ((int) ($baris['sub_id'] ?? 0) > 0) {
+            return 'Yang belum lengkap: sub rencana aksi ' . $label
+                . ($subTotal > 1 ? ' (dari ' . $subTotal . ' sub).' : '.');
+        }
+
+        // Baris tingkat rencana aksi.
+        if ($subTotal > 0 && $subValid === $subTotal) {
+            return 'Yang belum lengkap BUKAN sub rencana aksinya — seluruh ' . $subTotal
+                . ' sub sudah lengkap. Yang tertinggal adalah capaian lama pada baris '
+                . 'rencana aksi ' . $label . '. Lengkapi baris itu, atau kosongkan capaiannya '
+                . 'bila pengukurannya memang sudah pindah ke sub.';
+        }
+
+        if ($subTotal > 0) {
+            return 'Belum lengkap pada baris rencana aksi ' . $label
+                . ', dan ' . ($subTotal - $subValid) . ' dari ' . $subTotal . ' sub juga belum lengkap.';
+        }
+
+        return 'Yang belum lengkap: rencana aksi ' . $label . '.';
+    }
+
     private function agregatIndikator(array $barisUkur, bool $tanpaRenaksi): array
     {
         if ($tanpaRenaksi || $barisUkur === []) {
@@ -1027,16 +1066,29 @@ class OpdDashboardService
             ];
         }
 
-        $bermasalah = null;
-        $jumlah     = 0.0;
-        $n          = 0;
+        $bermasalah     = null;
+        $barisBermasalah = null;
+        $jumlah         = 0.0;
+        $n              = 0;
+        $subValid       = 0;
+        $subTotal       = 0;
 
         foreach ($barisUkur as $baris) {
-            $v = $baris['validity'];
+            $v      = $baris['validity'];
+            $adalahSub = (int) ($baris['sub_id'] ?? 0) > 0;
+
+            if ($adalahSub) {
+                $subTotal++;
+                if ($v['is_valid']) {
+                    $subValid++;
+                }
+            }
+
             if (!$v['is_valid']) {
                 if ($bermasalah === null
                     || dash_reason_priority($v['reason_code']) < dash_reason_priority($bermasalah['reason_code'])) {
-                    $bermasalah = $v;
+                    $bermasalah      = $v;
+                    $barisBermasalah = $baris;
                 }
                 continue;
             }
@@ -1051,6 +1103,17 @@ class OpdDashboardService
                     'is_valid'    => false,
                     'reason_code' => $bermasalah['reason_code'],
                     'reason'      => $bermasalah['reason'],
+
+                    // Identitas baris yang menghalangi + keadaan sekitarnya.
+                    // Tanpa ini pesannya berbunyi "metode belum dipilih" pada
+                    // indikator yang seluruh sub-nya sudah lengkap — pemakai
+                    // membacanya sebagai tuduhan keliru, lalu berhenti percaya
+                    // pada daftar ini.
+                    'baris_label'  => (string) ($barisBermasalah['label'] ?? ''),
+                    'baris_sub_id' => (int) ($barisBermasalah['sub_id'] ?? 0),
+                    'sub_valid'    => $subValid,
+                    'sub_total'    => $subTotal,
+                    'konteks'      => $this->konteksBarisBermasalah($barisBermasalah, $subValid, $subTotal),
                 ],
             ];
         }
@@ -1556,6 +1619,16 @@ class OpdDashboardService
             $alasan = (string) ($i['validity']['reason'] ?? dash_reason_label((string) $i['validity']['reason_code']));
             $kode   = (string) $i['validity']['reason_code'];
 
+            // Sebut baris mana yang menghalangi. "Metode belum dipilih" saja
+            // tidak cukup: indikator ini bisa saja punya tujuh sub yang sudah
+            // lengkap, dan yang tertinggal hanya capaian lama di tingkat
+            // rencana aksi.
+            $konteks = trim((string) ($i['validity']['konteks'] ?? ''));
+
+            if ($konteks !== '') {
+                $alasan .= ' ' . $konteks;
+            }
+
             if ($kode === 'missing_target') {
                 // Dibedakan: rencana aksinya memang belum dibuat, atau sudah ada
                 // tapi target triwulanannya masih kosong. Tindak lanjutnya sama.
@@ -1576,8 +1649,16 @@ class OpdDashboardService
                 continue;
             }
 
+            // Bila seluruh sub sudah lengkap dan yang tertinggal hanya baris
+            // rencana aksi, lencananya jangan berbunyi "Belum Valid" — datanya
+            // sah, metadatanya yang kurang.
+            $hanyaWarisan = (int) ($i['validity']['baris_sub_id'] ?? 0) === 0
+                && (int) ($i['validity']['sub_total'] ?? 0) > 0
+                && (int) ($i['validity']['sub_valid'] ?? 0) === (int) $i['validity']['sub_total'];
+
             $out[] = $this->insight(45, 'indikator_belum_valid', $judul, $alasan,
-                'Belum Valid', 'abu', $urlMon, 'Lengkapi MONEV', $i['indikator_id']);
+                $hanyaWarisan ? 'Baris lama belum lengkap' : 'Belum Valid',
+                'abu', $urlMon, 'Lengkapi MONEV', $i['indikator_id']);
         }
 
         // Realisasi anggaran belum diperbarui (pagu ada, laporan realisasi belum lengkap).
@@ -1873,13 +1954,28 @@ class OpdDashboardService
      * dokumen lain (lakip.status, renstra/rpjmd status draft|selesai,
      * iku_indikator.status).
      *
-     * Maka seluruh capaian dilaporkan apa adanya sebagai "Sementara" dan
-     * TIDAK ada nilai yang diklaim terverifikasi. Struktur datanya sudah siap
-     * menampung label "Terverifikasi": begitu mekanisme verifikasi dibuat
+     * Maka TIDAK ada nilai yang diklaim terverifikasi. Struktur datanya sudah
+     * siap menampung label "Terverifikasi": begitu mekanisme verifikasi dibuat
      * (mis. kolom `monev.status_verifikasi` + siapa/kapan), cukup ubah fungsi
      * ini menjadi membaca kolom tersebut — kartu, grafik, dan drawer otomatis
      * ikut. Penambahan kolom itu SENGAJA belum dilakukan karena berada di luar
      * lingkup dashboard dan berdampak ke modul MONEV (form, simpan, cetak).
+     *
+     * `available` ADALAH SAKLARNYA. Selama false, SELURUH tampilan status
+     * verifikasi disembunyikan — baris "Sementara — N indikator belum
+     * diverifikasi" pada kartu Capaian (dashboard OPD, Kabupaten, Bupati),
+     * lencana "Sementara" di drawer indikator, keterangan di bawah donat
+     * Distribusi Status, segmen "Belum Terverifikasi" pada donat itu, dan
+     * butir "Status verifikasi capaian" di Prioritas Tindak Lanjut.
+     *
+     * Alasannya: selama mekanismenya belum ada, `belum_verifikasi` SELALU sama
+     * dengan jumlah indikator valid, sehingga barisnya terbaca sebagai
+     * tunggakan pekerjaan padahal tidak ada yang bisa dikerjakan operator.
+     * Melaporkan status yang tidak bisa ditentukan sistem lebih menyesatkan
+     * daripada tidak melaporkannya sama sekali.
+     *
+     * Begitu `available` menjadi true, semuanya muncul kembali dengan
+     * sendirinya — tidak ada tampilan yang perlu disunting ulang.
      *
      * @return array{code: string, label: string, available: bool, note: string}
      */

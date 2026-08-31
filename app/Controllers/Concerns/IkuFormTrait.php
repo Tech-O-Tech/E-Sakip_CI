@@ -261,8 +261,13 @@ trait IkuFormTrait
         // baris, yang lain MENIMPA nilai yang sudah dipakai, dan pemakainya
         // berhak tahu berapa banyak yang tertimpa.
         $diperbarui = (int) ($stat['diperbarui'] ?? 0);
+        // Penautan tidak mengubah isi apa pun — ia hanya memasang jejak asal
+        // pada baris yang selama ini hanya bertaut lewat teks. Tetap dilaporkan
+        // supaya jelas mengapa sync berikutnya tidak lagi menawarkan baris yang
+        // sama sebagai "baru".
+        $ditautkan = (int) ($stat['ditautkan'] ?? 0);
 
-        if (empty($bagian) && $diperbarui === 0) {
+        if (empty($bagian) && $diperbarui === 0 && $ditautkan === 0) {
             return $stat['dilewati'] > 0
                 ? 'Tidak ada data baru — ' . $stat['dilewati'] . ' indikator yang dipilih sudah ada di IKU.'
                 : 'Tidak ada data yang dipilih untuk disalin.';
@@ -278,6 +283,11 @@ trait IkuFormTrait
 
         if ($stat['dilewati'] > 0) {
             $pesan .= ' ' . $stat['dilewati'] . ' indikator dilewati karena sudah ada.';
+        }
+
+        if ($ditautkan > 0) {
+            $pesan .= ' ' . $ditautkan . ' baris lama kini menyimpan jejak asalnya,'
+                . ' sehingga tidak lagi tersalin ganda bila redaksinya dirapikan.';
         }
 
         return $pesan;

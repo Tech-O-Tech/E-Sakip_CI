@@ -186,6 +186,25 @@
                                    title="Ambil sasaran, indikator, dan target dari Renstra OPD ini">
                                     <i class="fas fa-sync-alt me-1"></i> Sync dari Renstra
                                 </a>
+
+                                <?php /* =====================================================
+                                         TOMBOL "SASARAN MANDIRI" SENGAJA DICABUT DARI SINI
+
+                                         Pintu itu menulis LANGSUNG ke tabel live, di luar alur
+                                         revisi: IKU berjalan berubah tanpa revisi, tanpa
+                                         pengesahan, dan sasarannya tidak pernah masuk arsip
+                                         versi mana pun — sehingga ia tampil di layar ini tetapi
+                                         TIDAK ADA di dokumen penilaian tahun mana pun, dan LAKIP
+                                         tidak bisa menilainya.
+
+                                         Sejak 2026-08-31 sasaran mandiri ditambahkan di dalam
+                                         layar sunting draft revisi (tombol "Tambah Sasaran",
+                                         bersebelahan dengan "Tambah Indikator"), sehingga ia
+                                         ikut diperiksa dan baru berlaku setelah disahkan.
+
+                                         Sync tetap di sini: ia jalan yang benar untuk sasaran
+                                         yang MEMANG ada di Renstra, dan ia menyimpan silsilahnya.
+                                    ===================================================== */ ?>
                             <?php endif; ?>
                         <?php endif; ?>
                         <?php if (!empty($selected_periode)): ?>

@@ -206,6 +206,10 @@ foreach ([1, 2, 3, 4] as $q) {
 }
 $kolomLebar['renaksi'] = 8.5;
 $kolomLebar['sub']     = 8.5;
+// Satuan milik SUB. WAJIB ikut didaftar: peta ini yang menentukan lebar tiap
+// <col> DAN colspan empty-state — menambah <th> tanpa menambah lebarnya
+// membuat kedua-duanya meleset satu kolom.
+$kolomLebar['subsat']  = 3.5;
 foreach ([1, 2, 3, 4] as $q) {
     $kolomLebar['target_' . $q] = 2;
 }
@@ -240,6 +244,10 @@ $lebarJumlah = array_sum($kolomLebar) ?: 1;
         <th colspan="4">Realisasi Anggaran Per Triwulan (Rp)</th>
         <th rowspan="2">Rencana Aksi</th>
         <th rowspan="2">Sub Rencana Aksi</th>
+        <?php /* Satuan milik SUB. Ikut dicetak di sini juga: cetakan ini
+                 menampilkan baris sub yang sama, dan target maupun capaian
+                 triwulannya sama-sama tak berarti tanpa satuan. */ ?>
+        <th rowspan="2">Satuan</th>
         <th colspan="4">Target Triwulan</th>
         <th colspan="4">Capaian Triwulan</th>
         <th rowspan="2">Capaian Total</th>
@@ -324,7 +332,7 @@ $lebarJumlah = array_sum($kolomLebar) ?: 1;
             ?>
             <?php foreach ($rows as $ri => $row): ?>
                 <?php
-                [$items, $barisButir, $n, $barisRenaksi] = $barisFor($row);
+                [$items, $barisButir, $n] = $barisFor($row);
                 $targetId  = (int) ($row['target_id'] ?? 0);
                 $subsRow   = $subMap[$targetId] ?? [];
                 $capaian   = $monevSub[$targetId] ?? [];
@@ -351,9 +359,17 @@ $lebarJumlah = array_sum($kolomLebar) ?: 1;
                     }
                 }
                 [$spanUnit, $mulaiUnit] = pk_bagi_baris($units, $n);
+
+                // Baris rencana aksi dibagi rata dengan cara yang sama, supaya
+                // sisa tinggi ketika unit lebih banyak TIDAK jadi blok kosong.
+                [$spanBaris, $mulaiBaris, $spanButir] = pk_bagi_renaksi($barisRender, $n);
                 ?>
                 <?php for ($k = 0; $k < $n; $k++): ?>
-                    <?php [$butirIdx, $subIdx] = $barisRender[$k] ?? [null, null]; ?>
+                    <?php
+                    $riBaris             = $mulaiBaris[$k] ?? null;
+                    [$butirIdx, $subIdx] = $riBaris !== null ? $barisRender[$riBaris] : [null, null];
+                    $spanRow             = $riBaris !== null ? ($spanBaris[$riBaris] ?? 1) : 1;
+                    ?>
                     <tr>
                         <?php if ($showOpd): ?>
                             <?php if ($newOpd): ?>
@@ -426,15 +442,10 @@ $lebarJumlah = array_sum($kolomLebar) ?: 1;
                             <?php endforeach; ?>
                         <?php endif; ?>
 
-                        <?php if ($butirIdx === null): ?>
-                            <?php // Sisa baris: Renaksi + Sub + 4 target + 4 capaian + total = 11 kolom ?>
-                            <?php if ($k === $barisRenaksi): ?>
-                                <td colspan="11" rowspan="<?= $n - $barisRenaksi ?>"></td>
-                            <?php endif; ?>
-                        <?php else: ?>
-                            <?php // Rencana Aksi membentang setinggi sub rencana aksinya ?>
+                        <?php if ($butirIdx !== null): ?>
+                            <?php // Rencana Aksi membentang setinggi seluruh sub rencana aksinya ?>
                             <?php if ($subIdx === 0): ?>
-                                <td rowspan="<?= $barisButir[$butirIdx] ?? 1 ?>" class="text-start">
+                                <td rowspan="<?= $spanButir[$butirIdx] ?? 1 ?>" class="text-start">
                                     <?php $txt = $items[$butirIdx] ?? ''; ?>
                                     <?= ($txt !== '') ? esc(($butirIdx + 1) . '. ' . $txt) : '-' ?>
                                 </td>
@@ -445,21 +456,25 @@ $lebarJumlah = array_sum($kolomLebar) ?: 1;
                             $subId = (int) ($sub['id'] ?? 0);
                             $cap   = $capaian[$subId] ?? null;
                             ?>
-                            <td class="text-start">
+                            <td rowspan="<?= $spanRow ?>" class="text-start">
                                 <?= $sub !== null ? esc(($subIdx + 1) . '. ' . $sub['teks']) : '-' ?>
+                            </td>
+
+                            <td rowspan="<?= $spanRow ?>">
+                                <?= ($sub !== null && ($sub['satuan'] ?? '') !== '') ? esc($sub['satuan']) : '-' ?>
                             </td>
 
                             <?php // Target & capaian triwulan sama-sama mengikuti SUB rencana aksi ?>
                             <?php foreach ([1, 2, 3, 4] as $q): ?>
                                 <?php $tw = $sub['tw'][$q] ?? null; ?>
-                                <td class="c"><?= ($tw !== null && $tw !== '') ? esc($tw) : '-' ?></td>
+                                <td rowspan="<?= $spanRow ?>" class="c"><?= ($tw !== null && $tw !== '') ? esc($tw) : '-' ?></td>
                             <?php endforeach; ?>
                             <?php foreach ([1, 2, 3, 4] as $q): ?>
                                 <?php $cv = $cap['capaian_triwulan_' . $q] ?? null; ?>
-                                <td class="c"><?= ($cv !== null && $cv !== '') ? esc($cv) : '-' ?></td>
+                                <td rowspan="<?= $spanRow ?>" class="c"><?= ($cv !== null && $cv !== '') ? esc($cv) : '-' ?></td>
                             <?php endforeach; ?>
                             <?php // Capaian Total = persentase hasil hitungan server (monev.total) ?>
-                            <td class="c"><?= capaianFormatPersen($cap['total'] ?? null) ?></td>
+                            <td rowspan="<?= $spanRow ?>" class="c"><?= capaianFormatPersen($cap['total'] ?? null) ?></td>
                         <?php endif; ?>
 
                         <?php if ($k === 0): ?>

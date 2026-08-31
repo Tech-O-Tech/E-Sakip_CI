@@ -38,7 +38,11 @@ class CascadingModel extends Model
     private const SATUAN_KAB_SELECT    = "COALESCE(satiku.satuan, NULLIF(iki.satuan, ''), i.satuan)";
     private const BASELINE_KAB_SELECT  = "COALESCE(NULLIF(iki.baseline, ''), i.baseline)";
 
-    public function getMatrix($start, $end)
+    /**
+     * @param int|null $ikuRevisiId Versi IKU Kabupaten yang dibaca.
+     *                              null = IKU Kabupaten BERJALAN.
+     */
+    public function getMatrix($start, $end, ?int $ikuRevisiId = null)
     {
         // ==========================================================
         // 1. BACKBONE RPJMD: Misi -> Tujuan -> Sasaran -> Indikator
@@ -51,11 +55,30 @@ class CascadingModel extends Model
         // Kabupaten mati dengan "Unknown column" — perilaku lamanya masih sah.
         $adaSilsilahIku = $this->db->fieldExists('source_indikator_id', 'iku_indikator');
 
-        $sasaranKab   = $adaSilsilahIku ? self::SASARAN_KAB_SELECT   : 's.sasaran_rpjmd';
-        $indikatorKab = $adaSilsilahIku ? self::INDIKATOR_KAB_SELECT : 'i.indikator_sasaran';
-        $satuanKab    = $adaSilsilahIku ? self::SATUAN_KAB_SELECT    : 'i.satuan';
-        $baselineKab  = $adaSilsilahIku ? self::BASELINE_KAB_SELECT  : 'i.baseline';
+        $dariVersi = $adaSilsilahIku && $ikuRevisiId !== null && $ikuRevisiId > 0
+            && $this->db->tableExists('iku_revisi_indikator');
+
+        $sasaranKab   = $adaSilsilahIku
+            ? ($dariVersi ? "COALESCE(NULLIF(rvs.sasaran, ''), " . self::SASARAN_KAB_SELECT . ")" : self::SASARAN_KAB_SELECT)
+            : 's.sasaran_rpjmd';
+        $indikatorKab = $adaSilsilahIku
+            ? ($dariVersi ? "COALESCE(NULLIF(rvi.indikator, ''), " . self::INDIKATOR_KAB_SELECT . ")" : self::INDIKATOR_KAB_SELECT)
+            : 'i.indikator_sasaran';
+        $satuanKab    = $adaSilsilahIku
+            ? ($dariVersi ? "COALESCE(rvi.satuan_nama, NULLIF(rvi.satuan, ''), " . self::SATUAN_KAB_SELECT . ")" : self::SATUAN_KAB_SELECT)
+            : 'i.satuan';
+        $baselineKab  = $adaSilsilahIku
+            ? ($dariVersi ? "COALESCE(NULLIF(rvi.baseline, ''), " . self::BASELINE_KAB_SELECT . ")" : self::BASELINE_KAB_SELECT)
+            : 'i.baseline';
         $lineageKab   = $adaSilsilahIku ? 'iki.id' : 'NULL';
+
+        // Penanda perubahan pada versi terpilih — sama artinya dengan yang
+        // dipakai cascading OPD.
+        $statusVersiKab = $dariVersi
+            ? "CASE WHEN iki.id IS NULL THEN ''
+                    WHEN rvi.id IS NULL THEN 'tidak_ada'
+                    ELSE COALESCE(NULLIF(rvi.jenis_perubahan, ''), 'tetap') END"
+            : "''";
 
         $backboneQ = $this->db->table('rpjmd_misi m')
             ->select("
@@ -73,7 +96,8 @@ class CascadingModel extends Model
                 {$indikatorKab} as indikator_sasaran,
                 {$satuanKab} as satuan,
                 {$baselineKab} as baseline,
-                {$lineageKab} as iku_indikator_id
+                {$lineageKab} as iku_indikator_id,
+                {$statusVersiKab} as es2_versi_status
             ", false)
             ->join('rpjmd_tujuan t', 't.misi_id = m.id', 'left')
             ->join('rpjmd_sasaran s', 's.tujuan_id = t.id', 'left')
@@ -110,6 +134,17 @@ class CascadingModel extends Model
                     'left',
                     false
                 );
+
+            if ($dariVersi) {
+                $backboneQ
+                    ->join(
+                        'iku_revisi_indikator rvi',
+                        'rvi.sumber_indikator_id = iki.id AND rvi.revisi_id = ' . (int) $ikuRevisiId,
+                        'left',
+                        false
+                    )
+                    ->join('iku_revisi_sasaran rvs', 'rvs.id = rvi.revisi_sasaran_id', 'left');
+            }
         }
 
         $backbone = $backboneQ->get()->getResultArray();
@@ -463,6 +498,98 @@ class CascadingModel extends Model
     private const SATUAN_ES2_SELECT     = "COALESCE(siku.satuan, NULLIF(iki.satuan, ''), ris.satuan)";
 
     /**
+     * Apakah basis data ini sudah punya jangkar IKU pada cascading?
+     *
+     * Dipakai TAMPILAN untuk memutuskan apakah penanda "masih dari Renstra"
+     * layak dicetak. Pada server yang belum menjalankan migrasi 2026-08-27,
+     * SELURUH baris memang membaca Renstra — menandai semuanya hanya jadi
+     * dinding lencana yang tidak menyuruh siapa pun berbuat apa-apa. Penanda
+     * baru bermakna ketika sebagian baris sudah bisa berjangkar IKU dan
+     * sebagian belum.
+     */
+    public function jangkarIkuTersedia(): bool
+    {
+        return $this->db->fieldExists('iku_indikator_id', 'cascading_sasaran_opd');
+    }
+
+    /**
+     * SAKLAR AKAR CASCADING — satu-satunya tempat memutuskannya.
+     *
+     * 'renstra' : daftar baris Eselon II ditentukan Renstra, teks IKU
+     *             dilapiskan di atasnya. Perilaku sejak awal.
+     * 'iku'     : daftar barisnya ditentukan IKU, Renstra & RPJMD dijangkau
+     *             balik lewat silsilah.
+     *
+     * Membalik konstanta ini membalik SISI BACA (query matriks) sekaligus
+     * SISI TULIS (jangkar baris cascading baru) sekali jalan — keduanya
+     * bertanya ke akarAktif(), tidak ada yang memutuskan sendiri-sendiri.
+     *
+     * Sebelum membaliknya, buktikan dulu tidak ada yang hilang:
+     *
+     *     php spark casc:akar-check
+     */
+    public const AKAR_BAWAAN = 'iku';
+
+    /**
+     * Akar yang benar-benar dipakai. Basis data yang belum punya kolom
+     * jangkar IKU selalu jatuh ke 'renstra' — perilaku lamanya masih sah.
+     */
+    public function akarAktif(): string
+    {
+        return (self::AKAR_BAWAAN === 'iku' && $this->jangkarIkuTersedia()) ? 'iku' : 'renstra';
+    }
+
+    /**
+     * Terjemahkan identitas Eselon II menjadi KEDUA jangkar baris cascading.
+     *
+     * Baris cascading selalu menyimpan dua jangkar: `renstra_indikator_sasaran_id`
+     * dan `iku_indikator_id`. Yang berubah menurut akar hanyalah id MANA yang
+     * dipegang tampilan — dan itulah yang diterjemahkan di sini, supaya alur
+     * penyimpanan tidak perlu tahu akar mana yang sedang aktif.
+     *
+     * @return array{renstra_indikator_sasaran_id: int|null, iku_indikator_id: int|null}
+     */
+    public function jangkarDariEs2(int $identitas, ?string $akar = null): array
+    {
+        $akar = $akar ?? $this->akarAktif();
+
+        if ($identitas <= 0) {
+            return ['renstra_indikator_sasaran_id' => null, 'iku_indikator_id' => null];
+        }
+
+        if ($akar === 'iku') {
+            // Arah balik: silsilah indikator IKU yang menyebut asal Renstra-nya.
+            $baris = $this->db->table('iku_indikator')
+                ->select('source_indikator_id')
+                ->where('id', $identitas)
+                ->get()->getRowArray();
+
+            return [
+                'renstra_indikator_sasaran_id' => isset($baris['source_indikator_id'])
+                    ? (int) $baris['source_indikator_id'] : null,
+                'iku_indikator_id' => $identitas,
+            ];
+        }
+
+        return [
+            'renstra_indikator_sasaran_id' => $identitas,
+            'iku_indikator_id'             => $this->padananIkuIndikator($identitas),
+        ];
+    }
+
+    /**
+     * Pasangan Kabupaten dari jangkarIkuTersedia().
+     *
+     * Cascading Kabupaten tidak punya tabel jembatan; ia menyambung RPJMD ke
+     * IKU Kabupaten lewat silsilah `iku_indikator.source_indikator_id` yang
+     * diisi db/update_2026-08-28_silsilah_iku_kabupaten.sql.
+     */
+    public function silsilahIkuTersedia(): bool
+    {
+        return $this->db->fieldExists('source_indikator_id', 'iku_indikator');
+    }
+
+    /**
      * Padanan indikator IKU untuk sebuah indikator sasaran Renstra.
      *
      * Dipakai saat baris cascading BARU dibuat, supaya baris itu langsung
@@ -544,27 +671,100 @@ class CascadingModel extends Model
         return count($baris) === 1 ? (int) $baris[0]['id'] : null;
     }
 
-    public function getCascadingMatrixByOpd($opdId, $startYear = null, $endYear = null)
-    {
+    /**
+     * @param int|null $ikuRevisiId Versi IKU yang dibaca. null = IKU BERJALAN.
+     *                              Bila diisi, teks & target Eselon II diambil
+     *                              dari ARSIP revisi itu, dan tiap baris diberi
+     *                              penanda apakah induknya berubah/hilang pada
+     *                              versi tersebut.
+     * @param string   $akar        'renstra' (bawaan) | 'iku'
+     *
+     * =====================================================================
+     * DUA AKAR, SATU DAFTAR KOLOM
+     *
+     * Matriks ini sejak awal dibangun `FROM renstra_sasaran`: daftar baris
+     * Eselon II ditentukan Renstra, dan teks IKU hanya dilapiskan di atasnya
+     * lewat COALESCE. Akar 'iku' membalik itu — daftar barisnya ditentukan
+     * IKU, dan Renstra/RPJMD dijangkau balik lewat silsilah
+     * (`iku_indikator.source_indikator_id`, `iku_sasaran.source_sasaran_id`).
+     *
+     * Keduanya memakai DAFTAR KOLOM YANG SAMA PERSIS; yang berbeda hanya
+     * tabel pangkal, syarat sambungan baris cascading, dan penyaring
+     * periodenya. Disatukan dalam satu metode dengan sengaja: dua salinan
+     * query sepanjang ini pasti menyimpang cepat atau lambat.
+     *
+     * Bedanya bisa diukur, bukan dikira-kira:
+     *
+     *     php spark casc:akar-check
+     *
+     * Selama bawaannya masih 'renstra', akar 'iku' hanya dipakai perintah
+     * itu — tampilan belum tersentuh.
+     */
+    public function getCascadingMatrixByOpd(
+        $opdId,
+        $startYear = null,
+        $endYear = null,
+        ?int $ikuRevisiId = null,
+        ?string $akar = null
+    ) {
+        // null = ikuti saklar tunggal. Nilai tegas hanya dipakai casc:akar-check
+        // untuk menjalankan kedua akar berdampingan.
+        $akar = $akar ?? $this->akarAktif();
+
         // Hindari query rusak (ON clause "opd_id = NULL") bila OPD tidak diketahui,
         // mis. akun super admin yang tidak terikat OPD.
         if (empty($opdId)) {
             return [];
         }
 
+        $dariVersi = $ikuRevisiId !== null && $ikuRevisiId > 0
+            && $this->db->tableExists('iku_revisi_indikator');
+
         // Server yang belum menjalankan migrasi 2026-08-27 tidak punya kolom
         // jangkar IKU. Tanpa penjaga ini, seluruh menu Cascading mati dengan
         // "Unknown column" — padahal perilaku lamanya masih sah sepenuhnya.
         $adaJangkarIku = $this->db->fieldExists('iku_indikator_id', 'cascading_sasaran_opd');
 
-        $sasaranEs2   = $adaJangkarIku ? self::SASARAN_ES2_SELECT   : 'rs.sasaran';
-        $indikatorEs2 = $adaJangkarIku ? self::INDIKATOR_ES2_SELECT : 'ris.indikator_sasaran';
-        $satuanEs2    = $adaJangkarIku ? self::SATUAN_ES2_SELECT    : 'ris.satuan';
+        // Akar 'iku' MUSTAHIL tanpa kolom jangkar — tanpa itu tidak ada cara
+        // menyambungkan baris cascading ke indikator IKU. Diam-diam kembali ke
+        // akar Renstra, bukan melempar galat: perilaku lama tetap sah.
+        $akarIku = $akar === 'iku' && $adaJangkarIku;
+
+        // Membaca VERSI berarti membaca arsip revisi, bukan tabel berjalan.
+        // COALESCE tetap berlapis ke Renstra supaya baris yang tidak punya
+        // jangkar IKU sama sekali tidak berubah perilakunya.
+        // Identitas Eselon II. Pada akar Renstra ia id indikator Renstra; pada
+        // akar IKU ia id indikator IKU. Kunci inilah yang dipakai tampilan
+        // untuk rowspan, pengelompokan, dan tautan "Tambah ESS III" — sehingga
+        // membaliknya berarti membalik makna kolom `indikator_id`.
+        $identitasEs2      = $akarIku ? 'iki.id'  : 'ris.id';
+        // Sasaran Eselon II sebagai kunci pengelompokan kolom sebelahnya.
+        $identitasSasaran  = $akarIku ? 'iks.id'  : 'rs.id';
+
+        $sasaranEs2   = $adaJangkarIku
+            ? ($dariVersi ? "COALESCE(NULLIF(rvs.sasaran, ''), " . self::SASARAN_ES2_SELECT . ")" : self::SASARAN_ES2_SELECT)
+            : 'rs.sasaran';
+        $indikatorEs2 = $adaJangkarIku
+            ? ($dariVersi ? "COALESCE(NULLIF(rvi.indikator, ''), " . self::INDIKATOR_ES2_SELECT . ")" : self::INDIKATOR_ES2_SELECT)
+            : 'ris.indikator_sasaran';
+        $satuanEs2    = $adaJangkarIku
+            ? ($dariVersi ? "COALESCE(rvi.satuan_nama, NULLIF(rvi.satuan, ''), " . self::SATUAN_ES2_SELECT . ")" : self::SATUAN_ES2_SELECT)
+            : 'ris.satuan';
         $lineageEs2   = $adaJangkarIku
             ? 'es3.source_type as es2_source_type, es3.iku_indikator_id as es2_iku_indikator_id,'
             : "'renstra' as es2_source_type, NULL as es2_iku_indikator_id,";
 
-        $builder = $this->db->table('renstra_sasaran rs')
+        // Penanda per baris: apa yang terjadi pada indikator induk di versi ini.
+        //   tetap|revisi|baru|pengganti|dihentikan  -> ada di versi, jenisnya apa
+        //   tidak_ada                               -> jangkarnya tidak dibawa versi ini
+        //   ''                                      -> tidak sedang membaca versi
+        $statusVersi = $dariVersi
+            ? "CASE WHEN es3.iku_indikator_id IS NULL THEN ''
+                    WHEN rvi.id IS NULL THEN 'tidak_ada'
+                    ELSE COALESCE(NULLIF(rvi.jenis_perubahan, ''), 'tetap') END"
+            : "''";
+
+        $builder = $this->db->table($akarIku ? 'iku_sasaran iks' : 'renstra_sasaran rs')
             ->select("
             t.id as tujuan_id,
             t.tujuan_rpjmd,
@@ -579,14 +779,15 @@ class CascadingModel extends Model
             rit.indikator_tujuan,
 
             rs.csf as csf_es2,
-            rs.id as renstra_sasaran_id,
+            {$identitasSasaran} as renstra_sasaran_id,
             {$sasaranEs2} as renstra_sasaran,
 
-            ris.id as indikator_id,
+            {$identitasEs2} as indikator_id,
             {$indikatorEs2} as indikator_sasaran,
             {$satuanEs2} as satuan,
 
             {$lineageEs2}
+            {$statusVersi} as es2_versi_status,
 
             es3.csf as csf_es3,
             es3.id as es3_id,
@@ -608,16 +809,52 @@ class CascadingModel extends Model
 
             ipel.id as pelaksana_indikator_id,
             ipel.indikator as pelaksana_indikator
-        ")
-            ->join('renstra_tujuan rt', 'rt.id=rs.renstra_tujuan_id', 'left')
-            ->join('renstra_indikator_tujuan rit', 'rit.tujuan_id=rt.id', 'left')
-            ->join('rpjmd_sasaran s', 's.id=rt.rpjmd_sasaran_id', 'left')
-            ->join('rpjmd_tujuan t', 't.id=s.tujuan_id', 'left')
-            ->join('renstra_indikator_sasaran ris', 'ris.renstra_sasaran_id=rs.id', 'left')
+        ");
+
+        // DB yang belum dimigrasi tetap dilayani dengan perilaku lama.
+        $tujuanIku = $this->db->fieldExists('renstra_tujuan_id', 'iku_sasaran')
+            ? 'rt.id = COALESCE(rs.renstra_tujuan_id, iks.renstra_tujuan_id)'
+            : 'rt.id = rs.renstra_tujuan_id';
+
+        if ($akarIku) {
+            // Pangkalnya IKU. Renstra dan RPJMD dijangkau BALIK lewat silsilah:
+            // indikator dulu (`source_indikator_id`), dan bila indikatornya
+            // belum bersilsilah, lewat sasarannya (`source_sasaran_id`) —
+            // supaya tulang punggung RPJMD tetap terangkai sejauh mungkin.
+            $builder
+                ->join('iku_indikator iki', 'iki.iku_sasaran_id = iks.id AND iki.dihentikan_pada IS NULL', 'inner', false)
+                ->join('renstra_indikator_sasaran ris', 'ris.id = iki.source_indikator_id', 'left')
+                ->join('renstra_sasaran rs', 'rs.id = COALESCE(ris.renstra_sasaran_id, iks.source_sasaran_id)', 'left', false)
+                // TUJUAN SASARAN MANDIRI.
+                //
+                // Sasaran yang LAHIR di IKU tidak punya `source_sasaran_id`,
+                // sehingga `rs` kosong dan tujuannya tak terjangkau — barisnya
+                // tampil dengan empat kolom kosong dan berdiri sebagai pulau
+                // sendiri di luar blok Tujuan mana pun.
+                //
+                // Ia menunjuk tujuannya SENDIRI lewat `renstra_tujuan_id`.
+                // Urutannya penting: `rs` didahulukan, jadi sasaran hasil sync
+                // tetap menurunkan tujuan lewat silsilahnya seperti semula dan
+                // kolom ini tidak pernah ikut bicara untuk mereka.
+                ->join('renstra_tujuan rt', $tujuanIku, 'left', false)
+                ->join('renstra_indikator_tujuan rit', 'rit.tujuan_id=rt.id', 'left')
+                ->join('rpjmd_sasaran s', 's.id=rt.rpjmd_sasaran_id', 'left')
+                ->join('rpjmd_tujuan t', 't.id=s.tujuan_id', 'left');
+        } else {
+            // Urutan join jalur Renstra sengaja dibiarkan persis seperti semula.
+            $builder
+                ->join('renstra_tujuan rt', 'rt.id=rs.renstra_tujuan_id', 'left')
+                ->join('renstra_indikator_tujuan rit', 'rit.tujuan_id=rt.id', 'left')
+                ->join('rpjmd_sasaran s', 's.id=rt.rpjmd_sasaran_id', 'left')
+                ->join('rpjmd_tujuan t', 't.id=s.tujuan_id', 'left')
+                ->join('renstra_indikator_sasaran ris', 'ris.renstra_sasaran_id=rs.id', 'left');
+        }
+
+        $builder
             ->join(
                 'cascading_sasaran_opd es3',
-                'es3.renstra_indikator_sasaran_id = ris.id 
-            AND es3.level="es3" 
+                ($akarIku ? 'es3.iku_indikator_id = iki.id' : 'es3.renstra_indikator_sasaran_id = ris.id')
+            . ' AND es3.level="es3"
             AND es3.opd_id=' . $this->db->escape($opdId),
                 'left'
             )
@@ -650,21 +887,55 @@ class CascadingModel extends Model
                 'ipel.cascading_sasaran_id = pel.id',
                 'left'
             )
-            ->where('rs.opd_id', $opdId);
+            ->where($akarIku ? 'iks.opd_id' : 'rs.opd_id', $opdId);
 
         // Jangkar IKU baris ES III — menentukan teks Eselon II yang tampil.
         // Ditambahkan belakangan dengan sengaja: alias `es3` sudah terpasang
         // di atas, dan MySQL hanya menuntut tabel yang diacu ON sudah lebih
         // dulu ada di urutan FROM, bukan tepat sebelumnya.
         if ($adaJangkarIku) {
-            $builder->join('iku_indikator iki', 'iki.id = es3.iku_indikator_id', 'left')
-                ->join('iku_sasaran iks', 'iks.id = iki.iku_sasaran_id', 'left')
-                ->join('satuan siku', self::SATUAN_JOIN_IKU, 'left', false);
+            // Pada akar IKU, `iki` dan `iks` SUDAH menjadi pangkal query —
+            // menyambungnya lagi di sini akan menabrak alias yang sama.
+            if (! $akarIku) {
+                $builder->join('iku_indikator iki', 'iki.id = es3.iku_indikator_id', 'left')
+                    ->join('iku_sasaran iks', 'iks.id = iki.iku_sasaran_id', 'left');
+            }
+
+            $builder->join('satuan siku', self::SATUAN_JOIN_IKU, 'left', false);
+
+            // Arsip versi terpilih. Jembatannya `sumber_indikator_id`, yang
+            // menunjuk id indikator IKU BERJALAN — kunci yang sama dengan
+            // jangkar cascading, sehingga baris tetap ketemu walau teksnya
+            // sudah berubah di versi itu.
+            if ($dariVersi) {
+                $builder
+                    ->join(
+                        'iku_revisi_indikator rvi',
+                        // Pada akar IKU, jembatannya indikator IKU itu sendiri:
+                        // baris Eselon II tetap punya arsip versi walau belum
+                        // ada satu pun baris cascading di bawahnya.
+                        ($akarIku ? 'rvi.sumber_indikator_id = iki.id' : 'rvi.sumber_indikator_id = es3.iku_indikator_id')
+                        . ' AND rvi.revisi_id = ' . (int) $ikuRevisiId,
+                        'left',
+                        false
+                    )
+                    ->join('iku_revisi_sasaran rvs', 'rvs.id = rvi.revisi_sasaran_id', 'left');
+            }
         }
 
         if ($startYear && $endYear) {
-            $builder->where('rs.tahun_mulai', $startYear);
-            $builder->where('rs.tahun_akhir', $endYear);
+            // Periode disaring pada tabel PANGKAL. Menyaring lewat Renstra saat
+            // akar IKU akan membuang baris IKU yang belum bersilsilah — padahal
+            // justru baris itulah yang hanya ada di IKU.
+            $builder->where($akarIku ? 'iks.tahun_mulai' : 'rs.tahun_mulai', $startYear);
+            $builder->where($akarIku ? 'iks.tahun_akhir' : 'rs.tahun_akhir', $endYear);
+        }
+
+        // Pada akar IKU, urutan pangkalnya ikut IKU: sasaran & indikator IKU
+        // punya `urutan` sendiri yang menentukan bagaimana dokumen itu dibaca.
+        if ($akarIku) {
+            $builder->orderBy('iks.urutan', 'ASC')->orderBy('iks.id', 'ASC')
+                ->orderBy('iki.urutan', 'ASC')->orderBy('iki.id', 'ASC');
         }
 
         $rows = $builder

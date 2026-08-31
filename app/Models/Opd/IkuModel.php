@@ -448,8 +448,17 @@ class IkuModel extends Model
         // berasal darinya. Dipakai mencocokkan sebelum teks (lihat
         // bandingkanIndikator).
         $petaSilsilah = [];
+        // Indeks silsilah SASARAN: id sasaran Renstra berjalan -> sasaran IKU
+        // yang lahir darinya. Sebelumnya sasaran hanya dicocokkan lewat teks,
+        // sehingga merapikan redaksi satu sasaran membuat sync menganggapnya
+        // sasaran baru — lalu menyalin ulang seluruh indikator di bawahnya.
+        $petaSilsilahSasaran = [];
 
         foreach ($ikuTerpasang as $sas) {
+            if (! empty($sas['source_sasaran_id'])) {
+                $petaSilsilahSasaran[(int) $sas['source_sasaran_id']] = $sas;
+            }
+
             foreach ($sas['indikator'] as $ind) {
                 if (! empty($ind['source_indikator_id'])) {
                     $petaSilsilah[(int) $ind['source_indikator_id']] = $ind;
@@ -463,7 +472,10 @@ class IkuModel extends Model
 
         foreach ($sasaranRows as $sasaran) {
             $kunciSasaran = $this->normalkanTeks($sasaran['sasaran']);
-            $ikuSasaran   = $ikuTerpasang[$kunciSasaran] ?? null;
+            // Silsilah dulu, teks belakangan — sama seperti indikator.
+            $sasaranLiveId = (int) ($sasaran['sumber_live_id'] ?? 0);
+            $ikuSasaran    = $petaSilsilahSasaran[$sasaranLiveId]
+                ?? ($ikuTerpasang[$kunciSasaran] ?? null);
 
             $daftarIndikator = [];
 
@@ -534,12 +546,23 @@ class IkuModel extends Model
     ): array {
         $kandidat = $this->getKandidatSync($sumber, $opdId, $tahunMulai, $tahunAkhir, $renstraVersiId);
         $stat     = ['sasaran_baru' => 0, 'indikator_baru' => 0, 'target' => 0,
-                     'dilewati' => 0, 'diperbarui' => 0];
+                     'dilewati' => 0, 'diperbarui' => 0, 'ditautkan' => 0];
 
         $db = $this->db;
         $db->transBegin();
 
         try {
+            // Sebelum apa pun disalin: pasang silsilah pada baris IKU lama yang
+            // ketemu padanannya lewat TEKS tetapi belum menyimpan asalnya.
+            //
+            // Tanpa langkah ini pencocokan teks tidak pernah menjadi tautan
+            // permanen: begitu redaksi indikator dirapikan sedikit saja, sync
+            // berikutnya kehilangan jejaknya dan menyalin ulang indikator yang
+            // sebenarnya sudah ada — inilah asal data kembar yang selama ini
+            // muncul. Hanya kolom yang MASIH KOSONG yang diisi; tidak ada isi
+            // yang ditimpa, sehingga aman dijalankan berkali-kali.
+            $stat['ditautkan'] = $this->tautkanSilsilah($kandidat, $sumber, $renstraVersiId);
+
             foreach ($kandidat as $sasaran) {
                 $idSumber = (int) $sasaran['sumber_id'];
 
@@ -1049,7 +1072,12 @@ class IkuModel extends Model
     private function petaIkuTerpasang(?int $opdId, int $tahunMulai, int $tahunAkhir): array
     {
         $builder = $this->db->table('iku_sasaran')
-            ->select('id, sasaran')
+            // `source_sasaran_id` ikut dibaca supaya sasaran bisa dicocokkan
+            // lewat silsilah, bukan hanya teks — lihat catatan di
+            // bandingkanIndikator(), alasannya sama persis untuk sasaran:
+            // begitu redaksi sasaran dirapikan, pencocokan teks gagal dan
+            // SELURUH sasaran beserta indikatornya tersalin ulang.
+            ->select('id, sasaran, source_sasaran_id')
             ->where('tahun_mulai', $tahunMulai)
             ->where('tahun_akhir', $tahunAkhir);
 
@@ -1111,9 +1139,10 @@ class IkuModel extends Model
             }
 
             $peta[$kunci] = [
-                'id'        => (int) $sasaran['id'],
-                'sasaran'   => $sasaran['sasaran'],
-                'indikator' => $indikatorPerSasaran[(int) $sasaran['id']] ?? [],
+                'id'                => (int) $sasaran['id'],
+                'sasaran'           => $sasaran['sasaran'],
+                'source_sasaran_id' => $sasaran['source_sasaran_id'] ?? null,
+                'indikator'         => $indikatorPerSasaran[(int) $sasaran['id']] ?? [],
             ];
         }
 
@@ -1672,6 +1701,90 @@ class IkuModel extends Model
         return $map;
     }
 
+    /**
+     * Nomor urut berikutnya bagi sasaran baru pada satu OPD & periode.
+     *
+     * Di akar IKU, matriks Cascading mengurutkan baris Eselon II lewat
+     * `iku_sasaran.urutan` LEBIH DULU daripada tujuan/sasaran Renstra. Sasaran
+     * mandiri yang lahir dengan urutan 0 karena itu MEMIMPIN dokumen,
+     * mendahului sasaran hasil Renstra — urutan yang keliru untuk dokumen
+     * resmi. Ia diberi nomor di ekor sejak lahir, bukan ditambal di query.
+     */
+    public function urutanBerikutnya(?int $opdId, int $tahunMulai, int $tahunAkhir): int
+    {
+        $b = $this->db->table('iku_sasaran')
+            ->selectMax('urutan', 'maks')
+            ->where('tahun_mulai', $tahunMulai)
+            ->where('tahun_akhir', $tahunAkhir);
+
+        $opdId === null ? $b->where('opd_id IS NULL', null, false) : $b->where('opd_id', $opdId);
+
+        return (int) ($b->get()->getRowArray()['maks'] ?? 0) + 1;
+    }
+
+    /**
+     * Kolom penunjuk tujuan bagi SASARAN MANDIRI, bila DB-nya sudah dimigrasi.
+     *
+     * Dipisah supaya `insertSasaran()` tetap bekerja pada basis data yang belum
+     * menjalankan db/update_2026-08-29_sasaran_iku_mandiri.sql.
+     *
+     * @return array<string, int|null>
+     */
+    private function kolomTujuanMandiri(array $data): array
+    {
+        if (! $this->db->fieldExists('renstra_tujuan_id', 'iku_sasaran')) {
+            return [];
+        }
+
+        return [
+            'renstra_tujuan_id' => ! empty($data['renstra_tujuan_id'])
+                ? (int) $data['renstra_tujuan_id'] : null,
+        ];
+    }
+
+    /**
+     * Tujuan Renstra milik satu OPD pada satu periode, untuk dropdown.
+     *
+     * `renstra_tujuan` tidak menyimpan `opd_id`; kepemilikannya dicapai lewat
+     * sasaran di bawahnya. DISTINCT karena satu tujuan biasanya menaungi
+     * beberapa sasaran.
+     *
+     * @return array<int, array{id:int, tujuan:string}>
+     */
+    public function tujuanRenstraOpd(int $opdId, int $tahunMulai, int $tahunAkhir): array
+    {
+        return $this->db->table('renstra_tujuan rt')
+            ->select('rt.id, rt.tujuan')
+            ->distinct()
+            ->join('renstra_sasaran rs', 'rs.renstra_tujuan_id = rt.id')
+            ->where('rs.opd_id', $opdId)
+            ->where('rs.tahun_mulai', $tahunMulai)
+            ->where('rs.tahun_akhir', $tahunAkhir)
+            ->orderBy('rt.id', 'ASC')
+            ->get()
+            ->getResultArray();
+    }
+
+    /**
+     * Adakah sasaran Renstra yang teksnya sama pada OPD & periode ini?
+     *
+     * Penjaga terhadap alasan pintu tambah manual dulu ditutup: sasaran kembar
+     * di sebelah hasil sync. Kalau sasarannya MEMANG ada di Renstra, jalan yang
+     * benar adalah Sync — bukan mengetiknya lagi di sini.
+     */
+    public function sasaranAdaDiRenstra(int $opdId, int $tahunMulai, int $tahunAkhir, string $teks): bool
+    {
+        $rapi = static fn (string $x): string => trim(preg_replace('/\s+/', ' ', $x));
+
+        return $this->db->table('renstra_sasaran')
+            ->where('opd_id', $opdId)
+            ->where('tahun_mulai', $tahunMulai)
+            ->where('tahun_akhir', $tahunAkhir)
+            ->where("TRIM(REGEXP_REPLACE(sasaran, '[[:space:]]+', ' ')) = "
+                . $this->db->escape($rapi($teks)), null, false)
+            ->countAllResults() > 0;
+    }
+
     private function insertSasaran(array $data): int
     {
         $this->db->table('iku_sasaran')->insert([
@@ -1687,7 +1800,7 @@ class IkuModel extends Model
                 ? (int) $data['source_sasaran_id'] : null,
             'created_at'  => date('Y-m-d H:i:s'),
             'updated_at'  => date('Y-m-d H:i:s'),
-        ]);
+        ] + $this->kolomTujuanMandiri($data));
 
         return (int) $this->db->insertID();
     }
@@ -1748,6 +1861,315 @@ class IkuModel extends Model
      * Jejak asal (`source_*`) juga tidak ditulis ulang: ia ditulis sekali saat
      * baris lahir dan tetap menunjuk indikator sumber yang sama.
      */
+    /**
+     * Ubah REDAKSI sasaran IKU. Hanya kolom `sasaran` yang disentuh.
+     *
+     * =====================================================================
+     * MENGAPA INI AMAN SEKARANG, DAN DULU TIDAK
+     *
+     * Dulu segala pencocokan IKU bertumpu pada TEKS: sync mengenali sasaran
+     * dengan membandingkan kalimatnya. Mengubah satu kata membuat sync
+     * kehilangan jejaknya, menganggapnya sasaran baru, lalu menyalin ulang
+     * seluruh indikator di bawahnya — lahirlah kembar.
+     *
+     * Sejak setiap sasaran menyimpan `source_sasaran_id`, pencocokan berjalan
+     * lewat ID. Redaksinya boleh berubah sesuka hati tanpa memutus apa pun:
+     * sync tetap mengenalinya, jangkar cascading menunjuk id, dan arsip revisi
+     * maupun LAKIP menyimpan teksnya sendiri yang sudah beku.
+     *
+     * =====================================================================
+     * YANG DIJAGA
+     *
+     * Redaksi baru tidak boleh KEMBAR dengan sasaran lain pada OPD dan periode
+     * yang sama. Dua sasaran berteks sama membuat layar IKU dan pratinjau sync
+     * mustahil dibaca — dan pada basis data yang belum punya silsilah lengkap,
+     * ia menghidupkan kembali persoalan kembar yang baru saja ditutup.
+     *
+     * @return array{ok: bool, pesan: string}
+     */
+    public function renameSasaran(int $sasaranId, string $teksBaru): array
+    {
+        $baru = trim(preg_replace('/\s+/', ' ', $teksBaru));
+
+        if ($baru === '') {
+            return ['ok' => false, 'pesan' => 'Sasaran tidak boleh dikosongkan.'];
+        }
+
+        $lama = $this->db->table('iku_sasaran')
+            ->select('id, opd_id, tahun_mulai, tahun_akhir, sasaran')
+            ->where('id', $sasaranId)->get()->getRowArray();
+
+        if ($lama === null) {
+            return ['ok' => false, 'pesan' => 'Sasaran IKU tidak ditemukan.'];
+        }
+
+        if (trim(preg_replace('/\s+/', ' ', (string) $lama['sasaran'])) === $baru) {
+            return ['ok' => false, 'pesan' => ''];   // tidak berubah, bukan galat
+        }
+
+        $kembar = $this->db->table('iku_sasaran')
+            ->where('tahun_mulai', $lama['tahun_mulai'])
+            ->where('tahun_akhir', $lama['tahun_akhir'])
+            ->where('id !=', $sasaranId)
+            ->where("TRIM(REGEXP_REPLACE(sasaran, '[[:space:]]+', ' ')) = " . $this->db->escape($baru), null, false);
+
+        $lama['opd_id'] === null
+            ? $kembar->where('opd_id IS NULL', null, false)
+            : $kembar->where('opd_id', $lama['opd_id']);
+
+        if ($kembar->countAllResults() > 0) {
+            return ['ok' => false, 'pesan' => 'Sudah ada sasaran lain dengan redaksi yang sama pada periode ini.'];
+        }
+
+        $this->db->table('iku_sasaran')->where('id', $sasaranId)->update([
+            'sasaran'    => $baru,
+            'updated_at' => date('Y-m-d H:i:s'),
+        ]);
+
+        return ['ok' => true, 'pesan' => 'Redaksi sasaran IKU diperbarui.'];
+    }
+
+    /**
+     * MODE GANTI: buang isi IKU yang tidak ada pada sumber.
+     *
+     * =====================================================================
+     * APA YANG MEMBEDAKANNYA DARI SYNC BIASA
+     *
+     * Sync biasa hanya MENAMBAH dan MEMPERBARUI. Indikator IKU yang tidak
+     * ada di Renstra dibiarkan — dan memang itu sah, sebab IKU boleh memuat
+     * indikator di luar Renstra. Mode ganti membuat IKU menjadi cerminan
+     * sumbernya: yang tidak ada di sana, dibuang.
+     *
+     * =====================================================================
+     * YANG TIDAK PERNAH DIBUANG
+     *
+     * Baris yang sudah dipakai TIDAK boleh hilang, karena yang ikut hilang
+     * bukan barisnya saja melainkan pekerjaan orang lain:
+     *
+     *   * dijangkar baris CASCADING  -> sasaran Eselon III/IV/Pelaksana di
+     *                                   bawahnya kehilangan induk dan lenyap
+     *                                   dari layar;
+     *   * punya realisasi LAKIP      -> capaian yang sudah diinput putus dari
+     *                                   indikatornya;
+     *   * termuat di ARSIP REVISI    -> dokumen yang sudah disahkan berubah
+     *                                   isinya surut ke belakang;
+     *   * punya program pendukung    -> kaitan ke program ikut terbuang.
+     *
+     * Baris seperti itu DIPERTAHANKAN dan dilaporkan, bukan dipaksa hilang.
+     * "Mengganti" tidak boleh berarti "menghapus jejak orang lain".
+     *
+     * Sasaran hanya ikut dibuang bila seluruh indikatornya sudah habis —
+     * cangkang kosong, tanpa isi yang tertinggal.
+     *
+     * @return array{dibuang_indikator:int, dibuang_sasaran:int,
+     *               dipertahankan:array<int,array{id:int,indikator:string,alasan:string}>}
+     */
+    public function buangTanpaPadanan(?int $opdId, int $tahunMulai, int $tahunAkhir, bool $kerjakan): array
+    {
+        $hasil = ['dibuang_indikator' => 0, 'dibuang_sasaran' => 0, 'dipertahankan' => []];
+
+        $b = $this->db->table('iku_indikator ii')
+            ->select('ii.id, ii.indikator, ii.iku_sasaran_id')
+            ->join('iku_sasaran s', 's.id = ii.iku_sasaran_id')
+            ->where('s.tahun_mulai', $tahunMulai)
+            ->where('s.tahun_akhir', $tahunAkhir)
+            ->where('ii.source_indikator_id IS NULL', null, false);
+
+        // SASARAN MANDIRI DIKECUALIKAN.
+        //
+        // Indikator di bawah sasaran yang LAHIR di IKU memang tidak punya
+        // padanan di Renstra — itu bukan kecelakaan, itu maksudnya. Tanpa
+        // pengecualian ini, mode Ganti akan menghapus tepat apa yang baru saja
+        // sengaja dibuat penggunanya, pada sync berikutnya.
+        //
+        // Ditandai lewat `source_type`, bukan lewat `renstra_tujuan_id`:
+        // penunjuk tujuan bisa menjadi NULL sendiri bila tujuan Renstra-nya
+        // dihapus (ON DELETE SET NULL), dan sasarannya akan mendadak terlihat
+        // seperti yatim biasa.
+        if ($this->db->fieldExists('source_type', 'iku_sasaran')) {
+            $b->groupStart()
+                ->where('s.source_type IS NULL', null, false)
+                ->orWhere('s.source_type !=', 'iku')
+                ->groupEnd();
+        }
+
+        // ...DAN INDIKATOR MANDIRI, sekalipun sasarannya hasil sync.
+        //
+        // Kasus nyatanya: `Indeks Ketahanan Pangan (IKP)` meringkas LIMA
+        // indikator RPJMD (Produksi Padi, Jagung, Daging, Telur, Perikanan)
+        // menjadi satu indeks. Ia sengaja tidak punya padanan satu-lawan-satu,
+        // dan keempat penjaga lain tidak menolongnya: belum dijangkar
+        // cascading, belum dipakai LAKIP, belum punya arsip revisi maupun
+        // program. Tanpa baris ini, satu centang Ganti menghapusnya.
+        if ($this->db->fieldExists('source_type', 'iku_indikator')) {
+            $b->groupStart()
+                ->where('ii.source_type IS NULL', null, false)
+                ->orWhere('ii.source_type !=', 'iku')
+                ->groupEnd();
+        }
+
+        $opdId === null ? $b->where('s.opd_id IS NULL', null, false) : $b->where('s.opd_id', $opdId);
+
+        if ($this->punyaKolomPensiun('iku_indikator')) {
+            $b->where('ii.dihentikan_pada IS NULL', null, false);
+        }
+
+        $calon = $b->get()->getResultArray();
+
+        if ($calon === []) {
+            return $hasil;
+        }
+
+        $buang = [];
+
+        foreach ($calon as $c) {
+            $id     = (int) $c['id'];
+            $alasan = $this->alasanDipertahankan($id);
+
+            if ($alasan !== null) {
+                $hasil['dipertahankan'][] = ['id' => $id, 'indikator' => $c['indikator'], 'alasan' => $alasan];
+
+                continue;
+            }
+
+            $buang[] = $id;
+        }
+
+        if ($buang === []) {
+            return $hasil;
+        }
+
+        $hasil['dibuang_indikator'] = count($buang);
+
+        if (! $kerjakan) {
+            return $hasil;
+        }
+
+        $sasaranTersentuh = array_values(array_unique(array_map(
+            static fn ($c) => (int) $c['iku_sasaran_id'],
+            array_filter($calon, static fn ($c) => in_array((int) $c['id'], $buang, true))
+        )));
+
+        // Target & program ikut lewat ON DELETE CASCADE.
+        $this->db->table('iku_indikator')->whereIn('id', $buang)->delete();
+
+        // Cangkang sasaran yang isinya habis.
+        foreach ($sasaranTersentuh as $sid) {
+            $sisa = $this->db->table('iku_indikator')->where('iku_sasaran_id', $sid)->countAllResults();
+
+            if ($sisa === 0) {
+                $this->db->table('iku_sasaran')->where('id', $sid)->delete();
+                $hasil['dibuang_sasaran']++;
+            }
+        }
+
+        return $hasil;
+    }
+
+    /** Alasan sebuah indikator IKU tidak boleh dibuang, atau null bila aman. */
+    private function alasanDipertahankan(int $ikuIndikatorId): ?string
+    {
+        if ($this->db->fieldExists('iku_indikator_id', 'cascading_sasaran_opd')
+            && $this->db->table('cascading_sasaran_opd')
+                ->where('iku_indikator_id', $ikuIndikatorId)->countAllResults() > 0) {
+            return 'dijangkar baris cascading';
+        }
+
+        if ($this->db->fieldExists('source_entity_id', 'lakip')
+            && $this->db->table('lakip')->where('source_type', 'iku')
+                ->where('source_entity_id', $ikuIndikatorId)->countAllResults() > 0) {
+            return 'punya realisasi LAKIP';
+        }
+
+        if ($this->db->tableExists('iku_revisi_indikator')
+            && $this->db->table('iku_revisi_indikator')
+                ->where('sumber_indikator_id', $ikuIndikatorId)->countAllResults() > 0) {
+            return 'termuat di arsip revisi';
+        }
+
+        if ($this->db->tableExists('iku_program')
+            && $this->db->table('iku_program')
+                ->where('iku_indikator_id', $ikuIndikatorId)->countAllResults() > 0) {
+            return 'punya program pendukung';
+        }
+
+        return null;
+    }
+
+    /**
+     * Pasang silsilah pada baris IKU yang padanannya ketemu tetapi belum
+     * menyimpan asal-usulnya.
+     *
+     * =====================================================================
+     * MENGAPA PERLU
+     *
+     * Pencocokan sync bertingkat: silsilah dulu (`source_*_id` menunjuk id,
+     * jadi tetap benar walau redaksinya berubah), teks belakangan. Masalahnya,
+     * pencocokan lewat TEKS dulu tidak pernah menuliskan hasilnya ke mana pun.
+     * Akibatnya baris IKU yang diketik manual selamanya hanya bertaut lewat
+     * teks — dan begitu ada yang merapikan satu huruf di salah satu sisi,
+     * sync berikutnya menganggapnya indikator baru lalu menyalinnya lagi.
+     * Itulah asal data kembar.
+     *
+     * Sekali baris ditautkan, redaksinya boleh berubah sesuka hati tanpa
+     * membuat sync kehilangan jejak.
+     *
+     * =====================================================================
+     * YANG DIJAGA
+     *
+     * Hanya kolom yang MASIH KOSONG yang diisi. Tautan yang sudah ada — baik
+     * hasil sync sebelumnya maupun pemetaan manual — tidak pernah ditimpa,
+     * sehingga metode ini aman dijalankan berulang kali.
+     *
+     * @param array<int,array<string,mixed>> $kandidat hasil getKandidatSync()
+     *
+     * @return int jumlah baris yang baru ditautkan (sasaran + indikator)
+     */
+    private function tautkanSilsilah(array $kandidat, string $sumber, ?int $renstraVersiId): int
+    {
+        $jml = 0;
+
+        foreach ($kandidat as $sasaran) {
+            $ikuSasaranId = (int) ($sasaran['iku_sasaran_id'] ?? 0);
+            $asalSasaran  = (int) ($sasaran['sumber_live_id'] ?? 0);
+
+            if ($ikuSasaranId > 0 && $asalSasaran > 0) {
+                $this->db->table('iku_sasaran')
+                    ->where('id', $ikuSasaranId)
+                    ->where('source_sasaran_id IS NULL', null, false)
+                    ->update([
+                        'source_sasaran_id' => $asalSasaran,
+                        'source_type'       => $sumber,
+                        'source_version_id' => $renstraVersiId,
+                    ]);
+
+                $jml += $this->db->affectedRows();
+            }
+
+            foreach ($sasaran['indikator'] ?? [] as $ind) {
+                $ikuIndId  = (int) ($ind['iku_id'] ?? 0);
+                $asalIndId = (int) ($ind['sumber_live_id'] ?? 0);
+
+                if ($ikuIndId <= 0 || $asalIndId <= 0) {
+                    continue;
+                }
+
+                $this->db->table('iku_indikator')
+                    ->where('id', $ikuIndId)
+                    ->where('source_indikator_id IS NULL', null, false)
+                    ->update([
+                        'source_indikator_id' => $asalIndId,
+                        'source_type'         => $sumber,
+                        'source_version_id'   => $renstraVersiId,
+                    ]);
+
+                $jml += $this->db->affectedRows();
+            }
+        }
+
+        return $jml;
+    }
+
     private function timpaDariSumber(int $ikuIndikatorId, array $ind, array $target): void
     {
         $this->db->table('iku_indikator')->where('id', $ikuIndikatorId)->update([

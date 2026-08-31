@@ -187,9 +187,12 @@ $js = static fn ($v) => json_encode(
                     <div class="kpi-num" style="color:<?= esc($fCapaian['status']['color_hex']) ?>"><?= esc(capaianFormatPersen($fCapaian['total'])) ?></div>
                     <div class="kpi-sub mt-2">
                       <div><?= (int) $fCapaian['valid'] ?> dari <?= (int) $fCapaian['wajib'] ?> indikator valid</div>
-                      <div class="fw-semibold" style="color:<?= esc($fCapaian['status']['color_hex']) ?>">
-                        <?= esc($fCapaian['label']) ?><?= $fCapaian['belum_verifikasi'] > 0 ? ' — ' . (int) $fCapaian['belum_verifikasi'] . ' belum diverifikasi' : '' ?>
-                      </div>
+                      <?php // Hanya dilaporkan bila mekanisme verifikasi ada — lihat verificationInfo(). ?>
+                      <?php if ($fCapaian['verifikasi']['available'] ?? false): ?>
+                        <div class="fw-semibold" style="color:<?= esc($fCapaian['status']['color_hex']) ?>">
+                          <?= esc($fCapaian['label']) ?><?= $fCapaian['belum_verifikasi'] > 0 ? ' — ' . (int) $fCapaian['belum_verifikasi'] . ' belum diverifikasi' : '' ?>
+                        </div>
+                      <?php endif; ?>
                     </div>
                   <?php else: ?>
                     <div class="kpi-num sm text-muted">Belum dapat dihitung</div>
@@ -374,9 +377,11 @@ $js = static fn ($v) => json_encode(
                   <div class="kpi-num" style="color:<?= esc($pkB['status']['color_hex']) ?>"><?= esc(capaianFormatPersen($pkB['total'])) ?></div>
                   <div class="kpi-sub mt-2">
                     <div><?= (int) $pkB['valid'] ?> dari <?= (int) $pkB['wajib'] ?> indikator valid</div>
-                    <div class="fw-semibold" style="color:<?= esc($pkB['status']['color_hex']) ?>">
-                      <?= esc($pkB['label']) ?><?= $pkB['belum_verifikasi'] > 0 ? ' — ' . (int) $pkB['belum_verifikasi'] . ' belum diverifikasi' : '' ?>
-                    </div>
+                    <?php if ($pkB['verifikasi']['available'] ?? false): ?>
+                      <div class="fw-semibold" style="color:<?= esc($pkB['status']['color_hex']) ?>">
+                        <?= esc($pkB['label']) ?><?= $pkB['belum_verifikasi'] > 0 ? ' — ' . (int) $pkB['belum_verifikasi'] . ' belum diverifikasi' : '' ?>
+                      </div>
+                    <?php endif; ?>
                   </div>
                 <?php else: ?>
                   <div class="kpi-num sm text-muted">Belum dapat dihitung</div>
@@ -730,7 +735,8 @@ $js = static fn ($v) => json_encode(
           '</div>' +
           '<div class="d-flex flex-wrap gap-2 mt-2">' + badge(i.status) +
             '<span class="badge-soft" style="background:#f1f3f2;color:#6b7a70;">' + (i.is_valid ? 'Valid' : 'Belum valid') + '</span>' +
-            '<span class="badge-soft" style="background:#fdf0e6;color:#e07b39;">' + esc(i.verification.label) + '</span>' +
+            // Lencana status verifikasi hanya bila mekanismenya ada (lihat verificationInfo()).
+            (i.verification.available ? '<span class="badge-soft" style="background:#fdf0e6;color:#e07b39;">' + esc(i.verification.label) + '</span>' : '') +
           '</div>' +
           (i.reason ? '<div class="ins-why mt-2"><i class="fas fa-circle-info me-1"></i>' + esc(i.reason) + '</div>' : '') +
         '</div>';
@@ -792,7 +798,7 @@ $js = static fn ($v) => json_encode(
               '<div class="fw-bold mb-2" style="font-size:.92rem;line-height:1.4;">' + esc(d.indikator) + '</div>' +
               '<div class="d-flex flex-wrap gap-2 mb-3">' + badge(d.status) +
                 '<span class="badge-soft" style="background:#f1f3f2;color:#6b7a70;">' + (d.validity.is_valid ? 'Valid' : 'Belum valid') + '</span>' +
-                '<span class="badge-soft" style="background:#fdf0e6;color:#e07b39;">' + esc(d.verification.label) + '</span></div>' +
+                (d.verification.available ? '<span class="badge-soft" style="background:#fdf0e6;color:#e07b39;">' + esc(d.verification.label) + '</span>' : '') + '</div>' +
               '<dl class="drawer-dl mb-0">' +
                 '<dt>Sasaran PK Bupati</dt><dd>' + esc(d.sasaran) + '</dd>' +
                 '<dt>Satuan</dt><dd>' + esc(d.satuan || '-') + '</dd>' +
@@ -1031,7 +1037,7 @@ $js = static fn ($v) => json_encode(
           '</div>' +
           '<div class="d-flex flex-wrap gap-2 mt-2">' + badge(i.status) +
             '<span class="badge-soft" style="background:#f1f3f2;color:#6b7a70;">' + (i.is_valid ? 'Valid' : 'Belum valid') + '</span>' +
-            '<span class="badge-soft" style="background:#fdf0e6;color:#e07b39;">' + esc(i.verification.label) + '</span></div>' +
+            (i.verification.available ? '<span class="badge-soft" style="background:#fdf0e6;color:#e07b39;">' + esc(i.verification.label) + '</span>' : '') + '</div>' +
           (i.reason ? '<div class="ins-why mt-2"><i class="fas fa-circle-info me-1"></i>' + esc(i.reason) + '</div>' : '') +
           '<div class="mt-2 d-flex flex-wrap gap-1">' + tombol + '</div></div>';
       }
@@ -1138,9 +1144,10 @@ $js = static fn ($v) => json_encode(
           var kepala = '<div class="drawer-section"><dl class="drawer-dl mb-0">' +
             '<dt>Capaian PK Bupati</dt><dd>' + (b.can_compute ? pct(b.total) : 'belum dapat dihitung') + '</dd>' +
             '<dt>Indikator valid</dt><dd>' + b.valid + ' dari ' + b.wajib + '</dd>' +
-            '<dt>Status nilai</dt><dd>' + esc(b.label) + '</dd>' +
+            // "Status nilai" & catatannya hanya bila mekanisme verifikasi ada.
+            (b.verifikasi && b.verifikasi.available ? '<dt>Status nilai</dt><dd>' + esc(b.label) + '</dd>' : '') +
             (b.formula_gap ? '<dt>Formula belum tersedia</dt><dd>' + b.formula_gap + ' indikator</dd>' : '') +
-            '</dl><p class="text-muted mt-3 mb-0" style="font-size:.75rem;">' + esc(b.verifikasi.note) + '</p></div>';
+            '</dl>' + (b.verifikasi && b.verifikasi.available ? '<p class="text-muted mt-3 mb-0" style="font-size:.75rem;">' + esc(b.verifikasi.note) + '</p>' : '') + '</div>';
           return { t: 'Indikator PK Bupati', s: b.valid + ' dari ' + b.wajib + ' indikator valid', html: kepala + b.indikator.map(kartuIndikatorBupati).join('') };
         },
         opd: function () {
@@ -1185,8 +1192,8 @@ $js = static fn ($v) => json_encode(
           var kepala = '<div class="drawer-section"><dl class="drawer-dl mb-0">' +
             '<dt>Capaian OPD</dt><dd>' + (c.can_compute ? pct(c.total) : 'belum dapat dihitung') + '</dd>' +
             '<dt>Indikator valid</dt><dd>' + c.valid + ' dari ' + c.wajib + '</dd>' +
-            '<dt>Status nilai</dt><dd>' + esc(c.label) + '</dd>' +
-            '</dl><p class="text-muted mt-3 mb-0" style="font-size:.75rem;">' + esc(c.verifikasi.note) + '</p></div>';
+            (c.verifikasi && c.verifikasi.available ? '<dt>Status nilai</dt><dd>' + esc(c.label) + '</dd>' : '') +
+            '</dl>' + (c.verifikasi && c.verifikasi.available ? '<p class="text-muted mt-3 mb-0" style="font-size:.75rem;">' + esc(c.verifikasi.note) + '</p>' : '') + '</div>';
           return { t: 'Rincian Indikator', s: D.fokus.opd_nama, html: kepala + D.fokus.indicators.map(kartuIndikatorOpd).join('') };
         },
         f_anggaran: function () {

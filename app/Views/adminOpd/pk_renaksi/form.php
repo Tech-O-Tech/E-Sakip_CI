@@ -365,7 +365,12 @@ $labelUnit = $labelUnitHeader
                     + '<div class="input-group input-group-sm mb-1">'
                     + '<span class="input-group-text sub-no bg-white text-muted"></span>'
                     + '<input type="text" class="form-control sub-input" placeholder="Tulis sub rencana aksi" value="' + esc(teks) + '">'
-                    + '<select class="form-select sub-satuan flex-grow-0" style="max-width:150px"'
+                    // Lebarnya proporsional, bukan dipatok sempit: nama satuan bisa
+                    // panjang ("Dokumen", "Orang/Kegiatan", "Persentase"), dan kotak
+                    // 150px memotongnya jadi tidak terbaca. flex-basis memberi porsi
+                    // tetap sambil tetap boleh menyusut di layar sempit.
+                    + '<select class="form-select sub-satuan flex-grow-0 flex-shrink-1"'
+                    + ' style="flex-basis:220px;min-width:130px"'
                     + ' title="Satuan target triwulan sub ini">' + satOpts + '</select>'
                     + '<button type="button" class="btn btn-outline-danger remove-sub" title="Hapus sub"><i class="fas fa-times"></i></button>'
                     + '</div>'

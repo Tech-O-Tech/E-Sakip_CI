@@ -3,6 +3,7 @@
 namespace App\Controllers\AdminOpd;
 
 use App\Controllers\BaseController;
+use App\Controllers\Concerns\PkPdPendukungTrait;
 use App\Models\Opd\TargetModel;
 use App\Models\Opd\MonevModel;
 use App\Models\SatuanModel;
@@ -24,6 +25,10 @@ use Config\Database;
  */
 class PkRenaksiController extends BaseController
 {
+    // Peta Perangkat Daerah pendukung Sasaran PK Bupati (otomatis via cascading +
+    // override manual) — dipakai bersama endpoint API Target & Rencana Aksi.
+    use PkPdPendukungTrait;
+
     /**
      * `capaian` menyediakan rumus Capaian Total (persentase) untuk MONEV.
      * `pk_unit` menentukan tingkat unit anggaran (Program/Kegiatan/Sub Kegiatan)
@@ -252,86 +257,6 @@ class PkRenaksiController extends BaseController
             ->whereNotIn('id', \App\Models\OpdModel::EXCLUDED_OPD_IDS)
             ->orderBy('nama_opd', 'ASC')
             ->get()->getResultArray();
-    }
-
-    /**
-     * Peta OTOMATIS Penanggung Jawab Perangkat Daerah untuk PK Bupati (best-effort):
-     * teks sasaran RPJMD (dinormalisasi) => [ ['id'=>opd_id,'nama'=>nama_opd], ... ],
-     * ditarik dari rantai Renstra (renstra_tujuan.rpjmd_sasaran_id -> rpjmd_sasaran;
-     * OPD dari renstra_sasaran.opd_id). Dicocokkan dgn teks sasaran PK Bupati di view.
-     */
-    private function autoPdBySasaran(): array
-    {
-        $norm = static fn($s) => strtolower(trim(preg_replace('/\s+/', ' ', (string) $s)));
-
-        $rows = $this->db->table('renstra_tujuan rt')
-            ->select('rsp.id AS sasaran_id, rsp.sasaran_rpjmd, ro.opd_id, o.nama_opd')
-            ->join('renstra_sasaran ro', 'ro.renstra_tujuan_id = rt.id', 'inner')
-            ->join('rpjmd_sasaran rsp', 'rsp.id = rt.rpjmd_sasaran_id', 'inner')
-            ->join('opd o', 'o.id = ro.opd_id', 'inner')
-            ->where('rt.rpjmd_sasaran_id IS NOT NULL')
-            ->groupBy('rsp.id, rsp.sasaran_rpjmd, ro.opd_id, o.nama_opd')
-            ->orderBy('o.nama_opd', 'ASC')
-            ->get()->getResultArray();
-
-        $bySasId = []; // sasaran_id => [ ['id','nama'], ... ]
-        $map     = []; // norm(teks) => [ ['id','nama'], ... ]  (kunci: teks SASARAN)
-        foreach ($rows as $r) {
-            $opd = ['id' => (int) $r['opd_id'], 'nama' => $r['nama_opd']];
-            $bySasId[(int) $r['sasaran_id']][] = $opd;
-            $map[$norm($r['sasaran_rpjmd'])][]  = $opd;
-        }
-
-        // Fallback: kunci juga per-INDIKATOR RPJMD -> OPD sasaran induknya
-        // (mengatasi teks sasaran PK Bupati yang beda/typo, mis. "pemerintaha").
-        foreach ($this->db->table('rpjmd_indikator_sasaran')
-            ->select('sasaran_id, indikator_sasaran')->get()->getResultArray() as $ir) {
-            $sid = (int) $ir['sasaran_id'];
-            if (empty($bySasId[$sid])) { continue; }
-            $key = $norm($ir['indikator_sasaran']);
-            if ($key !== '' && !isset($map[$key])) { $map[$key] = $bySasId[$sid]; }
-        }
-
-        return $map;
-    }
-
-    /** Mapping MANUAL Perangkat Daerah pendukung per Sasaran PK: pk_sasaran_id => [ ['id','nama'], ... ]. */
-    private function manualPdBySasaran(): array
-    {
-        if (!$this->db->tableExists('pk_sasaran_opd')) {
-            return [];
-        }
-        $rows = $this->db->table('pk_sasaran_opd pso')
-            ->select('pso.pk_sasaran_id, pso.opd_id, o.nama_opd')
-            ->join('opd o', 'o.id = pso.opd_id', 'inner')
-            ->orderBy('o.nama_opd', 'ASC')
-            ->get()->getResultArray();
-        $map = [];
-        foreach ($rows as $r) {
-            $map[(int) $r['pk_sasaran_id']][] = ['id' => (int) $r['opd_id'], 'nama' => $r['nama_opd']];
-        }
-        return $map;
-    }
-
-    /**
-     * Saran OTOMATIS OPD untuk sebuah Sasaran PK (dipakai sbg prefill form kelola PD).
-     * Meniru logika pencocokan di tampilan: cocokkan teks sasaran ke mapping cascading,
-     * bila kosong fallback lewat teks indikator sasaran tsb.
-     */
-    private function autoOpdsForSasaran(int $pkSasaranId, string $sasaranText): array
-    {
-        $map  = $this->autoPdBySasaran();
-        $norm = static fn($s) => strtolower(trim(preg_replace('/\s+/', ' ', (string) $s)));
-        $opds = $map[$norm($sasaranText)] ?? [];
-        if (empty($opds)) {
-            $inds = $this->db->table('pk_indikator')->select('indikator')
-                ->where('pk_sasaran_id', $pkSasaranId)->get()->getResultArray();
-            foreach ($inds as $ir) {
-                $k = $norm($ir['indikator']);
-                if ($k !== '' && !empty($map[$k])) { $opds = $map[$k]; break; }
-            }
-        }
-        return $opds;
     }
 
     /**

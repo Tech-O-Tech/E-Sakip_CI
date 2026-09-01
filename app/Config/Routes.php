@@ -67,9 +67,14 @@ $routes->group('api', ['filter' => 'api-token'], static function ($routes) {
     $routes->get('perangkat-daerah/(:num)/iku', 'Api\PerangkatDaerahController::iku/$1');
     $routes->get('perangkat-daerah/(:num)/cascading', 'Api\PerangkatDaerahController::cascading/$1');
     $routes->get('perangkat-daerah/(:num)/pohon-kinerja', 'Api\PerangkatDaerahController::pohonKinerja/$1');
+    $routes->get('perangkat-daerah/(:num)/target-renaksi', 'Api\TargetRenaksiController::index/$1');
     $routes->get('iku', 'Api\PerangkatDaerahController::iku');
     $routes->get('cascading', 'Api\PerangkatDaerahController::cascading');
     $routes->get('pohon-kinerja', 'Api\PerangkatDaerahController::pohonKinerja');
+    // Target & Rencana Aksi. Segmen 'bupati' didaftarkan lebih dulu agar tidak
+    // ditelan rute daftar PK OPD di bawahnya.
+    $routes->get('target-renaksi/bupati', 'Api\TargetRenaksiController::bupati');
+    $routes->get('target-renaksi', 'Api\TargetRenaksiController::index');
 });
 
 $routes->group(

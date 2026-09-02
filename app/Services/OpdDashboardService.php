@@ -40,6 +40,25 @@ class OpdDashboardService
     /** Jenis PK pendukung — hanya untuk drill-down, tidak masuk capaian total OPD. */
     private const JENIS_PENDUKUNG = ['administrator', 'pengawas'];
 
+    /**
+     * Daftar RESMI jenis catatan kartu "Perlu Perhatian" — urut dari yang
+     * paling genting, sejalan dengan severity di getPriorityInsights().
+     *
+     * Sumber tunggal label kartu: setiap kode catatan yang bisa lahir di
+     * getPriorityInsights() WAJIB terdaftar di sini, supaya jumlah baris
+     * rincian selalu menutup angka total di kartu. `kunci` dipertahankan agar
+     * pemakai lama (view kabupaten/bupati, php spark dash:verify) tidak patah.
+     */
+    private const PERHATIAN_JENIS = [
+        'indikator_kritis'      => ['kunci' => 'kritis',          'label' => 'indikator kritis',                    'warna' => 'merah'],
+        'indikator_perhatian'   => ['kunci' => 'perlu_perhatian', 'label' => 'indikator perlu perhatian',           'warna' => 'kuning'],
+        'renaksi_belum'         => ['kunci' => 'renaksi_belum',   'label' => 'Rencana Aksi belum lengkap',          'warna' => 'oranye'],
+        'monev_belum'           => ['kunci' => 'monev_belum',     'label' => 'MONEV belum lengkap',                 'warna' => 'oranye'],
+        'indikator_belum_valid' => ['kunci' => 'belum_valid',     'label' => 'indikator belum dapat dihitung',      'warna' => 'abu'],
+        'anggaran_belum'        => ['kunci' => 'anggaran_belum',  'label' => 'realisasi anggaran belum diperbarui', 'warna' => 'biru'],
+        'verifikasi'            => ['kunci' => 'verifikasi',      'label' => 'laporan LAKIP belum final',           'warna' => 'abu'],
+    ];
+
     private $db;
 
     /** @var array<int, array<int, array<string, mixed>>> cache skala satuan per satuan_id */
@@ -309,6 +328,7 @@ class OpdDashboardService
             'perhatian'           => $this->ringkasPerhatian($indikator, $insight, $anggaran),
             'status_distribution' => $distribusi,
             'insights'            => $insight,
+            'insight_groups'      => $this->groupInsights($insight),
             'misi'                => $misi,
             'indicators'          => array_map([$this, 'ringkasIndikator'], $indikator),
             'chart_series'        => $this->getQuarterlyOptions($indikator),
@@ -1714,6 +1734,17 @@ class OpdDashboardService
     /**
      * Ringkasan kartu 4 — Perlu Perhatian.
      *
+     * Kartu ini WAJIB rekonsiliasi: angka besar ("N Tindak Lanjut") harus sama
+     * dengan penjumlahan baris rincian di bawahnya. Karena itu `rincian`
+     * memuat SELURUH jenis catatan yang ada — bukan empat jenis pilihan
+     * seperti dulu, yang membuat kartu berbunyi "3 Tindak Lanjut" sambil hanya
+     * merinci satu ("1 realisasi anggaran belum diperbarui") karena jenis
+     * `indikator_belum_valid` dan `verifikasi` tidak pernah punya baris.
+     *
+     * Bila tampilan hanya sanggup memuat sebagian baris, sisanya diringkas
+     * sendiri oleh view memakai kunci `lainnya` — bukan dengan menghilangkan
+     * jenis catatan diam-diam.
+     *
      * @param array<int, array<string, mixed>> $indikator
      * @param array<int, array<string, mixed>> $insights
      *
@@ -1725,25 +1756,106 @@ class OpdDashboardService
             return count(array_filter($insights, static fn ($i) => $i['code'] === $code));
         };
 
-        $rinci = [
-            'kritis'          => $hitung($insights, 'indikator_kritis'),
-            'perlu_perhatian' => $hitung($insights, 'indikator_perhatian'),
-            'belum_valid'     => $hitung($insights, 'indikator_belum_valid'),
-            'monev_belum'     => $hitung($insights, 'monev_belum'),
-            'renaksi_belum'   => $hitung($insights, 'renaksi_belum'),
-            'anggaran_belum'  => $hitung($insights, 'anggaran_belum'),
-            'verifikasi'      => $hitung($insights, 'verifikasi'),
-        ];
+        $rinci = [];
+        foreach (self::PERHATIAN_JENIS as $code => $meta) {
+            $rinci[$meta['kunci']] = $hitung($insights, $code);
+        }
 
-        // `total` = jumlah SELURUH catatan (itu yang dibuka drawer), sedangkan
-        // `total_rinci` = yang benar-benar dirinci di kartu. Keduanya dikirim
-        // terpisah supaya kartu tidak lagi menampilkan angka besar yang tidak
-        // pernah cocok dengan baris-baris di bawahnya.
+        // Baris siap-tampil: hanya jenis yang benar-benar ada, urut dari yang
+        // paling genting, lengkap dengan label & warnanya. View cukup
+        // melooping ini — tidak lagi memilih sendiri jenis mana yang tampil.
+        $rincian = [];
+        foreach (self::PERHATIAN_JENIS as $code => $meta) {
+            $n = $rinci[$meta['kunci']];
+            if ($n > 0) {
+                $rincian[] = [
+                    'code'  => $code,
+                    'label' => $meta['label'],
+                    'teks'  => $n . ' ' . $meta['label'],
+                    'count' => $n,
+                    'color' => dash_color($meta['warna']),
+                ];
+            }
+        }
+
+        // Jaring pengaman: bila kelak ada kode catatan baru yang belum terdaftar
+        // di PERHATIAN_JENIS, ia tetap ikut terhitung sebagai "catatan lain"
+        // sehingga kartu tidak pernah lagi kehilangan angka.
+        $takDikenal = count($insights) - array_sum($rinci);
+        if ($takDikenal > 0) {
+            $rincian[] = [
+                'code'  => 'lainnya',
+                'label' => 'catatan lain',
+                'teks'  => $takDikenal . ' catatan lain',
+                'count' => $takDikenal,
+                'color' => dash_color('abu'),
+            ];
+        }
+
         return $rinci + [
             'total'       => count($insights),
-            'total_rinci' => array_sum($rinci),
-            'lainnya'     => count($insights) - array_sum($rinci),
+            'total_rinci' => array_sum(array_column($rincian, 'count')),
+            'lainnya'     => max(0, $takDikenal),
+            'rincian'     => $rincian,
         ];
+    }
+
+    /**
+     * Kelompokkan catatan tindak lanjut per indikator.
+     *
+     * Satu indikator yang belum lengkap kerap melahirkan beberapa catatan
+     * sekaligus (mis. "belum dapat dihitung" + "realisasi anggaran belum
+     * diperbarui"). Bila daftar dibiarkan datar, panel prioritas terbaca
+     * seolah ada banyak masalah berbeda padahal indikatornya satu — dan lima
+     * baris teratas bisa habis dipakai satu jenis catatan saja.
+     *
+     * Catatan yang tidak menempel pada indikator (mis. LAKIP) tetap berdiri
+     * sendiri sebagai satu kelompok.
+     *
+     * @param array<int, array<string, mixed>> $insights
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function groupInsights(array $insights): array
+    {
+        $grup = [];
+
+        foreach ($insights as $i) {
+            $kunci = $i['indikator_id'] !== null
+                ? 'ind-' . (int) $i['indikator_id']
+                : 'umum-' . md5($i['judul']);
+
+            if (!isset($grup[$kunci])) {
+                $grup[$kunci] = [
+                    'key'          => $kunci,
+                    'judul'        => $i['judul'],
+                    'indikator_id' => $i['indikator_id'],
+                    'severity'     => $i['severity'],
+                    'color'        => $i['color'],
+                    'items'        => [],
+                ];
+            }
+
+            // Warna & kegentingan kelompok mengikuti catatan terberatnya.
+            if ($i['severity'] < $grup[$kunci]['severity']) {
+                $grup[$kunci]['severity'] = $i['severity'];
+                $grup[$kunci]['color']    = $i['color'];
+            }
+
+            $grup[$kunci]['items'][] = [
+                'code'   => $i['code'],
+                'alasan' => $i['alasan'],
+                'status' => $i['status'],
+                'color'  => $i['color'],
+                'url'    => $i['url'],
+                'tombol' => $i['tombol'],
+            ];
+        }
+
+        $out = array_values($grup);
+        usort($out, static fn ($a, $b) => $a['severity'] <=> $b['severity'] ?: strcmp($a['judul'], $b['judul']));
+
+        return $out;
     }
 
     /**

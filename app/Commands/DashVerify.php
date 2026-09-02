@@ -252,6 +252,9 @@ class DashVerify extends BaseCommand
         $this->cek('prioritas terurut (kritis lebih dulu)',
             $d8['insights'] === [] || $d8['insights'][0]['severity'] <= $d8['insights'][count($d8['insights']) - 1]['severity']);
 
+        CLI::write('== Kartu Perlu Perhatian rekonsiliasi ==', 'yellow');
+        $this->ujiRekonsiliasiPerhatian($d8);
+
         CLI::write('== Batas akses lintas OPD (uji 17) ==', 'yellow');
         $opdLain = $this->opdLain($opdId);
         if ($opdLain) {
@@ -710,6 +713,59 @@ class DashVerify extends BaseCommand
         $i = $this->cariIndikator($summary, $id);
 
         return $i ? ($i['reason_code'] ?? null) : null;
+    }
+
+    /**
+     * Kartu "Perlu Perhatian" wajib rekonsiliasi.
+     *
+     * Dulu kartu ini merinci empat jenis catatan pilihan saja, sehingga OPD
+     * dengan 3 tindak lanjut bisa hanya menampilkan satu baris. Uji ini
+     * mengunci dua hal: setiap kode catatan punya baris rincian, dan
+     * pengelompokan per indikator tidak menghilangkan satu catatan pun.
+     *
+     * @param array<string, mixed> $d
+     */
+    private function ujiRekonsiliasiPerhatian(array $d): void
+    {
+        $p       = $d['perhatian'];
+        $rincian = $p['rincian'] ?? [];
+
+        $this->cek('rincian kartu tersedia', $rincian !== []);
+        $this->cek(
+            'jumlah rincian = total tindak lanjut',
+            array_sum(array_column($rincian, 'count')) === (int) $p['total'],
+            array_sum(array_column($rincian, 'count')) . ' vs ' . $p['total']
+        );
+
+        $kode = array_unique(array_column($d['insights'], 'code'));
+        $this->cek(
+            'setiap jenis catatan punya baris rincian',
+            array_diff($kode, array_column($rincian, 'code')) === [],
+            implode(',', array_diff($kode, array_column($rincian, 'code')))
+        );
+        $this->cek(
+            'setiap baris rincian punya label & warna',
+            $rincian !== [] && array_reduce(
+                $rincian,
+                static fn ($ok, $r) => $ok && $r['teks'] !== '' && isset($r['color']['hex']),
+                true
+            )
+        );
+
+        $grup = $d['insight_groups'];
+        $this->cek(
+            'pengelompokan tidak menghilangkan catatan',
+            array_sum(array_map(static fn ($g) => count($g['items']), $grup)) === count($d['insights'])
+        );
+        $this->cek('kelompok tidak lebih banyak dari catatan', count($grup) <= count($d['insights']));
+        $this->cek(
+            'kelompok terurut menaik menurut severity',
+            $grup === [] || $grup[0]['severity'] <= $grup[count($grup) - 1]['severity']
+        );
+        $this->cek(
+            'satu indikator hanya muncul di satu kelompok',
+            count(array_unique(array_column($grup, 'key'))) === count($grup)
+        );
     }
 
     private function cek(string $judul, bool $hasil, string $catatan = ''): void

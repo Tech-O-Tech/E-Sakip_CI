@@ -133,3 +133,4 @@ _modules/*
 /backup*.sql
 /*-backup.sql
 /dump*.sql
+/Data_server.sql

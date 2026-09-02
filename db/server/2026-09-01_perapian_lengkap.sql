@@ -6,9 +6,20 @@
 -- jadi angka-angka pada bagian pemeriksaan di bawah memang angka server
 -- Anda, bukan perkiraan.
 --
--- URUTAN WAJIB: BAGIAN 0 lebih dulu (skema), baru 1-3 (data). Jalankan
--- seluruh berkas sekaligus; phpMyAdmin berhenti di galat pertama, jadi
--- berkas ini disusun supaya tidak menerbitkan galat sama sekali.
+-- Catatan: skema server ternyata lebih maju daripada dump itu — sebagian
+-- kolom sudah Anda pasang setelah dump diambil. Karena itu berkas ini
+-- tidak lagi menebak kolom mana yang sudah ada; lihat Bagian 4.
+--
+-- CARA MENJALANKAN: tempel seluruh berkas sekaligus.
+--
+-- phpMyAdmin berhenti di galat pertama, jadi seluruh perintah yang BISA
+-- menerbitkan galat (ALTER TABLE) sengaja ditaruh di BAGIAN 4, paling
+-- belakang. Bagian 0 sampai 3 tidak memuat DDL sama sekali dan aman
+-- diulang berapa kali pun.
+--
+-- Artinya: kalau Bagian 4 berakhir merah dengan #1060 "Duplicate column",
+-- itu TIDAK APA-APA — kolomnya memang sudah ada, dan seluruh perapian di
+-- Bagian 0-3 sudah terlanjur berhasil. Tidak ada yang perlu diulang.
 --
 -- CADANGKAN DULU. Tanpa itu tidak ada jalan mundur.
 --     mysqldump -u USER -p NAMA_DB > sebelum_perapian_1sep.sql
@@ -16,49 +27,21 @@
 
 
 -- =====================================================================
--- BAGIAN 0 — SKEMA
+-- BAGIAN 0 — SUSULAN DATA
 --
--- phpMyAdmin BERHENTI pada galat pertama, jadi bagian ini sengaja hanya
--- memuat yang BELUM ada di server Anda. Saya sudah memeriksanya terhadap
--- dump `test.sql`:
---
---     iku_revisi_sasaran.renstra_tujuan_id  -> SUDAH ADA (dilewati)
---     dokumen_izin_sunting.jenis            -> SUDAH ADA (dilewati)
---     target_sub_rencana.satuan             -> BELUM ADA (dipasang di bawah)
---
--- Jadi seluruh berkas ini seharusnya berjalan TANPA satu galat pun. Kalau
--- masih ada yang merah, berhenti dan kabari saya — artinya keadaan server
--- berbeda dari dump yang saya uji.
---
--- Bila Anda ingin memastikan sendiri sebelum menjalankan, ketiga perintah
--- ini menjawabnya. "Unknown column" berarti kolomnya BELUM ada:
---     SELECT renstra_tujuan_id FROM iku_revisi_sasaran LIMIT 1;
---     SELECT jenis            FROM dokumen_izin_sunting LIMIT 1;
---     SELECT satuan           FROM target_sub_rencana   LIMIT 1;
+-- Dua perintah ini aman diulang berapa kali pun; bila sudah pernah
+-- dijalankan, tidak ada satu baris pun yang berubah.
 -- =====================================================================
 
--- 0a. Satuan pada tiap sub rencana aksi.
---
---     INI SATU-SATUNYA BARIS DI SELURUH BERKAS YANG TIDAK BOLEH DIULANG.
---     Menjalankannya dua kali menerbitkan #1060 dan phpMyAdmin akan
---     membatalkan sisanya. Bila Anda perlu menjalankan ulang berkas ini
---     karena suatu hal, beri tanda -- di depan 4 baris ALTER berikut lebih
---     dulu. Bagian 0b sampai 3 semuanya aman diulang berapa kali pun.
-ALTER TABLE `target_sub_rencana`
-  ADD COLUMN `satuan` VARCHAR(50) NULL
-      COMMENT 'nama satuan target triwulan sub ini; NULL = mengikuti satuan indikator'
-      AFTER `sub_rencana_aksi`;
-
--- 0b. Susulan yang aman diulang: turunkan tujuan Renstra bagi arsip revisi
---     yang dibekukan sebelum kolom `renstra_tujuan_id` ada. Bila sudah
---     pernah dijalankan, perintah ini tidak mengubah satu baris pun.
+-- 0a. Turunkan tujuan Renstra bagi arsip revisi yang dibekukan sebelum
+--     kolom `renstra_tujuan_id` ada.
 UPDATE `iku_revisi_sasaran` ars
   JOIN `iku_sasaran` liv ON liv.id = ars.sumber_sasaran_id
    SET ars.renstra_tujuan_id = liv.renstra_tujuan_id
  WHERE ars.renstra_tujuan_id IS NULL
    AND liv.renstra_tujuan_id IS NOT NULL;
 
--- 0c. Sama sifatnya: pastikan tiap permohonan izin punya jenis.
+-- 0b. Pastikan tiap permohonan izin punya jenis.
 UPDATE `dokumen_izin_sunting` SET `jenis` = 'sunting'
  WHERE `jenis` IS NULL OR `jenis` = '';
 
@@ -387,3 +370,26 @@ WHERE s.dihentikan_pada IS NULL AND s.opd_id IS NOT NULL
 SELECT '--- cascading harus TETAP utuh ---' AS laporan;
 SELECT COUNT(*) AS cascading_koperindag_masih_berjangkar
 FROM `cascading_sasaran_opd` WHERE `iku_indikator_id` = 127;
+
+
+-- =====================================================================
+-- BAGIAN 4 — SKEMA
+--
+-- SENGAJA PALING BELAKANG, dan BOLEH GAGAL.
+--
+-- MySQL tidak mengenal `ADD COLUMN IF NOT EXISTS`, dan cara memeriksanya
+-- lewat `information_schema` tertutup untuk user basis data server ini
+-- (#1044 Access denied). Jadi tidak ada cara menulis ALTER yang sekaligus
+-- aman diulang. Yang bisa dilakukan adalah memastikan kegagalannya tidak
+-- merugikan — itulah sebabnya ia ditaruh di sini, sesudah semua perapian
+-- selesai.
+--
+-- #1060 Duplicate column name  ->  kolomnya sudah ada. Abaikan. Selesai.
+-- Galat LAIN                   ->  hubungi saya.
+-- =====================================================================
+
+-- Satuan pada tiap sub rencana aksi.
+ALTER TABLE `target_sub_rencana`
+  ADD COLUMN `satuan` VARCHAR(50) NULL
+      COMMENT 'nama satuan target triwulan sub ini; NULL = mengikuti satuan indikator'
+      AFTER `sub_rencana_aksi`;

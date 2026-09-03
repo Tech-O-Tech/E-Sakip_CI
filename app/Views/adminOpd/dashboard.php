@@ -741,7 +741,11 @@ $js = static fn ($v) => json_encode(
                     '<dt>Sasaran PK</dt><dd>' + esc(d.sasaran) + '</dd>' +
                     '<dt>Satuan</dt><dd>' + esc(d.satuan || '-') + '</dd>' +
                     '<dt>Target tahunan</dt><dd>' + esc(d.target_tahunan || '-') + '</dd>' +
-                    '<dt>Metode perhitungan</dt><dd>' + esc(d.rows.length ? (d.rows[0].metode ? d.rows[0].metode : 'belum dipilih') : '-') + '</dd>' +
+                    // Memakai metode_nama, yang meringkas SELURUH baris ukur.
+                    // Sebelumnya baris ini membaca d.rows[0].metode: selain
+                    // hanya mewakili baris pertama, ia juga mencetak kode
+                    // mentahnya ("sum", "trend_naik") ke layar pengguna.
+                    '<dt>Metode perhitungan</dt><dd>' + esc(d.metode_nama || '-') + '</dd>' +
                     '<dt>Capaian total</dt><dd>' + (d.percentage_teks || 'belum dapat dihitung') + '</dd>' +
                     '<dt>Rencana Aksi</dt><dd>' + d.renaksi_count + ' rencana &middot; ' + d.sub_count + ' sub rencana</dd>' +
                     '<dt>Penanggung jawab</dt><dd>' + esc(d.penanggung_jawab || d.pejabat_jabatan || '-') + '</dd>' +

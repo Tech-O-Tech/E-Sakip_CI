@@ -86,7 +86,23 @@ LEFT JOIN (
            OR (@tw >= 4 AND (m.capaian_triwulan_4 IS NULL OR m.capaian_triwulan_4 = ''))
          ) AS capaian_kosong
   FROM target_rencana tr
-  JOIN monev m ON m.target_rencana_id = tr.id
+  -- BARIS UKUR CURRENT SAJA. Aturannya disamakan persis dengan
+  -- OpdDashboardService::getIndicators(); kalau berbeda, SQL ini akan
+  -- melaporkan "metode belum dipilih" untuk indikator yang di layar justru
+  -- sudah lengkap — dan dua-duanya akan tampak meyakinkan.
+  --
+  --   sub ada      -> hanya baris sub yang mengukur
+  --   sub tidak ada-> baris tingkat rencana aksi yang mengukur
+  --   sub yatim    -> tidak mengukur apa pun (induknya sudah tiada)
+  JOIN monev m
+    ON m.target_rencana_id = tr.id
+   AND (
+         (COALESCE(m.target_sub_rencana_id, 0) > 0
+          AND EXISTS (SELECT 1 FROM target_sub_rencana s2 WHERE s2.id = m.target_sub_rencana_id))
+         OR
+         (COALESCE(m.target_sub_rencana_id, 0) = 0
+          AND NOT EXISTS (SELECT 1 FROM target_sub_rencana s1 WHERE s1.target_rencana_id = tr.id))
+       )
   GROUP BY tr.pk_indikator_id, tr.opd_id
 ) mv ON mv.pk_indikator_id = i.indikator_id AND mv.opd_id = i.opd_id
 LEFT JOIN (
@@ -160,7 +176,23 @@ LEFT JOIN (
            OR (@tw >= 4 AND (m.capaian_triwulan_4 IS NULL OR m.capaian_triwulan_4 = ''))
          ) AS capaian_kosong
   FROM target_rencana tr
-  JOIN monev m ON m.target_rencana_id = tr.id
+  -- BARIS UKUR CURRENT SAJA. Aturannya disamakan persis dengan
+  -- OpdDashboardService::getIndicators(); kalau berbeda, SQL ini akan
+  -- melaporkan "metode belum dipilih" untuk indikator yang di layar justru
+  -- sudah lengkap — dan dua-duanya akan tampak meyakinkan.
+  --
+  --   sub ada      -> hanya baris sub yang mengukur
+  --   sub tidak ada-> baris tingkat rencana aksi yang mengukur
+  --   sub yatim    -> tidak mengukur apa pun (induknya sudah tiada)
+  JOIN monev m
+    ON m.target_rencana_id = tr.id
+   AND (
+         (COALESCE(m.target_sub_rencana_id, 0) > 0
+          AND EXISTS (SELECT 1 FROM target_sub_rencana s2 WHERE s2.id = m.target_sub_rencana_id))
+         OR
+         (COALESCE(m.target_sub_rencana_id, 0) = 0
+          AND NOT EXISTS (SELECT 1 FROM target_sub_rencana s1 WHERE s1.target_rencana_id = tr.id))
+       )
   GROUP BY tr.pk_indikator_id, tr.opd_id
 ) mv ON mv.pk_indikator_id = i.indikator_id AND mv.opd_id = i.opd_id
 LEFT JOIN (

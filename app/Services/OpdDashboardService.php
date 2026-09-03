@@ -546,6 +546,10 @@ class OpdDashboardService
             $renaksi   = $renaksiMap[$indikatorId . ':' . $opdId] ?? [];
             $barisUkur = [];
             $subTotal  = 0;
+            // Baris MONEV tingkat rencana aksi yang tertinggal padahal sub-nya
+            // sudah ada. Bukan bahan pengukuran; dibawa hanya sebagai penanda
+            // residu supaya bisa dilaporkan tanpa memengaruhi angka.
+            $warisan   = 0;
 
             foreach ($renaksi as $tr) {
                 $targetId = (int) $tr['id'];
@@ -563,12 +567,43 @@ class OpdDashboardService
                     );
                 }
 
-                // Baris capaian tingkat rencana aksi (sub_id = 0). Dipakai bila
-                // belum ada sub rencana aksi, atau bila data lama terlanjur
-                // tersimpan di sana meski sub-nya sudah dibuat.
+                // =====================================================
+                // BARIS UKUR CURRENT: SUB BILA ADA, PARENT BILA TIDAK
+                //
+                // Baris capaian tingkat rencana aksi (`target_sub_rencana_id`
+                // = 0) hanya sah sebagai pengukuran ketika rencana aksi itu
+                // memang belum dipecah menjadi sub.
+                //
+                // Sebelumnya baris parent juga ikut ditarik ketika sub SUDAH
+                // ada, asalkan parent-nya masih menyimpan capaian lama:
+                //
+                //     if ($subs === [] || ($monev0 !== null && adaCapaian($monev0)))
+                //
+                // Itu akar warning palsu "Metode perhitungan belum dipilih".
+                // Begitu sebuah rencana aksi dipecah jadi sub, barisnya yang
+                // lama tertinggal di MONEV tanpa metode — form MONEV tidak
+                // lagi menampilkannya, jadi tidak ada yang bisa mengisinya.
+                // Dashboard lalu menghitungnya sebagai baris ukur yang cacat
+                // dan menyuruh operator memilih metode untuk baris yang tidak
+                // ada di layar mana pun.
+                //
+                // Pada basis data ini: dari 437 rencana aksi, 239 masih
+                // menyimpan parent lama, 232 di antaranya berisi capaian, dan
+                // 220 tidak bermetode — 220 warning palsu, seluruhnya lahir
+                // dari satu klausa itu.
+                //
+                // Parent lama TIDAK dihapus: ia tetap di basis data dan tetap
+                // terbaca oleh `monev:warisan` sebagai bahan audit. Yang
+                // berubah hanya kedudukannya — bukan lagi bahan pengukuran.
+                // =====================================================
                 $monev0 = $monevMap[$targetId][0] ?? null;
-                if ($subs === [] || ($monev0 !== null && $this->adaCapaian($monev0))) {
+
+                if ($subs === []) {
                     $barisUkur[] = $this->bangunBarisUkur($tr, null, $monev0, $skala, $triwulan, $predikat);
+                } elseif ($monev0 !== null && $this->adaCapaian($monev0)) {
+                    // Dihitung supaya bisa dilaporkan sebagai residu yang perlu
+                    // dibersihkan, bukan supaya ikut mengukur.
+                    $warisan++;
                 }
             }
 
@@ -608,6 +643,7 @@ class OpdDashboardService
                 'pejabat_jabatan'  => (string) ($r['pejabat_jabatan'] ?? ''),
                 'renaksi_count'    => count($renaksi),
                 'sub_count'        => $subTotal,
+                'warisan_count'    => $warisan,
                 'penanggung_jawab' => $this->penanggungJawab($renaksi),
                 'rows'             => $barisUkur,
                 'percentage'       => $agregat['percentage'],
@@ -749,14 +785,50 @@ class OpdDashboardService
             return [];
         }
 
+        // =============================================================
+        // WARISAN TIDAK DIJUMLAHKAN BERSAMA PER-UNIT
+        //
+        // `monev_anggaran` menampung dua bentuk baris:
+        //
+        //   warisan  : ref_level & ref_id NULL — realisasi satu rencana aksi
+        //              seluruhnya, dari sebelum realisasi dirinci per unit.
+        //   per-unit : ref_level program/kegiatan/subkegiatan + ref_id.
+        //
+        // Keduanya menyatakan uang YANG SAMA dengan rincian berbeda. Kalau
+        // sebuah rencana aksi kebetulan punya dua-duanya, menjumlahkan
+        // semuanya melipatgandakan penyerapannya.
+        //
+        // Pada basis data ini kebetulan tidak ada satu pun baris warisan
+        // tersisa (seluruh 320 baris sudah per-unit, dan tidak ada target
+        // yang memuat kedua bentuk), jadi hasil angkanya hari ini sama saja.
+        // Penjagaannya tetap dipasang karena bentuk warisan masih sah ditulis
+        // oleh form MONEV lama, dan sekali satu baris seperti itu masuk,
+        // gejalanya adalah angka yang membesar diam-diam — bukan galat.
+        //
+        // `per_unit` dihitung lebih dulu supaya bisa dipakai sebagai penyaring
+        // di HAVING: bila ada baris per-unit, hanya itu yang dijumlahkan.
+        // =============================================================
         $rows = $this->db->table('monev_anggaran')
             ->select('target_rencana_id,
-                      SUM(realisasi_triwulan_1) AS realisasi_triwulan_1,
-                      SUM(realisasi_triwulan_2) AS realisasi_triwulan_2,
-                      SUM(realisasi_triwulan_3) AS realisasi_triwulan_3,
-                      SUM(realisasi_triwulan_4) AS realisasi_triwulan_4,
+                      SUM(CASE WHEN ref_level IS NOT NULL AND ref_id IS NOT NULL THEN 1 ELSE 0 END) AS baris_per_unit,
+                      SUM(CASE WHEN ada_per_unit = 0 OR (ref_level IS NOT NULL AND ref_id IS NOT NULL)
+                               THEN realisasi_triwulan_1 END) AS realisasi_triwulan_1,
+                      SUM(CASE WHEN ada_per_unit = 0 OR (ref_level IS NOT NULL AND ref_id IS NOT NULL)
+                               THEN realisasi_triwulan_2 END) AS realisasi_triwulan_2,
+                      SUM(CASE WHEN ada_per_unit = 0 OR (ref_level IS NOT NULL AND ref_id IS NOT NULL)
+                               THEN realisasi_triwulan_3 END) AS realisasi_triwulan_3,
+                      SUM(CASE WHEN ada_per_unit = 0 OR (ref_level IS NOT NULL AND ref_id IS NOT NULL)
+                               THEN realisasi_triwulan_4 END) AS realisasi_triwulan_4,
                       MAX(updated_at) AS updated_at,
                       COUNT(*) AS jumlah_baris', false)
+            ->join(
+                '(SELECT target_rencana_id AS t,
+                         MAX(ref_level IS NOT NULL AND ref_id IS NOT NULL) AS ada_per_unit
+                    FROM monev_anggaran GROUP BY target_rencana_id) pu',
+                'pu.t = monev_anggaran.target_rencana_id',
+                'inner',
+                false
+            )
             ->whereIn('target_rencana_id', $targetIds)
             ->groupBy('target_rencana_id')
             ->get()->getResultArray();
@@ -1380,6 +1452,98 @@ class OpdDashboardService
     }
 
     /**
+     * Realisasi anggaran yang BENAR-BENAR milik tiap Program.
+     *
+     * =================================================================
+     * MENGAPA INI PERLU
+     *
+     * Sebelumnya rincian per Program disusun begini: realisasi sebuah
+     * INDIKATOR ditempelkan ke SETIAP Program yang menopang indikator itu.
+     * Untuk indikator yang menopang satu program hasilnya benar; untuk yang
+     * menopang lebih dari satu, angka yang sama muncul berkali-kali.
+     *
+     * Pada basis data ini ada 72 indikator yang menopang lebih dari satu
+     * program — salah satunya menopang 169 program sekaligus. Grand total-nya
+     * memang tetap benar (dihitung sekali per rencana aksi), tetapi rincian
+     * yang dibaca orang tidak pernah menjumlah ke total itu.
+     *
+     * `monev_anggaran` sebenarnya sudah menyimpan unit yang dimaksud pada
+     * `ref_level` + `ref_id`. Yang kurang hanyalah menelusurinya naik ke
+     * program:
+     *
+     *     program      -> ref_id adalah program itu sendiri
+     *     kegiatan     -> kegiatan_pk.program_id
+     *     subkegiatan  -> sub_kegiatan_pk.kegiatan_id -> kegiatan_pk.program_id
+     *
+     * Baris warisan (tanpa ref_level/ref_id) tidak bisa ditelusuri ke program
+     * mana pun — memang tidak pernah menyebutkannya. Baris seperti itu
+     * DILEWATI di sini dan hanya ikut pada grand total, sehingga rinciannya
+     * jujur berkata "belum dirinci" alih-alih menebak.
+     *
+     * Kumulatif TW1..TW{triwulan}, sama dengan realisasiIndikator(), supaya
+     * rincian dan total memakai aturan yang sama.
+     *
+     * @param array<int> $targetIds
+     *
+     * @return array<int, array{nilai: float, lengkap: bool}> [program_id => ...]
+     */
+    private function realisasiPerProgram(array $targetIds, int $triwulan): array
+    {
+        $targetIds = $this->bersihkanIds($targetIds);
+
+        if ($targetIds === [] || !$this->db->tableExists('monev_anggaran')) {
+            return [];
+        }
+
+        $kolom = [];
+        for ($q = 1; $q <= max(1, min(4, $triwulan)); $q++) {
+            $kolom[] = 'COALESCE(ma.realisasi_triwulan_' . $q . ', 0)';
+        }
+
+        $adaIsi = [];
+        for ($q = 1; $q <= max(1, min(4, $triwulan)); $q++) {
+            $adaIsi[] = 'ma.realisasi_triwulan_' . $q . ' IS NULL';
+        }
+
+        $rows = $this->db->table('monev_anggaran ma')
+            ->select("CASE ma.ref_level
+                          WHEN 'program'     THEN ma.ref_id
+                          WHEN 'kegiatan'    THEN k.program_id
+                          WHEN 'subkegiatan' THEN k2.program_id
+                      END AS program_id,
+                      SUM(" . implode(' + ', $kolom) . ") AS nilai,
+                      MAX(" . implode(' OR ', $adaIsi) . ") AS ada_kosong", false)
+            ->join('kegiatan_pk k', "ma.ref_level = 'kegiatan' AND k.id = ma.ref_id", 'left', false)
+            ->join('sub_kegiatan_pk sk', "ma.ref_level = 'subkegiatan' AND sk.id = ma.ref_id", 'left', false)
+            ->join('kegiatan_pk k2', 'k2.id = sk.kegiatan_id', 'left')
+            ->whereIn('ma.target_rencana_id', $targetIds)
+            ->where('ma.ref_level IS NOT NULL', null, false)
+            ->where('ma.ref_id IS NOT NULL', null, false)
+            ->groupBy('program_id')
+            ->get()->getResultArray();
+
+        $map = [];
+
+        foreach ($rows as $r) {
+            $pid = (int) ($r['program_id'] ?? 0);
+
+            // Unit yang induknya sudah tidak ada lagi (kegiatan/sub kegiatan
+            // terhapus) tidak punya program untuk dirujuk. Dilewati, bukan
+            // ditempelkan ke program sembarang.
+            if ($pid <= 0) {
+                continue;
+            }
+
+            $map[$pid] = [
+                'nilai'   => (float) $r['nilai'],
+                'lengkap' => !((int) $r['ada_kosong'] === 1),
+            ];
+        }
+
+        return $map;
+    }
+
+    /**
      * Kartu 3 — Penyerapan Anggaran.
      *
      * Pagu dari program_pk lewat rantai PK; realisasi dari monev_anggaran.
@@ -1402,23 +1566,38 @@ class OpdDashboardService
         // berlipat saat satu rencana aksi menopang beberapa program.
         $targetTerhitung = [];
 
+        // Rincian per Program diambil dari unit yang MEMANG disebut baris
+        // realisasi (monev_anggaran.ref_level/ref_id), bukan dari indikator
+        // yang menopangnya — lihat realisasiPerProgram().
+        $targetIds = [];
+        foreach ($indikator as $i) {
+            foreach ($i['rows'] ?? [] as $baris) {
+                $targetIds[] = (int) ($baris['target_id'] ?? 0);
+            }
+        }
+        $realisasiProgram = $this->realisasiPerProgram($targetIds, $triwulan);
+
         foreach ($indikator as $i) {
             foreach ($i['programs'] as $p) {
                 $pid = (int) $p['program_id'];
                 if (!isset($program[$pid])) {
                     $program[$pid] = $p + ['indikator' => [], 'realisasi' => null, 'realisasi_status' => 'belum_dilaporkan'];
+
+                    // Diisi SEKALI saat programnya pertama kali dikenal.
+                    // Sebelumnya baris ini ada di dalam loop indikator dan
+                    // menambahkan realisasi indikator ini ke program — yang
+                    // berarti program pendukung banyak indikator menerima
+                    // penjumlahan berulang.
+                    if (isset($realisasiProgram[$pid])) {
+                        $program[$pid]['realisasi']        = $realisasiProgram[$pid]['nilai'];
+                        $program[$pid]['realisasi_status'] = $realisasiProgram[$pid]['lengkap']
+                            ? 'lengkap' : 'sebagian';
+                    }
                 }
                 $program[$pid]['indikator'][] = [
                     'id'   => $i['indikator_id'],
                     'nama' => $i['indikator'],
                 ];
-                // Realisasi rencana aksi indikator ini diatributkan ke program yang
-                // didukungnya. Bila satu rencana aksi menopang >1 program, angka per
-                // program bisa muncul ganda — totalnya tetap dihitung sekali di bawah.
-                if ($i['realisasi'] !== null) {
-                    $program[$pid]['realisasi'] = (float) ($program[$pid]['realisasi'] ?? 0) + (float) $i['realisasi'];
-                    $program[$pid]['realisasi_status'] = $i['realisasi_status'];
-                }
             }
 
             if ($i['realisasi'] !== null && !isset($targetTerhitung[$i['indikator_id']])) {
@@ -1967,12 +2146,20 @@ class OpdDashboardService
             'verification'    => $i['verification'],
             'renaksi_count'   => $i['renaksi_count'],
             'sub_count'       => $i['sub_count'],
+            // Berapa baris yang BENAR-BENAR dipakai mengukur, dan berapa baris
+            // tinggalan tingkat rencana aksi yang sengaja tidak dipakai. Dua
+            // angka ini yang membedakan "datanya kurang" dari "datanya ada tapi
+            // tersimpan di tempat yang sudah tidak dibaca".
+            'baris_ukur'      => count($i['rows'] ?? []),
+            'warisan_count'   => (int) ($i['warisan_count'] ?? 0),
             'misi'            => $i['misi'],
             'anggaran'        => $i['anggaran'],
             'realisasi'       => $i['realisasi'],
             'realisasi_status' => $i['realisasi_status'],
+            // Ringkasan seluruh baris ukur, bukan metode baris pertama —
+            // lihat capaianMetodeRingkas().
             'metode'          => $i['rows'][0]['metode'] ?? null,
-            'metode_nama'     => capaianMetodeNama($i['rows'][0]['metode'] ?? null),
+            'metode_nama'     => capaianMetodeRingkas($i['rows'] ?? []),
             'capaian_terakhir' => $this->capaianTerakhir($i),
             'penanggung_jawab' => $i['penanggung_jawab'],
             'updated_at'      => $i['updated_at'],
@@ -2047,6 +2234,22 @@ class OpdDashboardService
             ->where('pk.tahun', $tahun)
             ->get()->getRowArray();
         $waktu[] = $mv['w'] ?? null;
+
+        // Realisasi anggaran juga "pembaruan data". Tanpa baris ini, operator
+        // yang baru saja mengisi realisasi triwulan melihat header masih
+        // menyebut tanggal lama, lalu mengira simpanannya gagal.
+        if ($this->db->tableExists('monev_anggaran')) {
+            $ma = $this->db->table('monev_anggaran ma')
+                ->select('MAX(ma.updated_at) AS w')
+                ->join('target_rencana tr', 'tr.id = ma.target_rencana_id', 'inner')
+                ->join('pk_indikator pi', 'pi.id = tr.pk_indikator_id', 'inner')
+                ->join('pk_sasaran ps', 'ps.id = pi.pk_sasaran_id', 'inner')
+                ->join('pk', 'pk.id = ps.pk_id', 'inner')
+                ->where('tr.opd_id', $opdId)
+                ->where('pk.tahun', $tahun)
+                ->get()->getRowArray();
+            $waktu[] = $ma['w'] ?? null;
+        }
 
         $waktu = array_values(array_filter($waktu));
 

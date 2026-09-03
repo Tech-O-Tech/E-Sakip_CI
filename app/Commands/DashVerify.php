@@ -288,6 +288,8 @@ class DashVerify extends BaseCommand
         }
 
         $this->ujiKabupaten($opdId, $sasaranId, $ind);
+        $this->ujiPengukuranCurrent($opdId);
+        $this->ujiAnggaranCurrent($opdId);
     }
 
     /**
@@ -766,6 +768,236 @@ class DashVerify extends BaseCommand
             'satu indikator hanya muncul di satu kelompok',
             count(array_unique(array_column($grup, 'key'))) === count($grup)
         );
+    }
+
+
+    /* ============ fixture tambahan: sub rencana & unit anggaran ============ */
+
+    /** @param array<int, string|null> $tw */
+    private function buatSub(int $targetId, string $teks, array $tw, int $urutan = 0): int
+    {
+        $this->db->table('target_sub_rencana')->insert([
+            'target_rencana_id' => $targetId,
+            'baris_rencana'     => 0,
+            'sub_rencana_aksi'  => $teks,
+            'target_triwulan_1' => $tw[0],
+            'target_triwulan_2' => $tw[1],
+            'target_triwulan_3' => $tw[2],
+            'target_triwulan_4' => $tw[3],
+            'urutan'            => $urutan,
+        ]);
+
+        return (int) $this->db->insertID();
+    }
+
+    /** @param array<int, string|null> $cap */
+    private function buatMonevSub(int $opdId, int $targetId, int $subId, array $cap, ?string $metode): void
+    {
+        $this->db->table('monev')->insert([
+            'opd_id'                => $opdId,
+            'target_rencana_id'     => $targetId,
+            'target_sub_rencana_id' => $subId,
+            'capaian_triwulan_1'    => $cap[0],
+            'capaian_triwulan_2'    => $cap[1],
+            'capaian_triwulan_3'    => $cap[2],
+            'capaian_triwulan_4'    => $cap[3],
+            'metode_perhitungan'    => $metode,
+        ]);
+    }
+
+    /**
+     * Baris realisasi PER-UNIT.
+     *
+     * `buatRealisasi()` yang lama hanya membuat baris WARISAN (tanpa
+     * ref_level/ref_id), sehingga bentuk yang justru dipakai produksi hari ini
+     * tidak pernah teruji sama sekali.
+     *
+     * @param array<int, float|null> $nilai
+     */
+    private function buatRealisasiUnit(int $opdId, int $targetId, string $level, int $refId, array $nilai): void
+    {
+        $this->db->table('monev_anggaran')->insert([
+            'target_rencana_id'    => $targetId,
+            'opd_id'               => $opdId,
+            'ref_level'            => $level,
+            'ref_id'               => $refId,
+            'realisasi_triwulan_1' => $nilai[0],
+            'realisasi_triwulan_2' => $nilai[1],
+            'realisasi_triwulan_3' => $nilai[2],
+            'realisasi_triwulan_4' => $nilai[3],
+        ]);
+    }
+
+    /* ============ skenario: baris ukur CURRENT ============ */
+
+    /**
+     * Yang dijaga blok ini: dashboard hanya mengukur dari baris yang MEMANG
+     * dipakai mengukur.
+     *
+     * Sebelum perbaikan 2 September 2026, baris MONEV tingkat rencana aksi
+     * ikut ditarik menjadi baris ukur asalkan masih menyimpan capaian — walau
+     * sub rencana aksinya sudah ada dan sudah lengkap. Baris tinggalan itu
+     * tidak bermetode dan tidak lagi muncul di form MONEV mana pun, sehingga
+     * dashboard menyuruh operator memilih metode untuk baris yang tak bisa
+     * dibukanya. Pada basis data ini ada 220 baris seperti itu.
+     */
+    private function ujiPengukuranCurrent(int $opdId): void
+    {
+        CLI::write('== Baris ukur current: sub bila ada, parent bila tidak ==', 'yellow');
+
+        $svc   = new OpdDashboardService();
+        $tahun = self::TAHUN_UJI;
+
+        $pkId      = $this->buatPk($opdId, $tahun);
+        $sasaranId = $this->buatSasaran($pkId, 'Sasaran uji pengukuran current');
+
+        // 1. Parent warisan bermasalah, seluruh sub lengkap.
+        $indA = $this->buatIndikator($sasaranId, 'Sub lengkap, parent warisan', '100', 1);
+        $trA  = $this->buatRenaksi($opdId, $indA, ['25', '50', '75', '100']);
+        $this->buatMonev($opdId, $trA, ['25', '50', '75', '100'], '');
+        foreach (['A.1', 'A.2', 'A.3'] as $n => $nama) {
+            $sid = $this->buatSub($trA, $nama, ['25', '50', '75', '100'], $n);
+            $this->buatMonevSub($opdId, $trA, $sid, ['25', '50', '75', '100'], 'trend_naik');
+        }
+
+        // 2. Tanpa sub sama sekali: parent tetap sah.
+        $indB = $this->buatIndikator($sasaranId, 'Tanpa sub, parent sah', '100', 1);
+        $trB  = $this->buatRenaksi($opdId, $indB, ['25', '50', '75', '100']);
+        $this->buatMonev($opdId, $trB, ['25', '50', '75', '100'], 'trend_naik');
+
+        // 3. Metode beragam antar sub.
+        $indC = $this->buatIndikator($sasaranId, 'Metode beragam', '100', 1);
+        $trC  = $this->buatRenaksi($opdId, $indC, ['25', '50', '75', '100']);
+        $sC1  = $this->buatSub($trC, 'C.1', ['25', '50', '75', '100'], 0);
+        $sC2  = $this->buatSub($trC, 'C.2', ['25', '25', '25', '25'], 1);
+        $this->buatMonevSub($opdId, $trC, $sC1, ['25', '50', '75', '100'], 'trend_naik');
+        $this->buatMonevSub($opdId, $trC, $sC2, ['25', '25', '25', '25'], 'sum');
+
+        // 4. Sub current yang MEMANG belum bermetode.
+        $indD = $this->buatIndikator($sasaranId, 'Sub belum bermetode', '100', 1);
+        $trD  = $this->buatRenaksi($opdId, $indD, ['25', '50', '75', '100']);
+        $sD1  = $this->buatSub($trD, 'D.1', ['25', '50', '75', '100'], 0);
+        $sD2  = $this->buatSub($trD, 'D.2', ['25', '50', '75', '100'], 1);
+        $this->buatMonevSub($opdId, $trD, $sD1, ['25', '50', '75', '100'], 'trend_naik');
+        $this->buatMonevSub($opdId, $trD, $sD2, ['25', '50', '75', '100'], null);
+
+        $d = $svc->getSummary($opdId, $tahun, 4);
+
+        $A = $this->cariIndikator($d, $indA);
+        $B = $this->cariIndikator($d, $indB);
+        $C = $this->cariIndikator($d, $indC);
+        $D = $this->cariIndikator($d, $indD);
+
+        // Uji 1 — warning palsu tidak boleh muncul lagi.
+        $this->cek('parent warisan TIDAK ikut jadi baris ukur',
+            $A !== null && (int) ($A['baris_ukur'] ?? -1) === 3,
+            $A === null ? 'indikator hilang' : (($A['baris_ukur'] ?? '?') . ' baris'));
+        $this->cek('sub lengkap tetap VALID walau parent tanpa metode',
+            $this->validIndikator($d, $indA) === true);
+        $this->cek('parent warisan tercatat sebagai residu, bukan pengukuran',
+            (int) ($A['warisan_count'] ?? -1) === 1, (string) ($A['warisan_count'] ?? 'tidak ada'));
+
+        // Uji 2 — jangan terlalu agresif: tanpa sub, parent tetap dipakai.
+        $this->cek('tanpa sub, parent TETAP jadi baris ukur',
+            $B !== null && (int) ($B['baris_ukur'] ?? -1) === 1,
+            (string) ($B['baris_ukur'] ?? 'tidak ada'));
+        $this->cek('tanpa sub, indikator tetap valid', $this->validIndikator($d, $indB) === true);
+
+        // Uji 3 — ringkasan metode dari SELURUH baris, bukan rows[0].
+        $this->cek('metode beragam diberi label "Beragam (per Sub Rencana Aksi)"',
+            ($C['metode_nama'] ?? '') === 'Beragam (per Sub Rencana Aksi)',
+            (string) ($C['metode_nama'] ?? '-'));
+        $this->cek('metode seragam tetap memakai nama metodenya',
+            ($B['metode_nama'] ?? '') === 'Trend Naik', (string) ($B['metode_nama'] ?? '-'));
+
+        // Uji 4 — yang benar-benar kurang tetap harus tertangkap.
+        $this->cek('sub current tanpa metode membuat indikator TIDAK valid',
+            $this->validIndikator($d, $indD) === false);
+        $this->cek('labelnya menyebut metode belum ditentukan',
+            ($D['metode_nama'] ?? '') === 'Metode capaian belum ditentukan',
+            (string) ($D['metode_nama'] ?? '-'));
+    }
+
+    /* ============ skenario: anggaran current ============ */
+
+    /**
+     * Yang dijaga blok ini: warisan dan per-unit tidak pernah dijumlahkan
+     * bersama, rincian per Program berasal dari unit yang memang disebut baris
+     * realisasi, dan "pembaruan terakhir" ikut bergerak saat realisasi berubah.
+     */
+    private function ujiAnggaranCurrent(int $opdId): void
+    {
+        CLI::write('== Anggaran: warisan vs per-unit, rincian per Program ==', 'yellow');
+
+        $svc   = new OpdDashboardService();
+        $tahun = self::TAHUN_UJI;
+
+        $pkId      = $this->buatPk($opdId, $tahun);
+        $sasaranId = $this->buatSasaran($pkId, 'Sasaran uji anggaran current');
+
+        $prA = $this->buatProgram($opdId, $tahun, 'Program A uji', 1000.0);
+        $prB = $this->buatProgram($opdId, $tahun, 'Program B uji', 1000.0);
+
+        // Satu indikator menopang DUA program — bentuk yang dulu membuat
+        // realisasinya tersalin utuh ke kedua-duanya.
+        $ind = $this->buatIndikator($sasaranId, 'Indikator dua program', '100', 1);
+        $this->kaitkanProgram($prA, $ind);
+        $this->kaitkanProgram($prB, $ind);
+
+        $tr  = $this->buatRenaksi($opdId, $ind, ['25', '50', '75', '100']);
+        $sub = $this->buatSub($tr, 'sub anggaran', ['25', '50', '75', '100'], 0);
+        $this->buatMonevSub($opdId, $tr, $sub, ['25', '50', '75', '100'], 'trend_naik');
+
+        // Realisasi per-unit: 60 ke Program A, 40 ke Program B.
+        $this->buatRealisasiUnit($opdId, $tr, 'program', $prA, [60.0, null, null, null]);
+        $this->buatRealisasiUnit($opdId, $tr, 'program', $prB, [40.0, null, null, null]);
+
+        $d       = $svc->getSummary($opdId, $tahun, 1);
+        $program = [];
+        foreach ($d['anggaran']['programs'] ?? [] as $p) {
+            $program[(int) $p['program_id']] = $p;
+        }
+
+        $this->cek('Program A menerima realisasinya sendiri (60)',
+            (float) ($program[$prA]['realisasi'] ?? -1) === 60.0,
+            (string) ($program[$prA]['realisasi'] ?? 'tidak ada'));
+        $this->cek('Program B menerima realisasinya sendiri (40)',
+            (float) ($program[$prB]['realisasi'] ?? -1) === 40.0,
+            (string) ($program[$prB]['realisasi'] ?? 'tidak ada'));
+        // Dijumlah antar-program saja: total OPD memuat indikator lain yang
+        // dibuat blok uji sebelumnya, jadi membandingkannya ke total OPD hanya
+        // akan mengukur fixture tetangga.
+        $this->cek('rincian kedua Program menjumlah ke 100, bukan 200',
+            (float) ($program[$prA]['realisasi'] ?? 0) + (float) ($program[$prB]['realisasi'] ?? 0) === 100.0,
+            (string) ((float) ($program[$prA]['realisasi'] ?? 0) + (float) ($program[$prB]['realisasi'] ?? 0)));
+
+        // Uji 5 — baris warisan menyusul MASUK di samping per-unit.
+        $this->buatRealisasi($opdId, $tr, [100.0, null, null, null]);
+
+        $d2 = $svc->getSummary($opdId, $tahun, 1);
+        $this->cek('warisan + per-unit TIDAK dijumlahkan bersama (total OPD tidak berubah)',
+            (float) ($d2['anggaran']['realisasi'] ?? -1) === (float) ($d['anggaran']['realisasi'] ?? -2),
+            (string) ($d['anggaran']['realisasi'] ?? '?') . ' -> ' . (string) ($d2['anggaran']['realisasi'] ?? '?'));
+
+        // Uji 6 — pembaruan realisasi anggaran ikut terbaca sebagai "update".
+        //
+        // Waktunya dimajukan lewat NOW() MILIK BASIS DATA, bukan date() PHP.
+        // Jam keduanya di mesin ini terpaut 7 jam: `date('Y-m-d H:i:s',
+        // time() + 3600)` menghasilkan waktu yang justru LEBIH TUA daripada
+        // CURRENT_TIMESTAMP yang mengisi baris saat disisipkan, sehingga uji
+        // ini gagal walau kodenya benar. Membandingkan cap waktu buatan PHP
+        // dengan cap waktu buatan basis data memang tidak pernah sah.
+        $sebelum = $svc->getLastUpdate($opdId, $tahun);
+        $this->db->query(
+            'UPDATE monev_anggaran SET updated_at = DATE_ADD(NOW(), INTERVAL 1 HOUR)'
+            . ' WHERE target_rencana_id = ?',
+            [$tr]
+        );
+        $sesudah = $svc->getLastUpdate($opdId, $tahun);
+
+        $this->cek('pembaruan realisasi anggaran menggeser "pembaruan terakhir"',
+            $sesudah !== null && $sesudah > (string) $sebelum,
+            (string) $sebelum . ' -> ' . (string) $sesudah);
     }
 
     private function cek(string $judul, bool $hasil, string $catatan = ''): void

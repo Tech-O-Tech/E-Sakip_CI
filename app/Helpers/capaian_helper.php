@@ -55,6 +55,55 @@ if (!function_exists('capaianMetodeNama')) {
     }
 }
 
+if (!function_exists('capaianMetodeRingkas')) {
+    /**
+     * Ringkasan metode perhitungan sebuah indikator dari SELURUH baris ukurnya.
+     *
+     * =================================================================
+     * MENGAPA TIDAK CUKUP `rows[0]`
+     *
+     * Sebelumnya layar mengambil `rows[0]['metode']` — metode baris pertama —
+     * lalu menampilkannya sebagai metode indikator. Itu benar hanya ketika
+     * indikator punya tepat satu baris ukur. Begitu sebuah rencana aksi
+     * dipecah menjadi beberapa sub dengan metode berbeda, layar menampilkan
+     * metode salah satu sub seolah berlaku untuk semuanya, dan pembacanya
+     * tidak punya cara tahu bahwa sub lain dihitung dengan cara lain.
+     *
+     * Lebih buruk pada urutan sebaliknya: bila sub PERTAMA kebetulan sudah
+     * bermetode sementara sub kedua belum, layar menampilkan nama metode yang
+     * meyakinkan padahal agregatnya justru tidak bisa dihitung.
+     *
+     * @param array<int, array<string, mixed>> $rows baris ukur CURRENT
+     */
+    function capaianMetodeRingkas(array $rows): string
+    {
+        if ($rows === []) {
+            return '-';
+        }
+
+        $metode = [];
+
+        foreach ($rows as $baris) {
+            $m = trim((string) ($baris['metode'] ?? ''));
+
+            // Satu saja yang belum bermetode sudah membuat agregat tidak bisa
+            // dihitung, jadi itulah yang perlu dibaca lebih dulu — bukan nama
+            // metode baris yang kebetulan sudah terisi.
+            if ($m === '') {
+                return 'Metode capaian belum ditentukan';
+            }
+
+            $metode[$m] = true;
+        }
+
+        if (count($metode) > 1) {
+            return 'Beragam (per Sub Rencana Aksi)';
+        }
+
+        return capaianMetodeNama((string) array_key_first($metode));
+    }
+}
+
 if (!function_exists('capaianRomawi')) {
     function capaianRomawi(int $triwulan): string
     {

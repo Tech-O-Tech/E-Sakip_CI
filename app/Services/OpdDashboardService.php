@@ -648,9 +648,18 @@ class OpdDashboardService
                 'rows'             => $barisUkur,
                 'percentage'       => $agregat['percentage'],
                 'validity'         => $agregat['validity'],
+                // Tiga keadaan, bukan dua: ada angka / belum dapat dinilai /
+                // belum lengkap. Tanpa pemisahan ini, indikator yang targetnya
+                // baru jatuh tempo triwulan depan diwarnai sama dengan yang
+                // datanya memang bermasalah.
                 'status'           => $agregat['validity']['is_valid']
                     ? getAchievementStatus((float) $agregat['percentage'])
-                    : dash_status_nonnumeric($barisUkur === [] ? 'belum_ada_data' : 'belum_valid'),
+                    : dash_status_nonnumeric(
+                        $barisUkur === []
+                            ? 'belum_ada_data'
+                            : (! empty($agregat['validity']['not_evaluable']) ? 'belum_dinilai' : 'belum_valid')
+                    ),
+                'tak_terukur'      => (int) ($agregat['tak_terukur'] ?? 0),
                 'verification'     => $this->verificationInfo(),
                 'programs'         => $program,
                 'anggaran'         => $anggaran,
@@ -1165,9 +1174,37 @@ class OpdDashboardService
         $subValid       = 0;
         $subTotal       = 0;
 
+        // Baris yang datanya lengkap tetapi belum punya pembagi. Dihitung
+        // terpisah supaya bisa dilaporkan, dan TIDAK ikut menahan agregat.
+        $takTerukur = 0;
+
         foreach ($barisUkur as $baris) {
             $v      = $baris['validity'];
             $adalahSub = (int) ($baris['sub_id'] ?? 0) > 0;
+
+            // =========================================================
+            // BELUM DAPAT DINILAI DIKELUARKAN, BUKAN DIHITUNG GAGAL
+            //
+            // Barisnya sudah diisi dengan benar; yang belum ada hanya target
+            // kumulatif pada periode yang sedang dinilai. Menahannya sebagai
+            // "bermasalah" akan menjatuhkan SELURUH indikator — termasuk yang
+            // sub-sub lainnya sudah lengkap dan sudah punya angka — hanya
+            // karena satu pekerjaan baru jatuh tempo triwulan depan.
+            //
+            // Juga tidak dihitung sebagai sub yang gagal: `subValid` di bawah
+            // dipakai menyusun kalimat "seluruh sub sudah lengkap", dan baris
+            // seperti ini memang lengkap.
+            // =========================================================
+            if (!empty($v['not_evaluable'])) {
+                $takTerukur++;
+
+                if ($adalahSub) {
+                    $subTotal++;
+                    $subValid++;
+                }
+
+                continue;
+            }
 
             if ($adalahSub) {
                 $subTotal++;
@@ -1190,7 +1227,8 @@ class OpdDashboardService
 
         if ($bermasalah !== null) {
             return [
-                'percentage' => null,
+                'percentage'  => null,
+                'tak_terukur' => $takTerukur,
                 'validity'   => [
                     'is_valid'    => false,
                     'reason_code' => $bermasalah['reason_code'],
@@ -1210,8 +1248,26 @@ class OpdDashboardService
             ];
         }
 
+        // Seluruh barisnya belum dapat dinilai: indikatornya pun belum dapat
+        // dinilai. Ini BUKAN "belum valid" — datanya lengkap, hanya belum ada
+        // yang bisa dihitung. Dibedakan supaya tidak jadi butir tindak lanjut
+        // dan tidak diwarnai merah.
+        if ($n === 0 && $takTerukur > 0) {
+            return [
+                'percentage'  => null,
+                'tak_terukur' => $takTerukur,
+                'validity'    => [
+                    'is_valid'      => false,
+                    'not_evaluable' => true,
+                    'reason_code'   => 'zero_target',
+                    'reason'        => 'Belum dapat dinilai — target kumulatif pada periode ini masih 0.',
+                ],
+            ];
+        }
+
         return [
-            'percentage' => $n > 0 ? round($jumlah / $n, 2) : null,
+            'percentage'  => $n > 0 ? round($jumlah / $n, 2) : null,
+            'tak_terukur' => $takTerukur,
             'validity'   => $n > 0
                 ? ['is_valid' => true, 'reason_code' => null, 'reason' => null]
                 : ['is_valid' => false, 'reason_code' => 'not_calculable', 'reason' => dash_reason_label('not_calculable')],
@@ -1421,17 +1477,38 @@ class OpdDashboardService
      */
     public function getOpdAchievement(array $indikator): array
     {
-        $wajib = count($indikator);
-        $valid = 0;
-        $jumlah = 0.0;
+        // =============================================================
+        // KELENGKAPAN DATA vs KEMAMPUAN DINILAI
+        //
+        // Dua hal yang dulu tercampur dalam satu angka `wajib`:
+        //
+        //   belum lengkap      -> data wajibnya kurang; MEMANG menahan agregat
+        //   belum dapat dinilai-> datanya lengkap, pembaginya yang belum ada
+        //
+        // Yang kedua dikeluarkan dari pembagi. Kalau ikut dihitung, satu
+        // indikator yang pekerjaannya baru jatuh tempo di TW IV membuat capaian
+        // seluruh OPD "belum tersedia" sepanjang tahun — padahal tidak ada satu
+        // pun data yang kurang.
+        // =============================================================
+        $total_     = count($indikator);
+        $takTerukur = 0;
+        $valid      = 0;
+        $jumlah     = 0.0;
 
         foreach ($indikator as $i) {
+            if (! empty($i['validity']['not_evaluable'])) {
+                $takTerukur++;
+
+                continue;
+            }
+
             if ($i['validity']['is_valid']) {
                 $valid++;
                 $jumlah += (float) $i['percentage'];
             }
         }
 
+        $wajib        = $total_ - $takTerukur;
         $bisaDihitung = $wajib > 0 && $valid === $wajib;
         $total        = $bisaDihitung ? round($jumlah / $wajib, 2) : null;
         $verifikasi   = $this->verificationInfo();
@@ -1441,9 +1518,13 @@ class OpdDashboardService
             'total'          => $total,
             'valid'          => $valid,
             'wajib'          => $wajib,
+            'indikator'      => $total_,
+            'tak_terukur'    => $takTerukur,
             'belum_valid'    => $wajib - $valid,
             'can_compute'    => $bisaDihitung,
-            'status'         => $bisaDihitung ? getAchievementStatus((float) $total) : dash_status_nonnumeric('belum_valid'),
+            'status'         => $bisaDihitung
+                ? getAchievementStatus((float) $total)
+                : dash_status_nonnumeric($wajib === 0 && $takTerukur > 0 ? 'belum_dinilai' : 'belum_valid'),
             'verified_all'   => $verifikasi['available'] && $belumVerif === 0,
             'label'          => ($verifikasi['available'] && $belumVerif === 0) ? 'Terverifikasi' : 'Sementara',
             'belum_verifikasi' => $belumVerif,
@@ -1812,6 +1893,19 @@ class OpdDashboardService
                         'Capaian ' . capaianFormatPersen($i['percentage']) . ' berstatus ' . $i['status']['name'] . '.',
                         $i['status']['name'], $i['status']['color'], $urlMon, 'Buka MONEV', $i['indikator_id']);
                 }
+                continue;
+            }
+
+            // =========================================================
+            // BELUM DAPAT DINILAI BUKAN TINDAK LANJUT
+            //
+            // Tidak ada yang bisa dikerjakan operator: datanya sudah lengkap,
+            // targetnya memang baru jatuh tempo di triwulan berikutnya.
+            // Memasukkannya ke daftar Perlu Tindak Lanjut hanya menambah butir
+            // yang tak bisa diselesaikan siapa pun — persis kelas keluhan yang
+            // membuat daftar ini berhenti dipercaya.
+            // =========================================================
+            if (! empty($i['validity']['not_evaluable'])) {
                 continue;
             }
 

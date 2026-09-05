@@ -881,6 +881,25 @@ class DashVerify extends BaseCommand
         $this->buatMonevSub($opdId, $trD, $sD1, ['25', '50', '75', '100'], 'trend_naik');
         $this->buatMonevSub($opdId, $trD, $sD2, ['25', '50', '75', '100'], null);
 
+        // 5. Target 0 & capaian 0 pada triwulan yang sudah diisi.
+        //    Target sebenarnya jatuh tempo di TW3.
+        $indE = $this->buatIndikator($sasaranId, 'Target belum jatuh tempo', '1', 1);
+        $trE  = $this->buatRenaksi($opdId, $indE, ['0', '0', '1', '0']);
+        $sE   = $this->buatSub($trE, 'E.1', ['0', '0', '1', '0'], 0);
+        $this->buatMonevSub($opdId, $trE, $sE, ['0', '0', null, null], 'sum');
+
+        // 7. Target mulai ada di TW III: 7 dari 1 -> 700%, tidak dipangkas.
+        $indG = $this->buatIndikator($sasaranId, 'Target mulai ada di TW III', '1', 1);
+        $trG  = $this->buatRenaksi($opdId, $indG, ['0', '0', '1', '0']);
+        $sG   = $this->buatSub($trG, 'G.1', ['0', '0', '1', '0'], 0);
+        $this->buatMonevSub($opdId, $trG, $sG, ['0', '7', '0', null], 'sum');
+
+        // 6. Target 0 tetapi capaian TERISI.
+        $indF = $this->buatIndikator($sasaranId, 'Target 0 tapi capaian terisi', '1', 1);
+        $trF  = $this->buatRenaksi($opdId, $indF, ['0', '0', '1', '0']);
+        $sF   = $this->buatSub($trF, 'F.1', ['0', '0', '1', '0'], 0);
+        $this->buatMonevSub($opdId, $trF, $sF, ['5', '5', null, null], 'sum');
+
         $d = $svc->getSummary($opdId, $tahun, 4);
 
         $A = $this->cariIndikator($d, $indA);
@@ -916,6 +935,56 @@ class DashVerify extends BaseCommand
         $this->cek('labelnya menyebut metode belum ditentukan',
             ($D['metode_nama'] ?? '') === 'Metode capaian belum ditentukan',
             (string) ($D['metode_nama'] ?? '-'));
+
+        // =====================================================
+        // PEMBAGI 0 -> BELUM DAPAT DINILAI  (5 Sep 2026)
+        //
+        // Menggantikan aturan 3 Sep yang menulis 0% dan 100%. Keduanya
+        // terbukti berbohong ke arah yang berlawanan: 0% menyeret indikator
+        // ke pita Kritis untuk pekerjaan yang belum jatuh tempo, dan 100%
+        // menyebut "7 dibagi 0" sebagai tercapai penuh.
+        //
+        // Dinilai pada TRIWULAN II: dash_row_validity() mensyaratkan capaian
+        // triwulan terpilih sudah terisi, dan yang diuji memang keadaan
+        // TENGAH TAHUN — TW1 & TW2 nol karena belum ada yang jatuh tempo,
+        // targetnya baru muncul di TW3.
+        // =====================================================
+        $d2 = $svc->getSummary($opdId, $tahun, 2);
+
+        $E = $this->cariIndikator($d2, $indE);
+        $F = $this->cariIndikator($d2, $indF);
+
+        $this->cek('target 0 & capaian 0 -> TIDAK menghasilkan angka',
+            $this->pctIndikator($d2, $indE) === null,
+            var_export($this->pctIndikator($d2, $indE), true));
+        $this->cek('target 0 & capaian 0 -> ditandai belum dapat dinilai',
+            ($E['status']['code'] ?? '') === 'belum_dinilai',
+            (string) ($E['status']['code'] ?? '-'));
+        $this->cek('target 0 & capaian TERISI -> juga tidak menghasilkan angka',
+            $this->pctIndikator($d2, $indF) === null,
+            var_export($this->pctIndikator($d2, $indF), true));
+        $this->cek('keduanya BUKAN "belum valid" (bukan kesalahan data)',
+            ($E['status']['code'] ?? '') !== 'belum_valid'
+            && ($F['status']['code'] ?? '') !== 'belum_valid');
+        $this->cek('dan BUKAN Kritis',
+            ($E['status']['code'] ?? '') !== 'critical'
+            && ($F['status']['code'] ?? '') !== 'critical');
+
+        // Begitu triwulan bertarget ikut dinilai, angkanya muncul — dan tidak
+        // dipangkas ke 100%.
+        $d3 = $svc->getSummary($opdId, $tahun, 3);
+        $this->cek('setelah TW III (target 1, capaian 7) -> 700%, tidak dipangkas',
+            $this->pctIndikator($d3, $indG) === 700.0,
+            var_export($this->pctIndikator($d3, $indG), true));
+
+        // Tidak boleh jadi butir Perlu Tindak Lanjut.
+        $adaInsight = false;
+        foreach ($d2['perhatian']['insights'] ?? [] as $ins) {
+            if ((int) ($ins['indikator_id'] ?? 0) === $indE) {
+                $adaInsight = true;
+            }
+        }
+        $this->cek('belum dapat dinilai TIDAK jadi butir Perlu Tindak Lanjut', $adaInsight === false);
     }
 
     /* ============ skenario: anggaran current ============ */

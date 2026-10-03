@@ -411,3 +411,5 @@
     .js-pager .pg-size-wrap { display: inline-flex; align-items: center; gap: 6px; font-size: .82rem; color: var(--muted); }
     .js-pager .pg-size { width: auto; border-radius: 8px; }
 </style>
+
+<?= $this->include("templates/splash.php") ?>

@@ -358,3 +358,5 @@
   /* Kartu konten */
   main .bg-white { border-color: #eaefeb; }
 </style>
+
+<?= $this->include("templates/splash.php") ?>

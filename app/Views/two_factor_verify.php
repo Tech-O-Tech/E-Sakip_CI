@@ -130,6 +130,8 @@
       .otp-group { gap: 7px; }
     }
   </style>
+
+    <?= $this->include("templates/splash.php") ?>
 </head>
 
 <body>

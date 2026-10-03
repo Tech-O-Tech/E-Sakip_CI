@@ -173,6 +173,8 @@
             .login-footer img { height: 46px; }
         }
     </style>
+
+    <?= $this->include("templates/splash.php") ?>
 </head>
 
 <body>

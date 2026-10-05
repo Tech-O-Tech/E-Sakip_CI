@@ -42,17 +42,32 @@ $axAksara  = $axBerkas(setting('app_logo', ''), 'assets/images/LogoTentang.png')
 $axKab     = $axBerkas(setting('kab_logo', ''), 'assets/images/logo.png');
 $axKominfo = $axBerkas('', 'assets/images/diskominfo.png');
 
-$axGambar = static function (?string $rel, string $kelas, string $alt): string {
-    return $rel === null
-        ? ''
-        : '<img class="' . $kelas . '" src="' . esc(base_url($rel), 'attr') . '" alt="' . esc($alt, 'attr') . '">';
+/*
+ * `onerror`: kalau satu gambar gagal dimuat (jaringan lambat, berkas belum
+ * ikut ter-upload), elemennya dibuang — tanpa ini peramban memamerkan kotak
+ * "gambar rusak" berisi teks alt di tengah splash.
+ */
+$axGambar = static function (?string $rel, string $kelas, string $alt, bool $denganGaris = false): string {
+    if ($rel === null) {
+        return '';
+    }
+
+    // Logo yang gagal dimuat ikut membawa garis pemisahnya, supaya tidak
+    // tertinggal satu garis menggantung tanpa logo di sebelahnya.
+    $onerror = $denganGaris
+        ? "(function(i){var p=i.parentNode,g=p.querySelector('.ax-splash-garis');if(g){p.removeChild(g);}p.removeChild(i);})(this)"
+        : "(function(i){if(i.parentNode){i.parentNode.removeChild(i);}})(this)";
+
+    return '<img class="' . $kelas . '" src="' . esc(base_url($rel), 'attr') . '"'
+        . ' alt="' . esc($alt, 'attr') . '"'
+        . ' onerror="' . $onerror . '">';
 };
 
 $axMarkup = '<div class="ax-splash-kotak" role="status" aria-label="Memuat halaman">'
     . '<div class="ax-splash-logo">'
-    . $axGambar($axAksara, 'ax-splash-aksara', 'AKSARA e-SAKIP')
+    . $axGambar($axAksara, 'ax-splash-aksara', 'AKSARA e-SAKIP', true)
     . (($axAksara !== null && $axKab !== null) ? '<span class="ax-splash-garis" aria-hidden="true"></span>' : '')
-    . $axGambar($axKab, 'ax-splash-kab', 'Lambang Kabupaten Pringsewu')
+    . $axGambar($axKab, 'ax-splash-kab', 'Lambang Kabupaten Pringsewu', true)
     . '</div>'
     . '<div class="ax-splash-bar" aria-hidden="true"><span></span></div>'
     . '<p class="ax-splash-teks">Memuat&hellip;</p>'
@@ -153,7 +168,11 @@ $axMarkup = '<div class="ax-splash-kotak" role="status" aria-label="Memuat halam
     background: linear-gradient(180deg, rgba(0, 116, 62, 0), rgba(0, 116, 62, .32), rgba(0, 116, 62, 0));
   }
 
-  /* Bilah progres tak tentu (indeterminate). */
+  /* Bilah progres: terisi 0 -> 100% selama MIN_TAMPIL (durasi disetel skrip
+     lewat --ax-durasi). Dipakai bilah terisi, bukan yang bolak-balik, karena
+     durasi splash sekarang panjang — bilah berputar belasan kali malah
+     terbaca "macet". Kalau halaman belum siap saat bilah penuh, bilah
+     berdenyut pelan sampai benar-benar ditutup. */
   .ax-splash-bar {
     position: relative;
     width: clamp(168px, 38vw, 280px);
@@ -168,10 +187,12 @@ $axMarkup = '<div class="ax-splash-kotak" role="status" aria-label="Memuat halam
     top: 0;
     bottom: 0;
     left: 0;
-    width: 42%;
+    width: 0;
     border-radius: 99px;
     background: linear-gradient(90deg, #00743e, #6eab11);
-    animation: ax-geser 1.25s cubic-bezier(.65, .05, .36, 1) infinite;
+    animation:
+      ax-isi var(--ax-durasi, 3000ms) cubic-bezier(.22, .72, .3, 1) forwards,
+      ax-denyut 1.6s ease-in-out var(--ax-durasi, 3000ms) infinite;
   }
 
   .ax-splash-teks {
@@ -206,10 +227,9 @@ $axMarkup = '<div class="ax-splash-kotak" role="status" aria-label="Memuat halam
     to   { opacity: 1; transform: none; }
   }
 
-  @keyframes ax-geser {
-    0%   { left: -45%; width: 42%; }
-    55%  { width: 58%; }
-    100% { left: 100%; width: 42%; }
+  @keyframes ax-isi {
+    from { width: 0; }
+    to   { width: 100%; }
   }
 
   @keyframes ax-denyut {
@@ -222,7 +242,7 @@ $axMarkup = '<div class="ax-splash-kotak" role="status" aria-label="Memuat halam
     #ax-splash::before,
     .ax-splash-kotak,
     .ax-splash-kaki { animation: none; }
-    .ax-splash-bar > span { animation: ax-geser 2.4s linear infinite; }
+    .ax-splash-bar > span { animation: ax-isi var(--ax-durasi, 3000ms) linear forwards; }
   }
 
   /* Jangan pernah ikut tercetak. */
@@ -239,10 +259,15 @@ $axMarkup = '<div class="ax-splash-kotak" role="status" aria-label="Memuat halam
     var d = document,
         R = d.documentElement,
         MARKUP = <?= json_encode($axMarkup, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>,
-        MIN_TAMPIL   = 600,    /* biar tidak sekelebat pada halaman ringan   */
-        SETELAH_DOM  = 900,    /* jeda setelah DOM siap, bila `load` lambat  */
-        BATAS_MUAT   = 6000,   /* pengaman: muat awal paling lama segini     */
+        /* ======= ATUR DURASI SPLASH DI SINI (milidetik) =======
+           MIN_TAMPIL = berapa lama splash PASTI terlihat, walau halaman sudah
+           siap duluan; ini angka yang biasanya mau diubah. BATAS_MUAT = batas
+           atas pengaman; lewat ini splash ditutup paksa meski halaman belum
+           rampung — jarang kepakai, hanya untuk halaman yang benar-benar berat. */
+        MIN_TAMPIL   = 3000,   /* lama minimum splash terlihat               */
+        BATAS_MUAT   = 10000,  /* pengaman: muat awal paling lama segini     */
         BATAS_PINDAH = 10000,  /* pengaman: pindah halaman paling lama segini */
+        SETELAH_DOM  = 900,    /* jeda setelah DOM siap, bila `load` lambat  */
         TUNDA_PINDAH = 160,    /* navigasi kilat tidak usah dikasih splash   */
         mulai = Date.now(),
         pengamanId = null,
@@ -254,16 +279,29 @@ $axMarkup = '<div class="ax-splash-kotak" role="status" aria-label="Memuat halam
       if (!d.body) { return false; }
       var w = d.createElement('div');
       w.id = 'ax-splash';
+      /* Bilah progres terisi persis selama MIN_TAMPIL. */
+      w.style.setProperty('--ax-durasi', MIN_TAMPIL + 'ms');
       w.innerHTML = MARKUP;
       d.body.insertBefore(w, d.body.firstChild);
       R.className += ' ax-siap';
       return true;
     }
 
+    /* Elemen splash dipakai ulang, jadi animasi bilahnya harus dipaksa mulai
+       dari nol tiap kali splash ditampilkan lagi (mis. saat pindah halaman). */
+    function ulangBilah() {
+      var s = d.querySelector('#ax-splash .ax-splash-bar > span');
+      if (!s) { return; }
+      s.style.animation = 'none';
+      void s.offsetWidth; // paksa reflow
+      s.style.animation = '';
+    }
+
     function tampilkan() {
       clearTimeout(tutupId);
       clearTimeout(pengamanId);
       pasang();
+      ulangBilah();
       mulai = Date.now();
       if (R.className.indexOf('ax-memuat') < 0) { R.className += ' ax-memuat'; }
       pengamanId = setTimeout(sembunyikan, BATAS_PINDAH);
